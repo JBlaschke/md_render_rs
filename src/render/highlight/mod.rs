@@ -96,32 +96,9 @@ pub fn gitlab(code: &str, lang: &str) -> GitlabCode {
     })
 }
 
-/// Minimal HTML text escaping (`&`, `<`, `>`, `"`).
-pub(crate) fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escape_helper() {
-        assert_eq!(
-            escape("<a href=\"x\">&'</a>"),
-            "&lt;a href=&quot;x&quot;&gt;&amp;'&lt;/a&gt;"
-        );
-    }
 
     #[test]
     fn github_plain_escapes_like_github() {

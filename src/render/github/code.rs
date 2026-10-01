@@ -239,11 +239,11 @@ mod tests {
 
     #[test]
     fn plain_block_shapes() {
-        // The highlight stub returns no scope: plain form with `lang` kept (GH §7.1).
-        let b = block_html(&ctx(false), "rust", "fn main() {}\n", "", 0);
+        // An unknown language has no Linguist scope: plain form with `lang` kept (GH §7.1).
+        let b = block_html(&ctx(false), "nosuchlang", "fn main() {}\n", "", 0);
         assert!(b.html.starts_with(r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="fn main() {}" data-mdr-key=""#));
         assert!(b.html.ends_with(
-            r#"><pre lang="rust" class="notranslate"><code>fn main() {}
+            r#"><pre lang="nosuchlang" class="notranslate"><code>fn main() {}
 </code></pre></div>"#
         ));
         let b = block_html(&ctx(true), "", "a < b\n", "", 0);

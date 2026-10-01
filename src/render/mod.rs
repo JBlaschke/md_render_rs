@@ -86,15 +86,3 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         Flavor::Gitlab => gitlab::render(markdown, opts),
     }
 }
-
-/// Plain comrak GFM rendering; used by the skeleton placeholders only.
-pub(crate) fn placeholder_render(markdown: &str, opts: &RenderOptions) -> Rendered {
-    let mut o = comrak::Options::default();
-    o.extension.strikethrough = true;
-    o.extension.table = true;
-    o.extension.autolink = true;
-    o.extension.tasklist = true;
-    o.extension.footnotes = true;
-    o.render.sourcepos = opts.sourcepos;
-    Rendered { html: comrak::markdown_to_html(markdown, &o), ..Default::default() }
-}
