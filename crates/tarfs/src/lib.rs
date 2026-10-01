@@ -190,11 +190,12 @@ impl InMemoryFileSystem {
     /// Load the `.tar.gz` at `path`, decompress it into memory and index its
     /// regular files (TarFS.jl `InMemoryFileSystem(path)`).
     ///
-    /// The file is read once and not kept open. Multi-member gzip is supported.
-    /// Directories, links and other non-regular members are skipped, as are macOS
-    /// AppleDouble companions (`._*` members whose data starts with the AppleDouble
-    /// magic number; other `._*` files are kept); a leading `./` is stripped from
-    /// member paths.
+    /// The file is read once and not kept open. Multi-member gzip is supported, and
+    /// zero padding after the last member is ignored. Directories, links and other
+    /// non-regular members are skipped, as are macOS AppleDouble companions (`._*`
+    /// members whose data starts with the AppleDouble magic number; other `._*`
+    /// files are kept); empty and `.` segments are dropped from member paths
+    /// (`./a`, `a//b` and `a/./b` read as `a`, `a/b`, `a/b`).
     ///
     /// The decompressed size is not limited: use
     /// [`open_with_limits`](Self::open_with_limits) for archives you did not create.

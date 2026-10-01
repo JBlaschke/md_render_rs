@@ -12,7 +12,8 @@ use crate::error::{Error, Result};
 /// because Windows tools treat them as separators.
 ///
 /// [`InMemoryFileSystem::write_file`](crate::InMemoryFileSystem::write_file)
-/// enforces this; the reader rejects archives whose members violate it.
+/// enforces this; the reader drops empty and `.` segments from member paths (as
+/// tar does) and rejects archives whose members still violate it.
 ///
 /// # Errors
 ///
@@ -59,10 +60,14 @@ pub fn check_path(path: &str) -> Result<()> {
 
 /// Turn the raw path of a regular-file member of a foreign archive into a key.
 ///
-/// * `Ok(None)`: skip the member: the bare `.` (or empty) entry, or an old-style
-///   directory (regular type flag but a trailing `/`).
-/// * `Err(Corrupt)`: non-UTF-8, or still invalid after stripping leading `./`
-///   (absolute, `..`, `//`, ...): we never want such paths as keys.
+/// Empty and `.` segments are dropped, as tar does when extracting: `tar -C dir .`
+/// stores every member as `./<path>`, and some scripts produce `a//b` or `a/./b`.
+///
+/// * `Ok(None)`: skip the member: the bare `.` (or empty) entry, or a path that
+///   names a directory (an old-style directory has a regular type flag and a
+///   trailing `/`; a trailing `/.` is the same thing).
+/// * `Err(Corrupt)`: non-UTF-8, absolute, or still invalid after normalization
+///   (`..`, backslash, NUL): we never want such paths as keys.
 ///
 /// macOS AppleDouble companions (`._*`) are recognised by their contents, so the
 /// reader skips them, not this function (see `read::is_apple_double`).
@@ -73,21 +78,27 @@ pub(crate) fn normalize_member(raw: &[u8]) -> Result<Option<String>> {
             String::from_utf8_lossy(raw)
         )));
     };
-    // `tar -C dir .` stores every member as "./<path>".
-    let mut path = text;
-    while let Some(rest) = path.strip_prefix("./") {
-        path = rest;
-    }
-    if path.is_empty() || path == "." || path.ends_with('/') {
+    let unsafe_path = |reason| Error::Corrupt(format!("unsafe member path {text:?}: {reason}"));
+    if text.ends_with('/') || text.rsplit('/').next() == Some(".") {
         return Ok(None);
     }
-    check_path(path).map_err(|err| match err {
-        Error::InvalidPath { reason, .. } => {
-            Error::Corrupt(format!("unsafe member path {text:?}: {reason}"))
-        }
+    // Before dropping empty segments, which would turn "/etc/x" into "etc/x".
+    if text.starts_with('/') {
+        return Err(unsafe_path("absolute path"));
+    }
+    let segments: Vec<&str> = text
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    if segments.is_empty() {
+        return Ok(None);
+    }
+    let path = segments.join("/");
+    check_path(&path).map_err(|err| match err {
+        Error::InvalidPath { reason, .. } => unsafe_path(reason),
         other => other,
     })?;
-    Ok(Some(path.to_owned()))
+    Ok(Some(path))
 }
 
 #[cfg(test)]
@@ -158,8 +169,36 @@ mod tests {
     }
 
     #[test]
+    fn normalize_drops_empty_and_dot_segments() {
+        let n = |s: &str| normalize_member(s.as_bytes()).unwrap();
+        for (raw, key) in [
+            ("a//b.txt", "a/b.txt"),
+            ("a/./b.txt", "a/b.txt"),
+            ("./a//.//b.txt", "a/b.txt"),
+            (".//a", "a"),
+            ("a/...", "a/..."),
+        ] {
+            assert_eq!(n(raw).as_deref(), Some(key), "{raw:?}");
+        }
+        // Still directories: nothing to index.
+        for dir in ["a/.", "a//", "./.", ".//", "a/./"] {
+            assert_eq!(n(dir), None, "{dir:?}");
+        }
+    }
+
+    #[test]
     fn normalize_rejects_unsafe_and_non_utf8() {
-        for bad in ["../x", "/etc/passwd", "a//b", "a/../b", "./../x", "a\\b"] {
+        for bad in [
+            "../x",
+            "/etc/passwd",
+            "//etc/passwd",
+            "/.hidden",
+            "a/../b",
+            "./../x",
+            "a//../b",
+            "a\\b",
+            "a/b\0",
+        ] {
             assert!(
                 matches!(normalize_member(bad.as_bytes()), Err(Error::Corrupt(_))),
                 "{bad:?}"

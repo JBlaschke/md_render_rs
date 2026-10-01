@@ -117,14 +117,16 @@ rules. Directories are implicit: they exist only as prefixes of file paths.
 ### Reading other tools' archives
 
 * Multi-member gzip streams, such as `cat a.gz b.gz` or pigz output, are read
-  completely.
+  completely. Zero bytes after the last member (block padding) are ignored, as
+  gzip(1) does; any other trailing data makes the archive `Corrupt`.
 * Only regular and contiguous files are indexed. Old-style `'\0'` type flags
   count as regular.
 * PAX `path`/`size` records and GNU long names are honored.
 * Directories, links, devices, FIFOs and PAX global headers are skipped. GNU
   sparse files are rejected as `Corrupt`.
-* A leading `./` is stripped, so `tar -C dir .` output works. The bare `.` entry
-  is skipped.
+* Empty and `.` segments are dropped from member paths, as tar does when
+  extracting: `tar -C dir .` output (`./a`) works, and `a//b` or `a/./b` reads as
+  `a/b`. The bare `.` entry is skipped.
 * macOS AppleDouble companions are skipped: `._*` members whose data starts with
   the AppleDouble magic number `00 05 16 07`, which bsdtar on macOS adds for
   extended attributes. Any other file named `._*` is an ordinary file, so it
@@ -193,7 +195,8 @@ back, the two writers are interchangeable.
   `from_tar_gz_bytes_with_limits`) with a `Limits` value: decompression then
   stops with `TooLarge` once the cap is reached, so a small "gzip bomb" cannot
   exhaust memory.
-* Data after the last gzip member, even zero padding, makes the archive `Corrupt`.
+* Data after the last gzip member makes the archive `Corrupt`, unless it is all
+  zero bytes.
 
 ## Differences from TarFS.jl
 
@@ -210,8 +213,10 @@ back, the two writers are interchangeable.
   including `anyhow::Error`.
 * **Paths.** `check_path` also rejects backslashes, which Windows tools treat as
   separators.
-* **Reader rules.** tarfs accepts multi-member gzip, strips `./` and skips
-  AppleDouble companions (recognised by name and magic number). It rejects unsafe or non-UTF-8 member paths and sparse files.
+* **Reader rules.** tarfs accepts multi-member gzip and trailing zero padding,
+  drops `.` and empty path segments, and skips AppleDouble companions
+  (recognised by name and magic number). It rejects unsafe or non-UTF-8 member
+  paths and sparse files.
 * **Gzip output.** The `.tar.gz` bytes are reproducible across platforms. TarFS.jl's
   gzip OS byte varies by platform.
 * **Extended writer.** It needs no temporary directory and writes PAX headers

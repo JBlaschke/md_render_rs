@@ -203,9 +203,9 @@ fn unsafe_member_paths_are_corrupt() {
     for bad in [
         &b"../evil.txt"[..],
         b"/etc/passwd",
+        b"//etc/passwd",
         b"a/../../b",
-        b"a//b",
-        b"a/./b",
+        b"a//../b",
         b"back\\slash",
     ] {
         let tar = archive(&[member(b"fine.txt", b'0', b"ok"), member(bad, b'0', b"x")]);
@@ -215,6 +215,30 @@ fn unsafe_member_paths_are_corrupt() {
     // ...but unsafe *non-file* members are simply skipped.
     let tar = archive(&[member(b"../up", b'5', b""), member(b"/abs", b'2', b"")]);
     assert!(InMemoryFileSystem::from_tar_bytes(tar).unwrap().is_empty());
+}
+
+#[test]
+fn empty_and_dot_segments_in_member_paths_are_dropped() {
+    // Harmless spellings some scripts produce; tar extracts them as "a/b.txt".
+    let tar = archive(&[
+        member(b"a//b.txt", b'0', b"double slash"),
+        member(b"a/./c.txt", b'0', b"dot"),
+        member(b"./d//./e.txt", b'0', b"both"),
+        member(b"f/.", b'0', b""), // a directory, spelled oddly
+    ]);
+    let fs = InMemoryFileSystem::from_tar_bytes(tar).unwrap();
+    assert_eq!(
+        fs.paths().collect::<Vec<_>>(),
+        ["a/b.txt", "a/c.txt", "d/e.txt"]
+    );
+    assert_eq!(fs.read_to_string("a/b.txt").unwrap(), "double slash");
+    // A later spelling of the same path overrides an earlier one, as in tar.
+    let tar = archive(&[
+        member(b"a/b.txt", b'0', b"first"),
+        member(b"a//b.txt", b'0', b"second"),
+    ]);
+    let fs = InMemoryFileSystem::from_tar_bytes(tar).unwrap();
+    assert_eq!(fs.read_to_string("a/b.txt").unwrap(), "second");
 }
 
 #[test]
@@ -338,15 +362,29 @@ fn garbage_and_bad_checksums_are_corrupt() {
 }
 
 #[test]
-fn data_after_the_last_gzip_member_is_corrupt() {
-    // Documented limitation (README "Limitations"): unlike GNU gzip, which warns
-    // about and ignores trailing zero bytes, the decoder reads anything after the
-    // last member as the start of a malformed next member.
+fn zero_padding_after_the_last_gzip_member_is_ignored_but_other_data_is_corrupt() {
+    // Block-padded downloads and tape devices append zero bytes; gzip(1) and
+    // system tar ignore them.
     let gz = gzip(&fs_from(&tree()).write_tarball(Vec::new()).unwrap());
-    for trailer in [&[0u8; 512][..], b"garbage"] {
+    for pad in [1, 512, 10240] {
         let mut padded = gz.clone();
-        padded.extend_from_slice(trailer);
-        let msg = corrupt_message(InMemoryFileSystem::from_tar_gz_bytes(&padded));
+        padded.resize(gz.len() + pad, 0);
+        let fs = InMemoryFileSystem::from_tar_gz_bytes(&padded).unwrap();
+        assert_eq!(contents(&fs), tree(), "{pad}");
+    }
+    let mut two = gzip(&fs_from(&tree()).write_tarball(Vec::new()).unwrap()[..1000]);
+    two.extend(gzip(
+        &fs_from(&tree()).write_tarball(Vec::new()).unwrap()[1000..],
+    ));
+    two.extend_from_slice(&[0u8; 512]);
+    assert_eq!(
+        contents(&InMemoryFileSystem::from_tar_gz_bytes(&two).unwrap()),
+        tree()
+    );
+    for trailer in [&b"garbage"[..], b"\0\0\0\0garbage"] {
+        let mut bad = gz.clone();
+        bad.extend_from_slice(trailer);
+        let msg = corrupt_message(InMemoryFileSystem::from_tar_gz_bytes(&bad));
         assert!(msg.starts_with("gzip:"), "{msg}");
     }
 }
