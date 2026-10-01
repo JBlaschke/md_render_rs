@@ -67,7 +67,7 @@ impl fmt::Debug for ApiConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ApiConfig")
             .field("flavor", &self.flavor)
-            .field("api_url", &self.api_url)
+            .field("api_url", &self.api_url.as_deref().map(redact_url))
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("fallback_offline", &self.fallback_offline)
             .finish()
@@ -922,16 +922,35 @@ fn parse_base_url(cfg: &ApiConfig) -> anyhow::Result<url::Url> {
         .map(str::trim)
         .filter(|u| !u.is_empty())
         .unwrap_or(default);
-    let url = url::Url::parse(raw).with_context(|| format!("invalid API URL {raw:?}"))?;
+    // Messages show the URL without credentials, query or fragment (CLI-6).
+    let shown = redact_url(raw);
+    let url = url::Url::parse(raw).with_context(|| format!("invalid API URL {shown:?}"))?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
-        "invalid API URL {raw:?}: expected an http:// or https:// URL"
+        "invalid API URL {shown:?}: expected an http:// or https:// URL"
+    );
+    // ureq would turn `user:password@` into Basic authentication, and the URL is shown in logs,
+    // errors and the page banner: tokens go through `--token` and the environment only.
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "invalid API URL {shown:?}: credentials in the URL are not supported; {}",
+        credential_hint(cfg.flavor)
     );
     anyhow::ensure!(
         url.query().is_none() && url.fragment().is_none(),
-        "invalid API URL {raw:?}: it must not have a query or fragment"
+        "invalid API URL {shown:?}: it must not have a query or fragment"
     );
     Ok(url)
+}
+
+/// Where an API token goes instead of the URL.
+pub(crate) fn credential_hint(flavor: Flavor) -> &'static str {
+    match flavor {
+        Flavor::Github => {
+            "pass --token, or set GITHUB_TOKEN (GH_ENTERPRISE_TOKEN for GitHub Enterprise Server)"
+        }
+        Flavor::Gitlab => "pass --token, or set GITLAB_TOKEN",
+    }
 }
 
 /// The host a token for the API at `base` belongs to, as `gh` / `glab` name it: `github.com`
@@ -2060,6 +2079,43 @@ mod tests {
         };
         let r = ApiRenderer::with_transport(c, Fake::with(vec![])).unwrap();
         assert_eq!(r.endpoint(), "https://ghe.example.com/api/v3/markdown");
+    }
+
+    /// CLI-6: credentials in `--api-url` are rejected, and no message repeats them.
+    #[test]
+    fn credentials_in_the_api_url_are_rejected_without_echoing_them() {
+        for (flavor, bad) in [
+            (Flavor::Github, "https://u:s3cr3t@h.example/api/v3"),
+            (Flavor::Gitlab, "http://oauth2:s3cr3t@127.0.0.1:7249"),
+            (Flavor::Gitlab, "https://s3cr3t@h.example"),
+            (Flavor::Github, "https://u:s3cr3t@h.example/?q=1"),
+            (Flavor::Github, "https://u:s3cr3t@h.example:99999/"),
+            (Flavor::Github, "ftp://u:s3cr3t@h.example/"),
+            (Flavor::Github, "https://h.example/?private_token=s3cr3t"),
+        ] {
+            let c = ApiConfig {
+                api_url: Some(bad.into()),
+                ..cfg(flavor, Some("t"), false)
+            };
+            let shown = format!("{c:?}");
+            assert!(!shown.contains("s3cr3t"), "{shown}");
+            let err = ApiRenderer::with_transport(c.clone(), Fake::with(vec![])).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(!msg.contains("s3cr3t"), "{bad}: {msg}");
+            assert!(ApiRenderer::new(c).is_err(), "{bad}");
+        }
+        let c = ApiConfig {
+            api_url: Some("https://oauth2:s3cr3t@gl.example".into()),
+            ..cfg(Flavor::Gitlab, None, false)
+        };
+        let msg = ApiRenderer::with_transport(c, Fake::with(vec![]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            msg,
+            "invalid API URL \"https://***@gl.example\": credentials in the URL are not \
+             supported; pass --token, or set GITLAB_TOKEN"
+        );
     }
 
     #[test]

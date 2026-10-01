@@ -630,6 +630,41 @@ fn api_options() {
     assert!(!dbg.contains("s3cr3t"), "{dbg}");
 
     assert_eq!(error(&fx, &["--api", "--api-url", "ftp://x"]).1, 2);
+
+    // CLI-6: credentials in --api-url are a usage error that never repeats them.
+    for (flavor, url, hint) in [
+        (
+            "gitlab",
+            "http://oauth2:s3cr3t@127.0.0.1:7249",
+            "GITLAB_TOKEN",
+        ),
+        (
+            "github",
+            "https://me:s3cr3t@ghe.example/api/v3",
+            "GH_ENTERPRISE_TOKEN",
+        ),
+        ("github", "https://s3cr3t@ghe.example", "GITHUB_TOKEN"),
+    ] {
+        let (msg, code) = error(&fx, &["-f", flavor, "--api", "--api-url", url]);
+        assert_eq!(code, 2, "{msg}");
+        assert!(
+            msg.contains("credentials in the URL are not supported") && msg.contains(hint),
+            "{msg}"
+        );
+        assert!(msg.contains("***@") && !msg.contains("s3cr3t"), "{msg}");
+        let (msg, _) = error(&fx, &["-f", flavor, "--api", "--api-url", url, "export"]);
+        assert!(!msg.contains("s3cr3t"), "{msg}");
+    }
+    // Unparseable URLs are shown redacted as well.
+    let (msg, code) = error(
+        &fx,
+        &["--api", "--api-url", "http://u:s3cr3t@h:99999/x?k=s3cr3t"],
+    );
+    assert_eq!(code, 2, "{msg}");
+    assert!(!msg.contains("s3cr3t"), "{msg}");
+    let (msg, _) = error(&fx, &["vendor", "--github-source", "ftp://u:s3cr3t@h/"]);
+    assert!(!msg.contains("s3cr3t"), "{msg}");
+
     let inv = run(&fx, &["--token", "x"]).unwrap();
     assert!(
         inv.warnings

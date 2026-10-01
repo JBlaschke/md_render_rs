@@ -177,3 +177,71 @@ fn an_enterprise_api_gets_the_enterprise_token_not_the_github_com_one() {
         Some("Bearer ghe2-token-not-real")
     );
 }
+
+#[test]
+fn credentials_in_the_api_url_are_refused_and_never_printed() {
+    let (port, seen) = mock_api(
+        "401 Unauthorized",
+        "application/json",
+        r#"{"message":"no"}"#,
+    );
+    for flavor in ["github", "gitlab"] {
+        let api_url = format!("http://oauth2:glpat-NOTREAL-SECRET@127.0.0.1:{port}");
+        for args in [
+            &[
+                "-f",
+                flavor,
+                "--api",
+                "--api-url",
+                &api_url,
+                "export",
+                "README.md",
+                "-",
+            ][..],
+            &[
+                "-f",
+                flavor,
+                "-v",
+                "--api",
+                "--api-url",
+                &api_url,
+                "README.md",
+                "0",
+            ],
+        ] {
+            let run = md_render(args, &[]);
+            assert_eq!(run.code, 2, "{args:?}: {}", run.stderr);
+            assert!(
+                run.stderr
+                    .contains("credentials in the URL are not supported"),
+                "{}",
+                run.stderr
+            );
+            assert!(
+                !run.stderr.contains("NOTREAL") && !run.stdout.contains("NOTREAL"),
+                "{}",
+                run.stderr
+            );
+        }
+    }
+    assert!(seen.lock().unwrap().is_empty(), "the API was contacted");
+}
+
+/// CLI-2: the redirect target's page never replaces the document; the export fails.
+#[test]
+fn an_export_through_a_redirecting_api_fails() {
+    let (port, seen) = mock_api(
+        "302 Found",
+        "text/html",
+        "<html><body>You are being redirected</body></html>",
+    );
+    let api_url = format!("http://127.0.0.1:{port}");
+    let run = md_render(
+        &["--api", "--api-url", &api_url, "export", "README.md", "-"],
+        &[],
+    );
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(run.stderr.contains("HTTP 302"), "{}", run.stderr);
+    assert!(!run.stdout.contains("redirected"), "{}", run.stdout);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}

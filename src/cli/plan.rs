@@ -18,7 +18,7 @@ use clap::{CommandFactory as _, ValueEnum as _};
 use crate::export::{ExportConfig, ExportInput, ExportOutput};
 use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
 use crate::page::Layout;
-use crate::render::api::{ApiConfig, ApiRenderer};
+use crate::render::api::{ApiConfig, ApiRenderer, credential_hint, redact_url};
 use crate::render::{OfflineRenderer, Renderer};
 use crate::server::{ServeConfig, Target};
 use crate::styles::vendor::{GITHUB_SOURCE, GITLAB_SOURCE, VendorOptions};
@@ -526,6 +526,7 @@ fn render_plan(
     let api = if g.api {
         if let Some(url) = &g.api_url {
             validate_http_url("--api-url", url)?;
+            reject_url_credentials("--api-url", url, flavor)?;
         }
         Some(ApiConfig {
             flavor,
@@ -554,15 +555,34 @@ fn render_plan(
     })
 }
 
+/// The error messages show the URL without credentials, query or fragment (CLI-6).
 fn validate_http_url(option: &str, value: &str) -> Result<(), CliError> {
     match url::Url::parse(value) {
         Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => Ok(()),
         _ => Err(usage(
             ErrorKind::ValueValidation,
             format!(
-                "invalid value '{value}' for '{option} <URL>': expected an http:// or https:// URL"
+                "invalid value '{}' for '{option} <URL>': expected an http:// or https:// URL",
+                redact_url(value)
             ),
         )),
+    }
+}
+
+/// `https://user:TOKEN@host` would become Basic authentication and the URL is shown in logs,
+/// errors and the page banner: API tokens go through `--token` or the environment (CLI-6).
+fn reject_url_credentials(option: &str, value: &str, flavor: Flavor) -> Result<(), CliError> {
+    match url::Url::parse(value) {
+        Ok(u) if !u.username().is_empty() || u.password().is_some() => Err(usage(
+            ErrorKind::ValueValidation,
+            format!(
+                "invalid value '{}' for '{option} <URL>': credentials in the URL are not \
+                 supported; {}",
+                redact_url(value),
+                credential_hint(flavor)
+            ),
+        )),
+        _ => Ok(()),
     }
 }
 
