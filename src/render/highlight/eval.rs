@@ -92,6 +92,104 @@ fn gitlab_baseline_port_reproduces_scope_map_py() {
     assert_eq!(format!("{:.1}", total.family_pct()), "76.1");
 }
 
+/// Debug aid: `MDR_HL_DUMP=source-rust` prints GitHub's and our HTML line by line for every
+/// block of that class (differing lines are marked).
+#[test]
+fn github_dump() {
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP")) else { return };
+    let mut files: Vec<String> = GITHUB_TUNING.iter().map(|s| s.to_string()).collect();
+    files.extend(github_heldout(&dir));
+    for block in github_blocks_in(&dir, &files) {
+        if block.class != want {
+            continue;
+        }
+        let Some(lang) = &block.lang else { continue };
+        let code = format!("{}\n", code_of(&block.html));
+        let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
+        println!("=== {} ({lang})", block.class);
+        for (a, b) in block.html.split('\n').zip(ours.split('\n')) {
+            if a == b {
+                println!("  = {a}");
+            } else {
+                println!("  G {a}\n  O {b}");
+            }
+        }
+    }
+}
+
+/// Debug aid: `MDR_HL_SCOPES=source-rust` prints, for every syntect token of every block of
+/// that class whose class path differs from GitHub's, the token, both paths and the scopes.
+#[test]
+fn github_scopes() {
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_SCOPES")) else { return };
+    let mut files: Vec<String> = GITHUB_TUNING.iter().map(|s| s.to_string()).collect();
+    files.extend(github_heldout(&dir));
+    for block in github_blocks_in(&dir, &files) {
+        if block.class != want {
+            continue;
+        }
+        let Some(lang) = &block.lang else { continue };
+        let code = format!("{}\n", code_of(&block.html));
+        let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
+        let theirs = class_paths(&block.html);
+        let mine = class_paths(&ours);
+        let Some(pl::Grammar::Syntect(syntax)) = pl::linguist::find(lang)
+            .and_then(|l| pl::grammar(l.tm_scope.as_deref()?, &l.name))
+        else {
+            continue;
+        };
+        println!("=== {} ({lang}) syntax {}", block.class, syntax.name);
+        let mut pos = 0usize; // in chars
+        let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
+            if let super::engine::Event::Text(t) = e {
+                let n = t.chars().count();
+                let differs = (pos..pos + n).any(|i| match (theirs.get(i), mine.get(i)) {
+                    (Some(a), Some(b)) => !a.0.is_whitespace() && a.1 != b.1,
+                    _ => false,
+                });
+                if differs && !t.trim().is_empty() {
+                    let g = theirs.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
+                    let o = mine.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
+                    let scopes: Vec<String> = stack.iter().skip(1).map(|s| s.build_string()).collect();
+                    println!("TOK\t{t:?}\tG={g}\tO={o}\tS={}", scopes.join(" "));
+                }
+                pos += n;
+            }
+        });
+    }
+}
+
+/// Debug aid: `MDR_HL_DUMP_GL=rust` prints Rouge's and our classes per token of a sample.
+#[test]
+fn gitlab_dump() {
+    let (Some(dir), Ok(lang)) = (golden_dir(), std::env::var("MDR_HL_DUMP_GL")) else { return };
+    let base = dir.join("gitlab/rouge_samples");
+    let code = std::fs::read_to_string(base.join(format!("code.{lang}"))).unwrap();
+    let tsv = std::fs::read_to_string(base.join(format!("{lang}.tokens.tsv"))).unwrap();
+    let rouge = rouge_char_classes(&tsv);
+    let ours = our_char_classes(&rouge::highlight_with(&code, &lang, rouge::DEFAULT_VARIANT).lines);
+    let chars: Vec<char> = code.chars().collect();
+    // Print runs of (rouge, ours) classes.
+    let mut i = 0;
+    while i < chars.len().min(rouge.len()).min(ours.len()) {
+        let mut j = i;
+        while j < chars.len().min(rouge.len()).min(ours.len())
+            && rouge[j] == rouge[i]
+            && ours[j] == ours[i]
+            && chars[j] != '\n'
+        {
+            j += 1;
+        }
+        let j = j.max(i + 1);
+        let text: String = chars[i..j].iter().collect();
+        if !text.trim().is_empty() {
+            let mark = if rouge[i] == ours[i] { " " } else { "X" };
+            println!("{mark} rouge={:<4} ours={:<4} {text:?}", rouge[i], ours[i]);
+        }
+        i = j;
+    }
+}
+
 #[test]
 fn gitlab_variants() {
     let Some(dir) = golden_dir() else {

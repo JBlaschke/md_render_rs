@@ -104,7 +104,11 @@ pub fn github_blocks(doc: &str, markdown: &str) -> Vec<GhBlock> {
         .map(|c| {
             let html = c[2].to_owned();
             let code = code_of(&html);
-            let lang = fenced.iter().find(|(_, lit)| *lit == code).map(|(w, _)| w.clone());
+            // The same code may also appear in an untagged block; prefer a tagged one.
+            let lang = fenced
+                .iter()
+                .find(|(w, lit)| !w.is_empty() && *lit == code)
+                .map(|(w, _)| w.clone());
             GhBlock { class: c[1].to_owned(), html, lang }
         })
         .collect()

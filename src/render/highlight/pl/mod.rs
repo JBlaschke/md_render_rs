@@ -14,10 +14,10 @@ use syntect::parsing::{Scope, SyntaxReference};
 
 use super::GithubCode;
 use super::engine::{self, Event, Limits};
-use super::rules::RuleSet;
+
 
 pub(crate) use classes::{DEFAULT_VARIANT, Variant};
-use classes::{Class, Scheme};
+use classes::{Class, Overlay, Scheme, TextIs};
 
 /// How a Linguist language is tokenized.
 #[derive(Clone, Copy, Debug)]
@@ -179,66 +179,104 @@ fn push_escaped(out: &mut String, s: &str) {
     out.push_str(&s[last..]);
 }
 
+/// One scope on the writer's stack.
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    class: Class,
+    /// Replaces `class` if the scope's first text satisfies the condition (tree-sitter-style
+    /// text predicates, GH §7.7); resolved when the span is first opened.
+    by_text: Option<(TextIs, &'static str)>,
+}
+
 /// Builds nested-span HTML from a scope event stream (GH §7.6).
 pub(crate) struct SpanWriter<'s> {
     scheme: &'s Scheme,
-    overlay: Option<&'s RuleSet<Class>>,
+    overlay: Option<&'s Overlay>,
     out: String,
     /// One entry per scope on the tokenizer's stack.
-    classes: Vec<Class>,
-    /// Number of `Some` entries in `classes`.
+    entries: Vec<Entry>,
+    /// Number of entries with a class.
     some: usize,
-    /// How many of the `Some` entries (outermost first) are currently open in `out`.
+    /// How many of the entries with a class (outermost first) are currently open in `out`.
     opened: usize,
-    /// A scope pushed while `classes` has this length is a syntax's root scope: it gets no
+    /// A scope pushed while `entries` has this length is a syntax's root scope: it gets no
     /// class (GH §7.6 "skip the root scope", which would otherwise map to `pl-s1`).
     root_depth: usize,
+    /// Innermost scope of the previous non-blank text (for `PREVIOUS +` rules).
+    previous: Option<Scope>,
 }
 
 impl<'s> SpanWriter<'s> {
-    pub(crate) fn new(scheme: &'s Scheme, overlay: Option<&'s RuleSet<Class>>, cap: usize) -> Self {
+    pub(crate) fn new(scheme: &'s Scheme, overlay: Option<&'s Overlay>, cap: usize) -> Self {
         SpanWriter {
             scheme,
             overlay,
             out: String::with_capacity(cap),
-            classes: Vec::new(),
+            entries: Vec::new(),
             some: 0,
             opened: 0,
             root_depth: 0,
+            previous: None,
         }
     }
 
     /// Start embedded code: the next syntax root scope is pushed on top of the current stack.
     pub(crate) fn embed(&mut self) {
-        self.root_depth = self.classes.len();
+        self.root_depth = self.entries.len();
+        self.previous = None;
     }
 
     pub(crate) fn event(&mut self, event: Event<'_>, stack: &[Scope]) {
         match event {
             Event::Push(scope) => {
-                let class = if self.classes.len() == self.root_depth {
-                    None
+                let entry = if self.entries.len() == self.root_depth {
+                    Entry { class: None, by_text: None }
                 } else {
                     let parents = stack.get(..stack.len().saturating_sub(1)).unwrap_or(&[]);
-                    self.scheme.classify(self.overlay, scope, parents)
+                    let (class, by_text) =
+                        self.scheme.classify(self.overlay, scope, parents, self.previous);
+                    if class.is_some() && Scheme::absorbs(self.overlay, scope, parents) {
+                        self.absorb_parent();
+                    }
+                    Entry { class, by_text }
                 };
-                self.push_class(class);
+                self.push_entry(entry);
             }
             Event::Pop => self.pop_class(),
-            Event::Text(text) => self.text(text),
+            Event::Text(text) => {
+                self.text(text);
+                if !text.trim().is_empty() {
+                    self.previous = stack.last().copied();
+                }
+            }
+        }
+    }
+
+    /// Drop the class of the innermost scope if its span has not been opened yet (no text since
+    /// it was pushed), so that the scope being pushed takes its place.
+    fn absorb_parent(&mut self) {
+        if self.opened < self.some {
+            if let Some(last) = self.entries.last_mut().filter(|e| e.class.is_some()) {
+                last.class = None;
+                self.some -= 1;
+            }
         }
     }
 
     pub(crate) fn push_class(&mut self, class: Class) {
-        if class.is_some() {
+        self.push_entry(Entry { class, by_text: None });
+    }
+
+    fn push_entry(&mut self, entry: Entry) {
+        if entry.class.is_some() {
             self.some += 1;
         }
-        self.classes.push(class);
+        self.entries.push(entry);
     }
 
     pub(crate) fn pop_class(&mut self) {
         // syntect reports pops on an already empty stack as well; ignore those.
-        if let Some(Some(_)) = self.classes.pop() {
+        if let Some(Entry { class: Some(_), .. }) = self.entries.pop() {
             if self.opened == self.some {
                 self.out.push_str("</span>");
                 self.opened -= 1;
@@ -254,7 +292,7 @@ impl<'s> SpanWriter<'s> {
             None => (text, false),
         };
         if !body.is_empty() {
-            self.open_pending();
+            self.open_pending(body);
             push_escaped(&mut self.out, body);
         }
         if newline {
@@ -263,11 +301,24 @@ impl<'s> SpanWriter<'s> {
         }
     }
 
-    fn open_pending(&mut self) {
+    /// Open the spans of all classified entries not open yet; `first` is the text that follows.
+    fn open_pending(&mut self, first: &str) {
         if self.opened == self.some {
             return;
         }
-        for class in self.classes.iter().flatten().skip(self.opened) {
+        let mut seen = 0;
+        for entry in self.entries.iter_mut() {
+            let Some(class) = entry.class else { continue };
+            seen += 1;
+            if seen <= self.opened {
+                continue;
+            }
+            // A span opened for the first time settles its text-dependent class.
+            let class = match entry.by_text.take() {
+                Some((cond, alt)) if cond.matches(first) => alt,
+                _ => class,
+            };
+            entry.class = Some(class);
             self.out.push_str("<span class=\"");
             self.out.push_str(class);
             self.out.push_str("\">");
@@ -294,7 +345,7 @@ fn render(
     code: &str,
     syntax: &'static SyntaxReference,
     scheme: &Scheme,
-    overlay: Option<&RuleSet<Class>>,
+    overlay: Option<&Overlay>,
 ) -> Result<String, engine::Error> {
     let mut writer = SpanWriter::new(scheme, overlay, code.len() * 2);
     engine::tokenize(code, syntax, Limits::DEFAULT, |event, stack| writer.event(event, stack))?;

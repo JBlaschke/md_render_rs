@@ -22,10 +22,10 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::classes::{Class, Scheme};
+use super::classes::{Overlay, Scheme};
 use super::{SpanWriter, shell_syntax};
 use crate::render::highlight::engine::{self, Limits, LineTokenizer};
-use crate::render::highlight::rules::RuleSet;
+
 
 /// The prompt rule. TextMate matches it against the line *including* its terminator, so the
 /// `\s+` after the prompt character may consume the `\n` (a lone `$` is a prompt). Lines are
@@ -49,7 +49,7 @@ fn prompt_regex(with_newline: bool) -> Option<&'static Regex> {
 pub(super) fn render(
     code: &str,
     scheme: &Scheme,
-    overlay: Option<&RuleSet<Class>>,
+    overlay: Option<&Overlay>,
 ) -> Result<String, engine::Error> {
     if !Limits::DEFAULT.admits(code) {
         return Err(engine::Error);
