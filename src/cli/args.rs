@@ -5,6 +5,14 @@
 //! Environment variables (`MD_RENDER_FLAVOR`, `MD_RENDER_STYLES`) are applied after parsing by
 //! [`super::plan`], not by clap, so the parse is testable with an injected environment.
 
+// The doc comments of the argument fields are the `--help` text, written for a terminal
+// (`<host>[:<port>]`, bare URLs), not as rustdoc Markdown.
+#![allow(
+    rustdoc::invalid_html_tags,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::bare_urls
+)]
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 

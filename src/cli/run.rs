@@ -75,6 +75,9 @@ fn init_logging(quiet: bool, verbose: u8) {
 }
 
 /// Execute a planned invocation.
+///
+/// # Errors
+/// Whatever the server, export, vendor or cache operation reports (exit code 1).
 pub fn execute(inv: Invocation) -> anyhow::Result<()> {
     let quiet = inv.quiet;
     match inv.plan {
@@ -162,6 +165,9 @@ pub fn human_bytes(bytes: u64) -> String {
 /// directory (the default bundle and anything else md-render stored there, including a
 /// `--styles` bundle that lives inside it). A bundle elsewhere is never deleted. Returns the
 /// message for the user.
+///
+/// # Errors
+/// The cache directory exists but cannot be inspected or removed.
 pub fn cache_clear(plan: &CacheClearPlan) -> anyhow::Result<String> {
     let dir = &plan.cache_dir;
     let mut message = match fs::symlink_metadata(dir) {

@@ -174,6 +174,9 @@ pub struct RenderPlan {
 
 impl RenderPlan {
     /// The renderer: offline, or [`ApiRenderer`] (resolves the token) with `--api`.
+    ///
+    /// # Errors
+    /// An invalid `--api-url`.
     pub fn renderer(&self) -> anyhow::Result<Arc<dyn Renderer>> {
         Ok(match &self.api {
             Some(cfg) => Arc::new(ApiRenderer::new(cfg.clone())?),
@@ -286,7 +289,12 @@ enum BundleSource {
     Default,
 }
 
-/// Turn parsed arguments into an [`Invocation`].
+/// Turn parsed arguments into an [`Invocation`]. Reads stdin when PATH is `-`.
+///
+/// # Errors
+/// [`CliError::Clap`] (exit 2) for invalid combinations, addresses, environment values and
+/// `--root` problems; [`CliError::Runtime`] (exit 1) for missing files, a directory without
+/// README on export, unreadable stdin or an unknown cache directory.
 pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
     let g = &cli.global;
     let mut warnings = Vec::new();

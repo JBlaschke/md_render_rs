@@ -38,6 +38,10 @@ pub fn main() -> ExitCode {
 /// options with grip's hint (exit 2, GRIP §2.2 step 2 / §10 C11). Unlike grip, which scans the raw
 /// argv, the hint is only given when clap actually finds the option, so `--title -p` style values
 /// and arguments after `--` are not misreported.
+///
+/// # Errors
+/// [`CliError::Clap`] for usage errors and for `--help` / `--version` (exit code 0), or
+/// [`CliError::Hint`] for `-a` / `-p`.
 pub fn parse_args<I, T>(argv: I) -> Result<Cli, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -50,6 +54,9 @@ where
 }
 
 /// [`parse_args`] followed by [`plan::plan`].
+///
+/// # Errors
+/// Everything [`parse_args`] and [`plan::plan`] report.
 pub fn invocation<I, T>(argv: I, host: &mut dyn Host) -> Result<Invocation, CliError>
 where
     I: IntoIterator<Item = T>,

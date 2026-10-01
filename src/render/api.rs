@@ -142,6 +142,11 @@ pub struct TransportError(pub String);
 
 /// Sends API requests. The default is [`UreqTransport`]; tests inject canned responses.
 pub trait HttpTransport: Send + Sync {
+    /// `POST` `request.body` as JSON to `request.url` with `request.headers`.
+    ///
+    /// # Errors
+    /// Only when no response arrived (DNS, connect, TLS, timeout, unreadable body); every HTTP
+    /// status, including 4xx/5xx, is an `Ok` [`ApiResponse`].
     fn post_json(&self, request: &ApiRequest) -> Result<ApiResponse, TransportError>;
 }
 
@@ -585,8 +590,10 @@ impl fmt::Debug for ApiRenderer {
 
 impl ApiRenderer {
     /// Create a renderer using the real network. The token is resolved from `cfg.token`, then
-    /// the environment, then `gh auth token` / `glab` (only if installed). Fails on an invalid
-    /// `api_url`.
+    /// the environment, then `gh auth token` / `glab` (only if installed).
+    ///
+    /// # Errors
+    /// An `api_url` that is not an `http(s)://` URL without query or fragment.
     pub fn new(cfg: ApiConfig) -> anyhow::Result<Self> {
         let host = api_host(&cfg)?;
         let env = |name: &str| std::env::var(name).ok();
@@ -610,6 +617,9 @@ impl ApiRenderer {
 
     /// Create a renderer with an injected transport. Only `cfg.token` is used (no environment
     /// or credential-helper lookup), which keeps tests hermetic.
+    ///
+    /// # Errors
+    /// Same as [`ApiRenderer::new`].
     pub fn with_transport(
         cfg: ApiConfig,
         transport: Arc<dyn HttpTransport>,
