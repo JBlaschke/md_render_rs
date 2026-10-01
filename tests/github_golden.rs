@@ -436,15 +436,18 @@ fn cases(dir: &Path) -> Vec<Case> {
             add(format!("pages/{base}"), p.clone(), gh.join(format!("pages/{base}.README.api_html.html")), Mode::Readme, readme);
         }
     }
-    let with_ctx = Norm { drop_dir_auto: false, strict_code: strict, refs_as_text: true, probe: false };
+    // Strict code comparison only makes sense against outputs that carry github.com's code
+    // wrappers (README/file view, stored comment `bodyHTML`); API outputs lack them.
+    let body_html = Norm { drop_dir_auto: false, strict_code: strict, refs_as_text: true, probe: false };
+    let with_ctx = Norm { strict_code: false, ..body_html };
     for p in list("comments") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".md") {
             add(format!("comments/{base} (api_gfm)"), p.clone(), gh.join(format!("comments/{base}.api_gfm.html")), Mode::Comment, with_ctx);
-            add(format!("comments/{base} (bodyHTML)"), p.clone(), gh.join(format!("comments/{base}.bodyHTML.html")), Mode::Comment, with_ctx);
+            add(format!("comments/{base} (bodyHTML)"), p.clone(), gh.join(format!("comments/{base}.bodyHTML.html")), Mode::Comment, body_html);
         }
     }
-    let no_ctx = Norm { drop_dir_auto: true, strict_code: strict, refs_as_text: true, probe: true };
+    let no_ctx = Norm { drop_dir_auto: true, strict_code: false, refs_as_text: true, probe: true };
     for p in list("probes") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".md") {

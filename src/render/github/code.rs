@@ -41,7 +41,9 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
         let html = enrichment_html(ctx, lang, literal, sp, index);
         return Block { html, mermaid: lang == "mermaid", enrichment: true, ..Block::default() };
     }
-    let hl = if lang.is_empty() { None } else { Some(highlight::github(raw, lang)) };
+    // The highlighter takes the block content as written (it drops the final newline, and
+    // for GitHub's tree-sitter languages every trailing blank line, itself).
+    let hl = if lang.is_empty() { None } else { Some(highlight::github(literal, lang)) };
     let key = mdr_key(&["code", lang, raw]);
     let mut html = String::with_capacity(literal.len() * 2 + 200);
     match hl {
@@ -158,7 +160,7 @@ pub(super) fn raw_pre(doc: &Document, ctx: &Ctx, enrichments: &mut usize, feats:
             let is_special = lang == "math" || ENRICHMENTS.contains(&lang.as_str());
             let highlighted = !lang.is_empty()
                 && !is_special
-                && highlight::github(code.strip_suffix('\n').unwrap_or(&code), &lang)
+                && highlight::github(&code, &lang)
                     .scope
                     .is_some();
             if is_special || highlighted {
