@@ -80,7 +80,7 @@ pub struct Cli {
 /// `--flavor` values; `all` is accepted by `vendor` only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum FlavorArg {
-    /// GitHub (default)
+    /// GitHub
     Github,
     /// GitLab
     Gitlab,
@@ -101,7 +101,7 @@ pub enum ThemesArg {
 /// Options shared by every command (usable before or after the subcommand).
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct GlobalArgs {
-    /// Site flavor to reproduce [env: MD_RENDER_FLAVOR] [default: github]
+    /// Site flavor to reproduce [default: $MD_RENDER_FLAVOR, else github; for vendor: all]
     #[arg(
         short = 'f',
         long,
@@ -390,6 +390,19 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// CLI-10 / Q-CLI-1: `vendor --help` must not claim `github` as the --flavor default.
+    #[test]
+    fn flavor_help_is_right_for_vendor() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let vendor = cmd.find_subcommand_mut("vendor").unwrap();
+        let help = vendor.render_long_help().to_string();
+        assert!(help.contains("default: all;"), "{help}");
+        assert!(!help.contains("[default: github]"), "{help}");
+        assert!(!help.contains("GitHub (default)"), "{help}");
+        assert!(help.contains("for vendor: all"), "{help}");
     }
 
     #[test]
