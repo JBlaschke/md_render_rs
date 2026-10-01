@@ -36,7 +36,8 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
         // the end of a matrix row becomes `\\\`; `S/ctx/aaddrick_*`, `S/ctx/joseph_*`).
         let tex = raw.replace("\\\n", "\\\\\n");
         let mut html = math_html(ctx, &tex, "$$", true);
-        insert_attrs(&mut html, "<math-renderer", sp);
+        // The sanitizer only trusts a marker that is the first attribute.
+        insert_attrs(&mut html, &format!("<math-renderer{}", ctx.mark_tree), sp);
         return Block {
             html,
             math: true,
@@ -104,10 +105,14 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
                 push_attr(&mut html, lang);
                 html.push('"');
             }
+            // The `<code>` carries its own marker so the sanitizer can tell it from a raw
+            // formatting element the HTML parser cloned into this trusted subtree.
+            html.push_str(r#" class="notranslate"><code"#);
+            html.push_str(&ctx.mark);
             html.push_str(if ctx.comment {
-                r#" class="notranslate"><code class="notranslate">"#
+                r#" class="notranslate">"#
             } else {
-                r#" class="notranslate"><code>"#
+                ">"
             });
             push_text(&mut html, literal);
             html.push_str("</code></pre></div>");

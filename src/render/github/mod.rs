@@ -276,6 +276,156 @@ mod tests {
         assert_eq!(normalize("\u{feff}x"), "x");
     }
 
+    /// Asserts that the DOM of `html` carries nothing dangerous that only raw HTML could have
+    /// put there.
+    fn assert_clean(input: &str, html: &str) {
+        let doc = Document::fragment(html);
+        for el in dom::elements(&doc) {
+            let name = dom::name(&el).map(|n| n.to_string()).unwrap_or_default();
+            assert!(
+                !matches!(&*name, "base" | "form" | "link" | "script" | "style"),
+                "<{name}> in {input:?} -> {html}"
+            );
+            if name == "input" {
+                assert!(
+                    el.has_class("task-list-item-checkbox"),
+                    "{input:?} -> {html}"
+                );
+            }
+            let attrs = el
+                .element_ref()
+                .map(|e| e.attrs.clone())
+                .unwrap_or_default();
+            for a in attrs {
+                let (n, v) = (a.name.local.to_string(), a.value.to_ascii_lowercase());
+                assert!(
+                    !n.starts_with("on") && !n.contains('<') && n != MARK_ATTR,
+                    "{n} in {input:?} -> {html}"
+                );
+                assert!(
+                    !(n == "style" && v == "s"),
+                    "raw style in {input:?} -> {html}"
+                );
+                assert!(!v.contains("javascript:"), "{n}={v} in {input:?} -> {html}");
+            }
+        }
+    }
+
+    /// GH-SEC-1: an unterminated raw block tag followed by a blank line used to absorb the
+    /// next generated start tag together with its sanitizer marker.
+    #[test]
+    fn unterminated_raw_tags_stay_raw() {
+        let tags = [
+            r#"details open ontoggle="x""#,
+            r#"div onclick="x" style="s""#,
+            r#"base href="https://e.com/""#,
+            r#"form action="https://e.com/""#,
+            r#"link rel="stylesheet" href="https://e.com/s.css""#,
+            r#"section onclick="x""#,
+            r#"table onclick="x""#,
+            r#"p onclick="x""#,
+            r#"input type="text" onfocus="x""#,
+        ];
+        let blocks = [
+            "para",
+            "# head",
+            "- item",
+            "1. one",
+            "- [ ] task",
+            "> quote",
+            "> [!NOTE]\n> note",
+            "```\ncode\n```",
+            "```js\nlet a = 1;\n```",
+            "```math\nx^2\n```",
+            "```mermaid\ngraph TD\n```",
+            "| a |\n|---|\n| b |",
+            "x[^1]\n\n[^1]: note",
+            "$$x$$",
+            "---",
+        ];
+        for mode in [Mode::Readme, Mode::Comment] {
+            for sourcepos in [false, true] {
+                let mut o = opts(mode);
+                o.sourcepos = sourcepos;
+                for tag in tags {
+                    for block in blocks {
+                        let md = format!("<{tag}\n\n{block}\n");
+                        assert_clean(&md, &render(&md, &o).html);
+                    }
+                }
+            }
+        }
+        // github.com (`gh api /markdown`, gfm + context): the raw `<div>` keeps only what
+        // its allowlist permits and the absorbed `<p>` start tag is gone.
+        let r = render("<div onclick=\"x\"\n\npara\n", &opts(Mode::Comment));
+        assert_eq!(
+            r.html.replace('\n', ""),
+            r#"<div dir="auto">para<p dir="auto"></p></div>"#
+        );
+        let r = render(
+            "<details open ontoggle=\"x\"\n\npara\n",
+            &opts(Mode::Readme),
+        );
+        assert!(
+            r.html
+                .starts_with(r#"<details open=""><summary>Details</summary>para"#),
+            "{}",
+            r.html
+        );
+    }
+
+    /// GH-SEC-2: an unclosed raw formatting element is cloned by the HTML parser into the
+    /// generated code block that follows a raw `<table>`; the clone is filtered like raw
+    /// HTML (github.com keeps a bare `<b>` there).
+    #[test]
+    fn reconstructed_formatting_elements_are_sanitized() {
+        let md = "<table>\n\nx <b onmouseover=\"x\" style=\"s\">y\n\n```\ncode\n```\n";
+        let r = render(md, &opts(Mode::Comment));
+        assert!(
+            r.html.contains(
+                "<pre class=\"notranslate\"><b><code class=\"notranslate\">code\n</code></b></pre>"
+            ),
+            "{}",
+            r.html
+        );
+        assert_clean(md, &r.html);
+        let r = render(md, &opts(Mode::Readme));
+        assert!(
+            r.html
+                .contains("<pre class=\"notranslate\"><b><code>code\n</code></b></pre>"),
+            "{}",
+            r.html
+        );
+        assert_clean(md, &r.html);
+        let tags = [
+            "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong",
+            "tt", "u",
+        ];
+        let fences = [
+            "```\ncode\n```",
+            "```js\nlet a = 1;\n```",
+            "```math\nx^2\n```",
+            "```mermaid\ngraph TD\n```",
+            "```nosuchlang\nz\n```",
+        ];
+        for mode in [Mode::Readme, Mode::Comment] {
+            for tag in tags {
+                for fence in fences {
+                    for attrs in [
+                        r#"onclick="x" style="s""#,
+                        r#"href="javascript:x" onclick="x""#,
+                        r#"tabindex="1" autofocus onfocus="x""#,
+                    ] {
+                        for prefix in ["<table>\n\n", "<table><tr><td>\n\n", ""] {
+                            let md = format!("{prefix}x <{tag} {attrs}>y\n\n{fence}\n\nafter\n");
+                            assert_clean(&md, &render(&md, &opts(mode)).html);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn smoke() {
         let r = render("# Title :smile:\n\nHello *world*\n", &opts(Mode::Readme));

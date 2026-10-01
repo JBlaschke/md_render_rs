@@ -219,24 +219,21 @@ pub(super) fn run(doc: &Document, ctx: &Ctx) -> HashSet<NodeId> {
         match kind {
             Kind::Text | Kind::KeepComment => {}
             Kind::Drop => n.remove_from_parent(),
-            Kind::Element => {
-                let marker = n.attr(MARK_ATTR).map(|v| v.to_string());
-                match marker {
-                    Some(v) if v == ctx.token => {
-                        n.remove_attr(MARK_ATTR);
-                        push_children(&n, &mut stack);
-                    }
-                    Some(v) if v == tree_token => {
-                        n.remove_attr(MARK_ATTR);
-                        strip_markers(&n);
-                    }
-                    _ => {
-                        if raw_element(&n, &mut stack) {
-                            raw.insert(n.id);
-                        }
+            Kind::Element => match leading_marker(&n) {
+                Some(v) if v == ctx.token => {
+                    n.remove_attr(MARK_ATTR);
+                    push_children(&n, &mut stack);
+                }
+                Some(v) if v == tree_token => {
+                    n.remove_attr(MARK_ATTR);
+                    trusted_subtree(&n, ctx, &tree_token);
+                }
+                _ => {
+                    if raw_element(&n, &mut stack) {
+                        raw.insert(n.id);
                     }
                 }
-            }
+            },
         }
     }
     raw
@@ -248,13 +245,63 @@ fn push_children<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) {
     stack.extend(children);
 }
 
-/// Removes nested marker attributes inside a trusted subtree (math inside a table cell of a
-/// trusted block cannot occur, but stay robust).
-fn strip_markers(n: &NodeRef<'_>) {
-    for d in n.descendants() {
-        if d.is_element() && d.has_attr(MARK_ATTR) {
-            d.remove_attr(MARK_ATTR);
+/// The marker's value when it is the element's **first** attribute, `None` otherwise.
+///
+/// The formatter writes the marker straight after the tag name. Raw markup cannot reach
+/// that position: an unterminated raw start tag (`<details open ontoggle=…` followed by a
+/// blank line) absorbs the next generated start tag as attributes, but the generated tag
+/// name (`<p`) then always comes first, so a marker anywhere else means the element is raw.
+/// html5ever keeps attributes in source order.
+fn leading_marker(n: &NodeRef<'_>) -> Option<String> {
+    n.query(|t| {
+        let el = t.as_element()?;
+        el.attrs
+            .first()
+            .filter(|a| a.name.ns.is_empty() && &*a.name.local == MARK_ATTR)
+            .map(|a| a.value.to_string())
+    })
+    .flatten()
+}
+
+/// HTML formatting elements (HTML §13.2.4.3), the ones the tree builder clones on its own.
+const FORMATTING: &[&str] = &[
+    "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u",
+];
+
+/// Clears the markers inside a trusted subtree (`TOKEN-t`: octicons, highlighted code, math)
+/// and sanitizes what the HTML parser put there on its own. An unclosed raw formatting
+/// element (`<b onclick=…>`, typically while a raw `<table>` is open) stays in the list of
+/// active formatting elements, and the "reconstruct the active formatting elements" step
+/// (or the adoption agency algorithm) clones it, attributes included, into later content,
+/// a generated `<pre>` among others. Such a clone has no leading marker (the formatter
+/// marks its own `<code>`, the only formatting element it writes in trusted subtrees) and
+/// is filtered like the raw element it copies: github.com keeps a bare `<b>` inside the
+/// `<pre>`. Its children stay trusted.
+fn trusted_subtree(n: &NodeRef<'_>, ctx: &Ctx, tree_token: &str) {
+    let mut stack: Vec<NodeRef<'_>> = n.children();
+    stack.reverse();
+    while let Some(c) = stack.pop() {
+        if !c.is_element() {
+            continue;
         }
+        let generated = leading_marker(&c).is_some_and(|v| v == ctx.token || v == tree_token);
+        let clone = !generated
+            && c.qual_name_ref()
+                .is_some_and(|q| &*q.ns == HTML_NS && FORMATTING.contains(&&*q.local));
+        if clone {
+            let local = dom::name(&c).map(|l| l.to_string()).unwrap_or_default();
+            if KEPT.contains(&local.as_str()) {
+                filter_attrs(&c, &local);
+                push_children(&c, &mut stack);
+            } else {
+                unwrap_raw(&c, &mut stack);
+            }
+            continue;
+        }
+        if c.has_attr(MARK_ATTR) {
+            c.remove_attr(MARK_ATTR);
+        }
+        push_children(&c, &mut stack);
     }
 }
 
@@ -268,6 +315,13 @@ fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) -> bool {
         unwrap_raw(n, stack);
         return false;
     }
+    filter_attrs(n, &local);
+    push_children(n, stack);
+    true
+}
+
+/// Applies the raw-HTML attribute allowlist of element `local` to `n`.
+fn filter_attrs(n: &NodeRef<'_>, local: &str) {
     n.update(|t| {
         let Some(el) = t.as_element_mut() else { return };
         el.attrs.retain_mut(|a| {
@@ -275,7 +329,7 @@ fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) -> bool {
             if !a.name.ns.is_empty() {
                 return false;
             }
-            if !GENERIC.contains(&name) && !extra_allowed(&local, name) {
+            if !GENERIC.contains(&name) && !extra_allowed(local, name) {
                 return false;
             }
             match name {
@@ -300,8 +354,6 @@ fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) -> bool {
             true
         });
     });
-    push_children(n, stack);
-    true
 }
 
 /// Unwraps a disallowed raw element (content kept). Text left directly inside table
@@ -415,6 +467,103 @@ mod tests {
         assert_eq!(
             dom::root(&doc).inner_html().to_string(),
             r#"<div class="markdown-alert"><svg class="octicon"><path d="m"></path></svg><span>x</span></div>"#
+        );
+    }
+
+    /// GH-SEC-1: an unterminated raw start tag absorbs the next generated start tag (and its
+    /// marker) as attributes; a marker that is not the first attribute is not trusted.
+    #[test]
+    fn absorbed_marker_is_not_trusted() {
+        let ctx = Ctx::for_tests(false);
+        let doc = Document::fragment(format!(
+            "<details open ontoggle=\"x\"\n<p{} dir=\"auto\">para</p>",
+            ctx.mark
+        ));
+        run(&doc, &ctx);
+        assert_eq!(
+            dom::root(&doc).inner_html().to_string(),
+            r#"<details open="" dir="auto">para<p></p></details>"#
+        );
+        for (tag, out) in [
+            (
+                "div onclick=\"x\" style=\"s\"",
+                r#"<div dir="auto">para<p></p></div>"#,
+            ),
+            ("base href=\"https://e.com/\"", "para<p></p>"),
+            ("form action=\"https://e.com/\"", "para<p></p>"),
+            (
+                "link rel=\"stylesheet\" href=\"https://e.com/s.css\"",
+                "para<p></p>",
+            ),
+            ("input type=\"text\"", "para<p></p>"),
+        ] {
+            let doc = Document::fragment(format!("<{tag}\n<p{} dir=\"auto\">para</p>", ctx.mark));
+            run(&doc, &ctx);
+            assert_eq!(dom::root(&doc).inner_html().to_string(), out, "{tag}");
+        }
+        // The same holds for an absorbed trusted-subtree marker.
+        let doc = Document::fragment(format!(
+            "<div onclick=\"x\"\n<div{} class=\"highlight\"><pre>c</pre></div>",
+            ctx.mark_tree
+        ));
+        run(&doc, &ctx);
+        assert_eq!(
+            dom::root(&doc).inner_html().to_string(),
+            "<div><pre>c</pre></div>"
+        );
+    }
+
+    /// GH-SEC-2: the parser clones an unclosed raw formatting element into a generated
+    /// trusted subtree (code block); the clone is filtered like raw HTML.
+    #[test]
+    fn cloned_formatting_elements_in_trusted_subtrees_are_filtered() {
+        let ctx = Ctx::for_tests(true);
+        for (tag, kept) in [
+            ("a", true),
+            ("b", true),
+            ("big", false),
+            ("code", true),
+            ("em", true),
+            ("font", false),
+            ("i", true),
+            ("nobr", false),
+            ("s", true),
+            ("small", false),
+            ("strike", true),
+            ("strong", true),
+            ("tt", true),
+            ("u", false),
+        ] {
+            let html = format!(
+                "<table>\n<p{m}>x <{tag} onclick=\"x\" style=\"s\" href=\"javascript:x\">y</p>\n<div{mt} class=\"c\"><pre class=\"notranslate\"><code{m} class=\"notranslate\">code\n</code></pre></div>\n",
+                m = ctx.mark,
+                mt = ctx.mark_tree
+            );
+            let doc = Document::fragment(html);
+            run(&doc, &ctx);
+            let out = dom::root(&doc).inner_html().to_string();
+            let pre = if kept {
+                format!(
+                    "<pre class=\"notranslate\"><{tag}><code class=\"notranslate\">code\n</code></{tag}></pre>"
+                )
+            } else {
+                "<pre class=\"notranslate\"><code class=\"notranslate\">code\n</code></pre>"
+                    .to_owned()
+            };
+            assert!(out.contains(&pre), "{tag}: {out}");
+            for bad in ["onclick", "style", "javascript", MARK_ATTR] {
+                assert!(!out.contains(bad), "{tag}: {out}");
+            }
+        }
+        // Generated elements of a trusted subtree keep their attributes.
+        let doc = Document::fragment(format!(
+            "<div{} class=\"highlight\"><pre><span class=\"pl-k\">fn</span></pre></div>",
+            ctx.mark_tree
+        ));
+        run(&doc, &ctx);
+        assert_eq!(
+            dom::root(&doc).inner_html().to_string(),
+            r#"<div class="highlight"><pre><span class="pl-k">fn</span></pre></div>"#
         );
     }
 
