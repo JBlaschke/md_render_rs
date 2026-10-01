@@ -27,6 +27,7 @@ pub struct Response {
     pub final_url: String,
     /// `Content-Type` header, if any.
     pub content_type: Option<String>,
+    /// The body, with any `Content-Encoding` already decoded.
     pub body: Vec<u8>,
 }
 

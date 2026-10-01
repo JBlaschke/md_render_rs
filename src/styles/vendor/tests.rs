@@ -591,8 +591,10 @@ fn existing_manifest_policies() {
         Manifest::default()
     );
 
-    let mut newer = Manifest::default();
-    newer.schema = SCHEMA + 1;
+    let newer = Manifest {
+        schema: SCHEMA + 1,
+        ..Manifest::default()
+    };
     fs.write_file(MANIFEST_PATH, serde_json::to_vec(&newer).expect("json"))
         .expect("write");
     let e = existing_manifest(&mut fs, out, &progress).expect_err("newer");

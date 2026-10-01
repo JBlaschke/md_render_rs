@@ -51,14 +51,20 @@ const WORKERS: usize = 6;
 /// Options of one vendoring run.
 #[derive(Clone, Debug)]
 pub struct VendorOptions {
+    /// Flavors to (re-)vendor; duplicates are ignored. Flavors not listed keep whatever the
+    /// existing bundle has for them.
     pub flavors: Vec<Flavor>,
+    /// The bundle file (created with its parent directories, updated in place otherwise).
     pub output: PathBuf,
+    /// Page scraped for GitHub's `<link rel=stylesheet>` tags (any repository page).
     pub github_source: String,
+    /// Page scraped for GitLab's stylesheets (any project or blob page; self-hosted works).
     pub gitlab_source: String,
     /// Vendor all 14 GitHub themes instead of light + dark.
     pub all_github_themes: bool,
-    /// Also vendor client libraries (MathJax / KaTeX / mermaid) and emoji images.
+    /// Also vendor client libraries (MathJax / KaTeX / mermaid) and GitHub's custom emoji.
     pub libs: bool,
+    /// No progress lines on stderr.
     pub quiet: bool,
 }
 
@@ -80,6 +86,7 @@ impl Default for VendorOptions {
 /// Summary of a vendoring run.
 #[derive(Clone, Debug, Default)]
 pub struct VendorReport {
+    /// The bundle file that was written.
     pub output: PathBuf,
     /// Files written for the vendored flavors (stylesheets + assets).
     pub files: usize,
@@ -328,6 +335,9 @@ fn vendor_flavor(
     Ok(run.finish(fetched_at, final_url))
 }
 
+/// A stylesheet role, optionally with a theme id.
+type RoleSpec = (&'static str, Option<&'static str>);
+
 /// Fail when a stylesheet md-render cannot do without is missing; warn about optional ones.
 fn check_roles(
     flavor: Flavor,
@@ -336,7 +346,7 @@ fn check_roles(
     links: usize,
     progress: &Progress,
 ) -> anyhow::Result<()> {
-    let (required, optional): (&[(&str, Option<&str>)], &[(&str, Option<&str>)]) = match flavor {
+    let (required, optional): (&[RoleSpec], &[RoleSpec]) = match flavor {
         Flavor::Github => (
             &[
                 (role::THEME, Some("light")),
@@ -361,7 +371,7 @@ fn check_roles(
             ],
         ),
     };
-    let describe = |(r, t): &(&str, Option<&str>)| match t {
+    let describe = |(r, t): &RoleSpec| match t {
         Some(t) => format!("{r} ({t})"),
         None => (*r).to_owned(),
     };

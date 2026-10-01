@@ -532,7 +532,7 @@ fn vendors_github_through_real_http() {
     let m = bundle.manifest();
     assert_eq!(m.schema, md_render::styles::manifest::SCHEMA);
     assert_eq!(m.tool, md_render::TOOL);
-    assert!(m.flavors.get(&Flavor::Gitlab).is_none());
+    assert!(!m.flavors.contains_key(&Flavor::Gitlab));
     let gh = bundle.flavor(Flavor::Github).expect("github");
     assert!(!gh.fallback);
     assert_eq!(
