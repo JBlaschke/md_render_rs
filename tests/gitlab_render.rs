@@ -372,6 +372,31 @@ fn wiki_link_images() {
     );
 }
 
+/// GL-LINK-1: links to Unicode hosts get GitLab's homograph tooltip with the punycode URL.
+#[test]
+fn idn_links_get_the_punycode_tooltip() {
+    let mut o = opts();
+    o.sourcepos = false;
+    let html = render(
+        "[x](https://ёлка.рф/path) https://ёлка.рф/auto [y](https://example.рф/) \
+         [p](https://XN--80atc1g.xn--p1ai/)\n",
+        &o,
+    )
+    .html;
+    for title in [
+        "https://xn--80atc1g.xn--p1ai/path",
+        "https://xn--80atc1g.xn--p1ai/auto",
+        "https://xn--80atc1g.xn--p1ai/",
+    ] {
+        assert!(
+            html.contains(&format!("class=\"has-tooltip\" title=\"{title}\"")),
+            "{title}: {html}"
+        );
+    }
+    assert_eq!(html.matches("has-tooltip").count(), 3, "{html}");
+    assert!(!html.contains("example.xn--p1ai"), "{html}");
+}
+
 /// Fastest of three renders.
 fn best_of_3(md: &str) -> Duration {
     let o = opts();

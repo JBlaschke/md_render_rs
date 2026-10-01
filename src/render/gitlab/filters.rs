@@ -855,10 +855,23 @@ fn hostname(host: &str) -> String {
         .to_owned()
 }
 
-/// `normalized_host.start_with?('xn--')`.
+/// `normalized_host.start_with?('xn--')`. Addressable's `normalized_host` strips, downcases,
+/// percent-decodes and IDNA-encodes the host; comrak percent-encodes non-ASCII hrefs, so the
+/// raw host of `[x](https://ёлка.рф/)` is `%D1%91...` and has to be decoded first.
+/// `url::Host::parse` does both steps (one percent-decoding pass, then UTS #46 with
+/// lower-casing). Where it refuses a host that Addressable would still encode, every
+/// non-ASCII label becomes `xn--...` there (`IDNA.to_ascii` does not validate).
 fn is_idn_host(host: &str) -> bool {
-    let first = host.split('.').next().unwrap_or("");
-    !first.is_ascii() || host.to_ascii_lowercase().starts_with("xn--")
+    let host = dom::ruby_strip(host);
+    let normalized = match url::Host::parse(host) {
+        Ok(url::Host::Domain(d)) => d,
+        Ok(_) => return false, // IP addresses
+        Err(_) => percent_encoding::percent_decode_str(host)
+            .decode_utf8_lossy()
+            .to_lowercase(),
+    };
+    let first = normalized.split('.').next().unwrap_or("");
+    !first.is_ascii() || normalized.starts_with("xn--")
 }
 
 /// Ruby `URI.parse(s).to_s` (RFC 3986 parser): `None` when Ruby raises `URI::InvalidURIError`.
@@ -1384,6 +1397,38 @@ mod tests {
             run("<a href=\"https://e.com/%E2%80%AE\">a\u{202E}b</a>"),
             "<a href=\"https://e.com/%E2%80%AE\" class=\"has-tooltip\" title=\"https://e.com/%E2%80%AE\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">a%E2%80%AEb</a>"
         );
+        // GL-LINK-1: percent-encoded Unicode hosts (as comrak writes them) are IDNs too.
+        assert_eq!(
+            run("<a href=\"https://%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84/path\">x</a>"),
+            "<a href=\"https://%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84/path\" class=\"has-tooltip\" \
+             title=\"https://xn--80atc1g.xn--p1ai/path\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+    }
+
+    /// GL-LINK-1: Addressable `normalized_host.start_with?('xn--')` (cases checked against
+    /// Addressable 2.8.7).
+    #[test]
+    fn idn_hosts() {
+        for (host, idn) in [
+            ("%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84", true),
+            ("example.%D1%80%D1%84", false),
+            ("XN--80atc1g.xn--p1ai", true),
+            ("xn--80atc1g.xn--p1ai", true),
+            ("m%C3%BCller.de", true),
+            ("%F0%9F%98%80.example", true),
+            ("xn--zz.com", true),
+            // Full-width letters normalise to ASCII.
+            (
+                "%EF%BD%85%EF%BD%98%EF%BD%81%EF%BD%8D%EF%BD%90%EF%BD%8C%EF%BD%85.com",
+                false,
+            ),
+            ("ex%41mple.com", false),
+            ("example.com", false),
+            ("127.0.0.1", false),
+            ("", false),
+        ] {
+            assert_eq!(is_idn_host(host), idn, "{host}");
+        }
     }
 
     #[test]
