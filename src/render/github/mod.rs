@@ -276,6 +276,79 @@ mod tests {
         assert_eq!(normalize("\u{feff}x"), "x");
     }
 
+    /// GH-FN-1: duplicate footnote definitions collapse to the first, like cmark-gfm.
+    #[test]
+    fn duplicate_footnote_definitions_collapse() {
+        // Same label: the first definition wins, the duplicate is dropped and the body text
+        // between them stays in the body, before the footnotes section.
+        let r = render(
+            "A[^a].\n\n[^a]: one\n\n[^a]: dup\n\nAfter.\n",
+            &opts(Mode::Comment),
+        );
+        assert_eq!(
+            r.html.matches(r#"<li id="user-content-fn-a-"#).count(),
+            1,
+            "{}",
+            r.html
+        );
+        assert!(r.html.contains(">one "), "{}", r.html);
+        assert!(!r.html.contains("dup"), "{}", r.html);
+        let after = r.html.find("After.").expect("body text kept");
+        let section = r.html.find("<section").expect("footnotes section");
+        assert!(after < section, "body before footnotes: {}", r.html);
+        assert!(
+            r.html.contains(r#"aria-label="Back to reference 1""#),
+            "{}",
+            r.html
+        );
+
+        // Case variants fold together (cmark-gfm case-folds labels): the first spelling wins
+        // the id, its body is kept, and `[^b]` is still reference 2.
+        let r = render(
+            "X[^a] Y[^A] Z[^b].\n\n[^a]: one\n\n[^A]: two\n\n[^b]: bee\n",
+            &opts(Mode::Comment),
+        );
+        assert_eq!(
+            r.html.matches(r#"<li id="user-content-fn-a-"#).count(),
+            1,
+            "{}",
+            r.html
+        );
+        assert!(
+            !r.html.contains("user-content-fn-A-") && !r.html.contains("two"),
+            "{}",
+            r.html
+        );
+        assert!(
+            r.html.contains(r#"<li id="user-content-fn-b-"#),
+            "{}",
+            r.html
+        );
+        assert!(
+            r.html.contains(r#"aria-label="Back to reference 2""#),
+            "{}",
+            r.html
+        );
+
+        // A footnote that is never referenced produces no section at all.
+        let r = render("[^a]: one\n\n[^a]: dup\n\nAfter.\n", &opts(Mode::Comment));
+        assert!(!r.html.contains("<section"), "{}", r.html);
+        assert!(r.html.contains("After."), "{}", r.html);
+
+        // Readme mode behaves the same (the pass runs on the AST).
+        let r = render(
+            "A[^a].\n\n[^a]: one\n\n[^a]: dup\n\nAfter.\n",
+            &opts(Mode::Readme),
+        );
+        assert_eq!(
+            r.html.matches(r#"<li id="user-content-fn-a-"#).count(),
+            1,
+            "{}",
+            r.html
+        );
+        assert!(!r.html.contains("dup"), "{}", r.html);
+    }
+
     /// Asserts that the DOM of `html` carries nothing dangerous that only raw HTML could have
     /// put there.
     fn assert_clean(input: &str, html: &str) {
