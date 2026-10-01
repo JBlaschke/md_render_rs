@@ -140,7 +140,8 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
 
     let doc = Document::fragment(html);
     let root = doc.html_root();
-    filters::run(&root, &filters::FilterContext::default());
+    let mut warnings = included.warnings;
+    warnings.extend(filters::run(&root, &filters::FilterContext::default()));
     postjs::apply(&root);
     postjs::add_keys(&root);
     if !opts.sourcepos {
@@ -159,7 +160,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         html: root.inner_html().to_string(),
         title: title.filter(|t| !t.is_empty()),
         features,
-        warnings: included.warnings,
+        warnings,
     }
 }
 

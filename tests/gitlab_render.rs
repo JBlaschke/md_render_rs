@@ -110,6 +110,19 @@ fn rendered_contract() {
 }
 
 #[test]
+fn too_many_links_abort_like_gitlab() {
+    let r = gl(&"[a](b) ".repeat(10_001));
+    assert!(
+        r.html.starts_with("<p>Timeout while sanitizing links"),
+        "{}",
+        &r.html[..80]
+    );
+    assert_eq!(r.warnings.len(), 1);
+    let ok = gl(&"[a](b) ".repeat(100));
+    assert!(ok.warnings.is_empty());
+}
+
+#[test]
 fn sourcepos_toggle() {
     let md = "# A\n\n- [x] done\n\n```js\nx\n```\n";
     let with = gl(md).html;

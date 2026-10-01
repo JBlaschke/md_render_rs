@@ -31,8 +31,9 @@ impl Default for FilterContext {
     }
 }
 
-/// Runs the GitLab filter chain on the parsed fragment `root` (GL §2 rows 4-34).
-pub(super) fn run(root: &NodeRef<'_>, ctx: &FilterContext) {
+/// Runs the GitLab filter chain on the parsed fragment `root` (GL §2 rows 4-34). Returns
+/// warnings for the in-page banner.
+pub(super) fn run(root: &NodeRef<'_>, ctx: &FilterContext) -> Vec<String> {
     code_language(root);
     // JsonTableFilter and PlantumlFilter: optional, not implemented (GL §2, §6.10, §7).
     spaced_link::spaced_links(root, &super::render_snippet);
@@ -47,7 +48,10 @@ pub(super) fn run(root: &NodeRef<'_>, ctx: &FilterContext) {
             "<p>Timeout while sanitizing links - rendering aborted. Please reduce the number of \
              links if possible.</p>",
         );
-        return;
+        return vec![
+            "more than 10000 links: rendering aborted, as GitLab's SanitizeLinkFilter does"
+                .to_owned(),
+        ];
     }
     wiki_links(root);
     attributes(root);
@@ -65,6 +69,7 @@ pub(super) fn run(root: &NodeRef<'_>, ctx: &FilterContext) {
     task_list(root);
     set_direction(root);
     highlight::syntax_highlight(root);
+    Vec::new()
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1411,6 +1416,20 @@ mod tests {
                 set_direction
             ),
             "<p dir=\"auto\">a</p><div><p>b</p></div><ul class=\"section-nav\"></ul><ul dir=\"auto\"></ul><hr>"
+        );
+    }
+
+    #[test]
+    fn wiki_link_classes() {
+        assert_eq!(
+            apply(
+                "<a href=\"Page\" data-wikilink=\"true\">P</a><a href=\"https://e.com\" data-wikilink=\"true\">E</a>\
+                 <a href=\"_TOC_\" data-wikilink=\"true\">_TOC_</a><a href=\"x\">plain</a>",
+                wiki_links
+            ),
+            "<a href=\"Page\" data-wikilink=\"true\" class=\"gfm gfm-gollum-wiki-page\">P</a>\
+             <a href=\"https://e.com\" data-wikilink=\"true\" class=\"gfm\">E</a>\
+             <a href=\"_TOC_\" data-wikilink=\"true\">_TOC_</a><a href=\"x\">plain</a>"
         );
     }
 }
