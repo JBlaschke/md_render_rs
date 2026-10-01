@@ -2,3 +2,4 @@
 /.dev
 *.swp
 .DS_Store
+/.claude/
