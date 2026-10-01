@@ -32,12 +32,21 @@ fn github_variants() {
         };
         let t = run(&tuning);
         let h = run(&heldout);
-        println!("{}", github_table(&format!("== GitHub {variant:?}: tuning set"), &t.scores));
-        println!("{}", github_table(&format!("== GitHub {variant:?}: held-out set"), &h.scores));
+        println!(
+            "{}",
+            github_table(&format!("== GitHub {variant:?}: tuning set"), &t.scores)
+        );
+        println!(
+            "{}",
+            github_table(&format!("== GitHub {variant:?}: held-out set"), &h.scores)
+        );
         for (lang, ours, theirs) in t.scope_mismatches.iter().chain(&h.scope_mismatches) {
             println!("scope mismatch: {lang:?} -> ours {ours:?}, GitHub {theirs}");
         }
-        println!("unmatched blocks: tuning {:?}, held-out {:?}\n", t.unmatched, h.unmatched);
+        println!(
+            "unmatched blocks: tuning {:?}, held-out {:?}\n",
+            t.unmatched, h.unmatched
+        );
     }
 }
 
@@ -65,8 +74,13 @@ fn gitlab_baseline_port_reproduces_scope_map_py() {
         };
         let mut ours = Vec::new();
         for line in dump.lines() {
-            let Some((stack, text)) = line.split_once('\t') else { continue };
-            let stack: Vec<Scope> = stack.split(' ').filter_map(|s| Scope::new(s).ok()).collect();
+            let Some((stack, text)) = line.split_once('\t') else {
+                continue;
+            };
+            let stack: Vec<Scope> = stack
+                .split(' ')
+                .filter_map(|s| Scope::new(s).ok())
+                .collect();
             let class = scheme.classify(&stack).unwrap_or("");
             for _ in ruby_unescape(text).chars() {
                 ours.push(class.to_owned());
@@ -96,15 +110,21 @@ fn gitlab_baseline_port_reproduces_scope_map_py() {
 /// block of that class (differing lines are marked).
 #[test]
 fn github_dump() {
-    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP")) else { return };
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP")) else {
+        return;
+    };
     let mut files: Vec<String> = GITHUB_TUNING.iter().map(|s| s.to_string()).collect();
     files.extend(github_heldout(&dir));
     for block in github_blocks_in(&dir, &files) {
         if block.class != want {
             continue;
         }
-        let (Some(lang), Some(code)) = (&block.lang, &block.code) else { continue };
-        let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else {
+            continue;
+        };
+        let ours = pl::highlight_with(code, lang, pl::DEFAULT_VARIANT)
+            .html
+            .unwrap_or_default();
         println!("=== {} ({lang})", block.class);
         for (a, b) in block.html.split('\n').zip(ours.split('\n')) {
             if a == b {
@@ -120,40 +140,48 @@ fn github_dump() {
 /// that class whose class path differs from GitHub's, the token, both paths and the scopes.
 #[test]
 fn github_scopes() {
-    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_SCOPES")) else { return };
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_SCOPES")) else {
+        return;
+    };
     let mut files: Vec<String> = GITHUB_TUNING.iter().map(|s| s.to_string()).collect();
     files.extend(github_heldout(&dir));
     for block in github_blocks_in(&dir, &files) {
         if block.class != want {
             continue;
         }
-        let (Some(lang), Some(code)) = (&block.lang, &block.code) else { continue };
-        let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else {
+            continue;
+        };
+        let ours = pl::highlight_with(code, lang, pl::DEFAULT_VARIANT)
+            .html
+            .unwrap_or_default();
         let theirs = class_paths(&block.html);
         let mine = class_paths(&ours);
-        let Some(pl::Grammar::Syntect(syntax)) = pl::linguist::find(lang)
-            .and_then(|l| pl::grammar(l.tm_scope.as_deref()?, &l.name))
+        let Some(pl::Grammar::Syntect(syntax)) =
+            pl::linguist::find(lang).and_then(|l| pl::grammar(l.tm_scope.as_deref()?, &l.name))
         else {
             continue;
         };
         println!("=== {} ({lang}) syntax {}", block.class, syntax.name);
         let mut pos = 0usize; // in chars
-        let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
-            if let super::engine::Event::Text(t) = e {
-                let n = t.chars().count();
-                let differs = (pos..pos + n).any(|i| match (theirs.get(i), mine.get(i)) {
-                    (Some(a), Some(b)) => !a.0.is_whitespace() && a.1 != b.1,
-                    _ => false,
-                });
-                if differs && !t.trim().is_empty() {
-                    let g = theirs.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
-                    let o = mine.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
-                    let scopes: Vec<String> = stack.iter().skip(1).map(|s| s.build_string()).collect();
-                    println!("TOK\t{t:?}\tG={g}\tO={o}\tS={}", scopes.join(" "));
+        let _ =
+            super::engine::tokenize(code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
+                if let super::engine::Event::Text(t) = e {
+                    let n = t.chars().count();
+                    let differs = (pos..pos + n).any(|i| match (theirs.get(i), mine.get(i)) {
+                        (Some(a), Some(b)) => !a.0.is_whitespace() && a.1 != b.1,
+                        _ => false,
+                    });
+                    if differs && !t.trim().is_empty() {
+                        let g = theirs.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
+                        let o = mine.get(pos).map(|x| x.1.join(">")).unwrap_or_default();
+                        let scopes: Vec<String> =
+                            stack.iter().skip(1).map(|s| s.build_string()).collect();
+                        println!("TOK\t{t:?}\tG={g}\tO={o}\tS={}", scopes.join(" "));
+                    }
+                    pos += n;
                 }
-                pos += n;
-            }
-        });
+            });
     }
 }
 
@@ -162,7 +190,9 @@ fn github_scopes() {
 /// token, both classes and the scopes, as `TOK` lines.
 #[test]
 fn gitlab_dump() {
-    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP_GL")) else { return };
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP_GL")) else {
+        return;
+    };
     let base = dir.join("gitlab/rouge_samples");
     let mut samples: Vec<(String, String, String)> = Vec::new();
     if let (Ok(code), Ok(tsv)) = (
@@ -172,34 +202,43 @@ fn gitlab_dump() {
         samples.push((want.clone(), code, tsv));
     }
     if let Some(d) = std::env::var_os("MDR_ROUGE_HELDOUT") {
-        samples.extend(rouge_dir_samples(std::path::Path::new(&d)).into_iter().filter(|s| s.0 == want));
+        samples.extend(
+            rouge_dir_samples(std::path::Path::new(&d))
+                .into_iter()
+                .filter(|s| s.0 == want),
+        );
     }
     for (lang, code, tsv) in samples {
         let rouge = rouge_char_classes(&tsv);
-        let ours = our_char_classes(&rouge::highlight_with(&code, &lang, rouge::DEFAULT_VARIANT).lines);
+        let ours =
+            our_char_classes(&rouge::highlight_with(&code, &lang, rouge::DEFAULT_VARIANT).lines);
         let tag = rouge::registry::resolve(&lang).tag().to_owned();
-        let Some(syntax) = rouge::select_syntax(&tag, &lang) else { continue };
+        let Some(syntax) = rouge::select_syntax(&tag, &lang) else {
+            continue;
+        };
         println!("=== {lang} ({tag}) syntax {}", syntax.name);
         let mut pos = 0usize;
         let code = code.replace("\r\n", "\n");
-        let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
-            if let super::engine::Event::Text(t) = e {
-                let n = t.chars().count();
-                let chars: Vec<char> = t.chars().collect();
-                let differs = (0..n).any(|k| {
-                    !chars[k].is_whitespace() && rouge.get(pos + k) != ours.get(pos + k)
-                });
-                let all = std::env::var_os("MDR_HL_DUMP_ALL").is_some();
-                if differs || (all && !t.trim().is_empty()) {
-                    let k = (0..n).find(|&k| !chars[k].is_whitespace()).unwrap_or(0);
-                    let r = rouge.get(pos + k).cloned().unwrap_or_default();
-                    let o = ours.get(pos + k).cloned().unwrap_or_default();
-                    let scopes: Vec<String> = stack.iter().skip(1).map(|s| s.build_string()).collect();
-                    println!("TOK\t{t:?}\tG={r}\tO={o}\tS={}", scopes.join(" "));
+        let _ =
+            super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
+                if let super::engine::Event::Text(t) = e {
+                    let n = t.chars().count();
+                    let chars: Vec<char> = t.chars().collect();
+                    let differs = (0..n).any(|k| {
+                        !chars[k].is_whitespace() && rouge.get(pos + k) != ours.get(pos + k)
+                    });
+                    let all = std::env::var_os("MDR_HL_DUMP_ALL").is_some();
+                    if differs || (all && !t.trim().is_empty()) {
+                        let k = (0..n).find(|&k| !chars[k].is_whitespace()).unwrap_or(0);
+                        let r = rouge.get(pos + k).cloned().unwrap_or_default();
+                        let o = ours.get(pos + k).cloned().unwrap_or_default();
+                        let scopes: Vec<String> =
+                            stack.iter().skip(1).map(|s| s.build_string()).collect();
+                        println!("TOK\t{t:?}\tG={r}\tO={o}\tS={}", scopes.join(" "));
+                    }
+                    pos += n;
                 }
-                pos += n;
-            }
-        });
+            });
     }
 }
 
@@ -228,7 +267,10 @@ fn overhead() {
     let gl = time(&|| {
         std::hint::black_box(rouge::highlight_with(&code, "rust", rouge::DEFAULT_VARIANT));
     });
-    println!("{} bytes: syntect {raw:?}, github {gh:?}, gitlab {gl:?}", code.len());
+    println!(
+        "{} bytes: syntect {raw:?}, github {gh:?}, gitlab {gl:?}",
+        code.len()
+    );
 }
 
 /// Review aid: `MDR_HL_TABLES=1` prints the syntax chosen for every Rouge tag and every Linguist
@@ -243,7 +285,9 @@ fn grammar_tables() {
         println!("ROUGE\t{tag}\t{}", s.unwrap_or_else(|| "-".into()));
     }
     for lang in pl::linguist::languages() {
-        let Some(scope) = lang.tm_scope.as_deref() else { continue };
+        let Some(scope) = lang.tm_scope.as_deref() else {
+            continue;
+        };
         let g = match pl::grammar(scope, &lang.name) {
             Some(pl::Grammar::Syntect(s)) => s.name.clone(),
             Some(other) => format!("{other:?}"),
@@ -265,10 +309,16 @@ fn gitlab_variants() {
     for variant in rouge::Variant::ALL {
         let highlight = |code: &str, lang: &str| rouge::highlight_with(code, lang, variant).lines;
         let (scores, conf) = evaluate_gitlab(&dir, highlight);
-        println!("{}", gitlab_table(&format!("== GitLab {variant:?}"), &scores, &conf));
+        println!(
+            "{}",
+            gitlab_table(&format!("== GitLab {variant:?}"), &scores, &conf)
+        );
         if !heldout.is_empty() {
             let (scores, conf) = evaluate_rouge_samples(heldout.iter().cloned(), highlight);
-            println!("{}", gitlab_table(&format!("== GitLab {variant:?} held-out"), &scores, &conf));
+            println!(
+                "{}",
+                gitlab_table(&format!("== GitLab {variant:?} held-out"), &scores, &conf)
+            );
         }
     }
 }

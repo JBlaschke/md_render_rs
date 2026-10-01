@@ -26,7 +26,6 @@ use super::classes::{Overlay, Scheme};
 use super::{SpanWriter, shell_syntax};
 use crate::render::highlight::engine::{self, Deadline, Limits, LineTokenizer};
 
-
 /// The prompt rule. TextMate matches it against the line *including* its terminator, so the
 /// `\s+` after the prompt character may consume the `\n` (a lone `$` is a prompt). Lines are
 /// matched here without the terminator; `with_newline` selects the variant that also accepts
@@ -41,7 +40,11 @@ fn prompt_regex(with_newline: bool) -> Option<&'static Regex> {
             Regex::new(&format!(r"{PREFIX}(\s+)(.*)$")).ok(),
         ]
     });
-    if with_newline { nl.as_ref() } else { last.as_ref() }
+    if with_newline {
+        nl.as_ref()
+    } else {
+        last.as_ref()
+    }
 }
 
 /// Render a shell session. Errors (limits, tokenizer failure) make the caller fall back to
@@ -74,7 +77,9 @@ pub(super) fn render(
                         w.pop_class();
                         pos = prefix.end();
                     }
-                    let command = caps.get(4).map_or(content.len()..content.len(), |m| m.range());
+                    let command = caps
+                        .get(4)
+                        .map_or(content.len()..content.len(), |m| m.range());
                     // Whitespace, prompt character and separator: no class.
                     w.text(&content[pos..command.start]);
                     let command = &content[command];
@@ -117,29 +122,46 @@ mod tests {
     use super::super::{DEFAULT_VARIANT, highlight_with};
 
     fn session(code: &str) -> String {
-        highlight_with(code, "console", DEFAULT_VARIANT).html.unwrap()
+        highlight_with(code, "console", DEFAULT_VARIANT)
+            .html
+            .unwrap()
     }
 
     #[test]
     fn prompts_and_output() {
         let html = session("$ ls -la\ntotal 0\n");
-        assert_eq!(html, "$ <span class=\"pl-s1\">ls -la</span>\n<span class=\"pl-c1\">total 0</span>");
+        assert_eq!(
+            html,
+            "$ <span class=\"pl-s1\">ls -la</span>\n<span class=\"pl-c1\">total 0</span>"
+        );
     }
 
     #[test]
     fn prompt_prefixes() {
         let html = session("user@host:~/dir$ ls /tmp\n[user@host dir]$ cat f\nsh-5.2$ x\n");
         let lines: Vec<&str> = html.split('\n').collect();
-        assert_eq!(lines[0], "<span class=\"pl-e\">user@host:~/dir</span>$ <span class=\"pl-s1\">ls /tmp</span>");
-        assert_eq!(lines[1], "<span class=\"pl-e\">[user@host dir]</span>$ <span class=\"pl-s1\">cat f</span>");
-        assert_eq!(lines[2], "<span class=\"pl-e\">sh-5.2</span>$ <span class=\"pl-s1\">x</span>");
+        assert_eq!(
+            lines[0],
+            "<span class=\"pl-e\">user@host:~/dir</span>$ <span class=\"pl-s1\">ls /tmp</span>"
+        );
+        assert_eq!(
+            lines[1],
+            "<span class=\"pl-e\">[user@host dir]</span>$ <span class=\"pl-s1\">cat f</span>"
+        );
+        assert_eq!(
+            lines[2],
+            "<span class=\"pl-e\">sh-5.2</span>$ <span class=\"pl-s1\">x</span>"
+        );
     }
 
     #[test]
     fn output_like_lines() {
         let html = session("(venv) $ pip install x\n  $ indented\n$no-space\nPS> Get-Item\n$\n");
         let lines: Vec<&str> = html.split('\n').collect();
-        assert_eq!(lines[0], "<span class=\"pl-c1\">(venv) $ pip install x</span>");
+        assert_eq!(
+            lines[0],
+            "<span class=\"pl-c1\">(venv) $ pip install x</span>"
+        );
         assert_eq!(lines[1], "<span class=\"pl-c1\">  $ indented</span>");
         assert_eq!(lines[2], "<span class=\"pl-c1\">$no-space</span>");
         assert_eq!(lines[3], "<span class=\"pl-c1\">PS&gt; Get-Item</span>");
@@ -150,7 +172,10 @@ mod tests {
     fn other_prompt_chars() {
         for p in ["#", "%", ">", "❯", "➜", "λ"] {
             let html = session(&format!("{p} x\n"));
-            assert_eq!(html, format!("{} <span class=\"pl-s1\">x</span>", p.replace('>', "&gt;")));
+            assert_eq!(
+                html,
+                format!("{} <span class=\"pl-s1\">x</span>", p.replace('>', "&gt;"))
+            );
         }
     }
 
@@ -158,7 +183,10 @@ mod tests {
     fn unterminated_string_ends_with_line() {
         let html = session("$ echo \"multi\nline\"\n");
         let lines: Vec<&str> = html.split('\n').collect();
-        assert_eq!(lines[0].matches("<span").count(), lines[0].matches("</span>").count());
+        assert_eq!(
+            lines[0].matches("<span").count(),
+            lines[0].matches("</span>").count()
+        );
         assert_eq!(lines[1], "<span class=\"pl-c1\">line\"</span>");
     }
 }

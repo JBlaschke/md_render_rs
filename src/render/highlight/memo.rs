@@ -30,7 +30,12 @@ struct Inner<V> {
 
 impl<V: Clone + Weigh> Memo<V> {
     pub(crate) fn new() -> Self {
-        Memo { inner: Mutex::new(Inner { map: HashMap::new(), bytes: 0 }) }
+        Memo {
+            inner: Mutex::new(Inner {
+                map: HashMap::new(),
+                bytes: 0,
+            }),
+        }
     }
 
     /// The memoized value for `(code, lang)`, computing it with `f` on a miss. `f` runs outside
@@ -60,7 +65,11 @@ impl<V: Clone + Weigh> Memo<V> {
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner).map.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .map
+            .len()
     }
 }
 

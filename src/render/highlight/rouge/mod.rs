@@ -68,7 +68,11 @@ pub(crate) fn select_syntax(tag: &str, user: &str) -> Option<&'static SyntaxRefe
     }
     engine::syntax_by_token(tag)
         .or_else(|| engine::syntax_by_token(user))
-        .or_else(|| registry::extensions(tag).iter().find_map(|e| engine::syntax_by_extension(e)))
+        .or_else(|| {
+            registry::extensions(tag)
+                .iter()
+                .find_map(|e| engine::syntax_by_extension(e))
+        })
         .filter(|s| s.scope.build_string() != "text.plain")
 }
 
@@ -123,7 +127,10 @@ pub(crate) fn classes_for_eval(variant: Variant) -> ForLang<'static> {
 pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> GitlabCode {
     let tag = registry::resolve(lang).tag().to_owned();
     let (code, segments) = segments_for(code, lang, variant);
-    GitlabCode { tag, lines: build_lines(&code, &segments) }
+    GitlabCode {
+        tag,
+        lines: build_lines(&code, &segments),
+    }
 }
 
 /// Tokenize with syntect and classify each text segment.
@@ -154,7 +161,9 @@ pub(crate) fn build_lines(code: &str, segments: &[Segment]) -> Vec<String> {
     let mut piece: Option<(Option<&'static str>, usize, usize)> = None;
     let mut line_has_text = false;
     for seg in segments {
-        let Some(text) = code.get(seg.range.clone()) else { continue };
+        let Some(text) = code.get(seg.range.clone()) else {
+            continue;
+        };
         let mut start = seg.range.start;
         for (i, part) in text.split('\n').enumerate() {
             if i > 0 {
@@ -188,7 +197,9 @@ pub(crate) fn build_lines(code: &str, segments: &[Segment]) -> Vec<String> {
 }
 
 fn flush(code: &str, piece: &mut Option<(Option<&'static str>, usize, usize)>, line: &mut String) {
-    let Some((class, start, end)) = piece.take() else { return };
+    let Some((class, start, end)) = piece.take() else {
+        return;
+    };
     let text = &code[start..end];
     match class {
         Some(class) => {
@@ -209,7 +220,10 @@ fn is_bidi_control(c: char) -> bool {
 
 /// Non-ASCII `\p{Space_Separator}` characters, which GitLab replaces with plain spaces.
 fn is_non_ascii_space(c: char) -> bool {
-    matches!(c, '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}')
+    matches!(
+        c,
+        '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
 }
 
 /// The tooltip GitLab puts on bidi control characters (`Gitlab::Unicode.bidi_warning`).
@@ -226,7 +240,9 @@ fn push_rouge_escaped(out: &mut String, text: &str) {
             '\r' => {}
             c if is_non_ascii_space(c) => out.push(' '),
             c if is_bidi_control(c) => {
-                out.push_str("<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"");
+                out.push_str(
+                    "<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"",
+                );
                 out.push_str(BIDI_WARNING);
                 out.push_str("\">");
                 out.push(c);
@@ -253,7 +269,10 @@ mod tests {
     fn line_building() {
         let code = "ab\ncd\n";
         let s = [seg(Some("k"), 0..1), seg(Some("k"), 1..4), seg(None, 4..6)];
-        assert_eq!(build_lines(code, &s), ["<span class=\"k\">ab</span>", "<span class=\"k\">c</span>d"]);
+        assert_eq!(
+            build_lines(code, &s),
+            ["<span class=\"k\">ab</span>", "<span class=\"k\">c</span>d"]
+        );
         assert!(build_lines("", &[]).is_empty());
         assert_eq!(build_lines("\n", &[seg(None, 0..1)]), [""]);
         assert_eq!(build_lines("a\n\n", &[seg(None, 0..3)]), ["a", ""]);
@@ -267,7 +286,10 @@ mod tests {
         assert_eq!(s, "a&lt;b&gt;&amp;\"c\"' ");
         let mut s = String::new();
         push_rouge_escaped(&mut s, "x\u{202E}y");
-        assert!(s.starts_with("x<span class=\"unicode-bidi has-tooltip\""), "{s}");
+        assert!(
+            s.starts_with("x<span class=\"unicode-bidi has-tooltip\""),
+            "{s}"
+        );
         assert!(s.ends_with("\u{202E}</span>y"), "{s}");
     }
 
@@ -306,10 +328,20 @@ mod tests {
     #[test]
     fn console_lines() {
         // R/rouge_samples/console.gitlab.html, lines 2, 3 and 5 (output), and the prompt.
-        let r = gl("$ cargo build --release\n   Compiling foo v0.1.0\n$ echo \"hi\"\nhi\n", "console");
+        let r = gl(
+            "$ cargo build --release\n   Compiling foo v0.1.0\n$ echo \"hi\"\nhi\n",
+            "console",
+        );
         assert_eq!(r.tag, "console");
-        assert!(r.lines[0].starts_with("<span class=\"gp\">$</span><span class=\"w\"> </span>"), "{}", r.lines[0]);
-        assert_eq!(r.lines[1], "<span class=\"go\">   Compiling foo v0.1.0</span>");
+        assert!(
+            r.lines[0].starts_with("<span class=\"gp\">$</span><span class=\"w\"> </span>"),
+            "{}",
+            r.lines[0]
+        );
+        assert_eq!(
+            r.lines[1],
+            "<span class=\"go\">   Compiling foo v0.1.0</span>"
+        );
         assert_eq!(r.lines[3], "<span class=\"go\">hi</span>");
     }
 
@@ -318,7 +350,11 @@ mod tests {
         let r = gl("fn main() { let x = \"s\"; } // c\n", "rs");
         assert_eq!(r.tag, "rust");
         assert_eq!(r.lines.len(), 1);
-        assert!(r.lines[0].contains("<span class=\"c1\">// c</span>"), "{}", r.lines[0]);
+        assert!(
+            r.lines[0].contains("<span class=\"c1\">// c</span>"),
+            "{}",
+            r.lines[0]
+        );
         assert!(r.lines[0].contains("\"s\"</span>"), "{}", r.lines[0]);
     }
 }

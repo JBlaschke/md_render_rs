@@ -26,19 +26,31 @@ fn github_agreement() {
             (r.scope, r.html)
         })
     };
-    let tuning = run(&GITHUB_TUNING.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let tuning = run(&GITHUB_TUNING
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>());
     let heldout = run(&github_heldout(&dir));
     println!("{}", github_table("GitHub tuning set", &tuning.scores));
     println!("{}", github_table("GitHub held-out set", &heldout.scores));
     // Every info word resolves to GitHub's highlight-<scope> class.
     for e in [&tuning, &heldout] {
         assert!(e.scope_mismatches.is_empty(), "{:?}", e.scope_mismatches);
-        assert!(e.scores.values().all(|s| s.text_mismatch == 0), "recovered text differs");
+        assert!(
+            e.scores.values().all(|s| s.text_mismatch == 0),
+            "recovered text differs"
+        );
     }
     let (t, h) = (total(&tuning.scores), total(&heldout.scores));
     // Measured 2026-10-01: tuning 90.1% path / 93.3% color, held-out 91.8% / 92.2%.
-    assert!(t.path_pct() >= 88.0 && t.color_pct() >= 91.0, "tuning: {t:?}");
-    assert!(h.path_pct() >= 88.0 && h.color_pct() >= 90.0, "held-out: {h:?}");
+    assert!(
+        t.path_pct() >= 88.0 && t.color_pct() >= 91.0,
+        "tuning: {t:?}"
+    );
+    assert!(
+        h.path_pct() >= 88.0 && h.color_pct() >= 90.0,
+        "held-out: {h:?}"
+    );
 }
 
 #[test]
@@ -48,7 +60,10 @@ fn gitlab_agreement_beats_scope_map_baseline() {
         return;
     };
     let (scores, confusions) = evaluate_gitlab(&dir, |code, lang| gitlab(code, lang).lines);
-    println!("{}", gitlab_table("GitLab vs Rouge 5.1.0", &scores, &confusions));
+    println!(
+        "{}",
+        gitlab_table("GitLab vs Rouge 5.1.0", &scores, &confusions)
+    );
     assert_eq!(scores.len(), 36, "all Rouge samples evaluated");
     let t = gitlab_total(&scores);
     // The Python prototype's baseline (MAPPING_EVAL.txt).

@@ -33,9 +33,12 @@ pub(crate) struct Language {
     pub extensions: Vec<String>,
 }
 
+/// One row of the data file: name, `tm_scope` (`null` = none), aliases, extensions.
+type Row = (String, Option<String>, Vec<String>, Vec<String>);
+
 #[derive(Deserialize)]
 struct Data {
-    languages: Vec<(String, Option<String>, Vec<String>, Vec<String>)>,
+    languages: Vec<Row>,
 }
 
 struct Table {
@@ -53,15 +56,18 @@ fn table() -> &'static Table {
     TABLE.get_or_init(|| {
         // The data file is embedded at compile time and covered by unit tests; an unparsable
         // file degrades to "no language known" instead of panicking.
-        let data: Data =
-            serde_json::from_str(DATA).unwrap_or_else(|_| Data { languages: Vec::new() });
+        let data: Data = serde_json::from_str(DATA).unwrap_or_else(|_| Data {
+            languages: Vec::new(),
+        });
         let mut index = HashMap::new();
         let mut by_extension = HashMap::new();
         let mut languages = Vec::with_capacity(data.languages.len());
         for (i, (name, tm_scope, aliases, extensions)) in data.languages.into_iter().enumerate() {
             let lower = name.to_lowercase();
-            let default_alias: String =
-                lower.chars().map(|c| if c.is_whitespace() { '-' } else { c }).collect();
+            let default_alias: String = lower
+                .chars()
+                .map(|c| if c.is_whitespace() { '-' } else { c })
+                .collect();
             index.entry(lower).or_insert(i);
             index.entry(default_alias).or_insert(i);
             for alias in &aliases {
@@ -70,9 +76,18 @@ fn table() -> &'static Table {
             for ext in &extensions {
                 by_extension.entry(ext.to_lowercase()).or_insert(i);
             }
-            languages.push(Language { name, tm_scope, aliases, extensions });
+            languages.push(Language {
+                name,
+                tm_scope,
+                aliases,
+                extensions,
+            });
         }
-        Table { languages, index, by_extension }
+        Table {
+            languages,
+            index,
+            by_extension,
+        }
     })
 }
 
@@ -80,7 +95,9 @@ fn table() -> &'static Table {
 /// first).
 fn extensions(name: &str) -> impl Iterator<Item = &str> {
     // Every '.' after the first character of the name starts one candidate.
-    name.char_indices().filter(|&(i, c)| c == '.' && i > 0).map(move |(i, _)| &name[i..])
+    name.char_indices()
+        .filter(|&(i, c)| c == '.' && i > 0)
+        .map(move |(i, _)| &name[i..])
 }
 
 /// Find the Linguist language for an info-string word (case-insensitive). `None` when nothing
@@ -184,7 +201,14 @@ mod tests {
         // tm_scope: none → known language, no highlighting.
         assert_eq!(name("text"), Some("Text"));
         assert_eq!(scope("text"), None);
-        for w in ["shell-session", "docker", "plaintext", "GNUmakefile", "Gemfile", ".bashrc"] {
+        for w in [
+            "shell-session",
+            "docker",
+            "plaintext",
+            "GNUmakefile",
+            "Gemfile",
+            ".bashrc",
+        ] {
             assert_eq!(scope(w), None, "{w}");
         }
         for w in ["", "{.python}", "no-such-language", ",", "."] {

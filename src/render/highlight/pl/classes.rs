@@ -18,6 +18,12 @@ use crate::render::highlight::rules::{Precedence, RuleSet};
 /// prefix that would have produced one).
 pub(crate) type Class = Option<&'static str>;
 
+/// A table of `(selector, class)` rules.
+type Table = &'static [(&'static str, Class)];
+
+/// A table of text-conditioned `(selector, condition, class)` rules.
+type TextTable = &'static [(&'static str, TextIs, &'static str)];
+
 /// The PrettyLights map (GH §7.5), verbatim and in file order.
 pub(crate) const PRETTYLIGHTS_MAP: &[(&str, &str)] = &[
     ("comment", "pl-c"),
@@ -148,7 +154,10 @@ const MARKDOWN: &[(&str, Class)] = &[
     ("markup.underline.link", Some("pl-corl")),
     ("meta.link.inline.description", None),
     ("constant.other.reference.link", Some("pl-en")),
-    ("meta.link.reference.def.footnote entity.name.reference.link", Some("pl-s")),
+    (
+        "meta.link.reference.def.footnote entity.name.reference.link",
+        Some("pl-s"),
+    ),
     ("string.other.link.description.title", Some("pl-s")),
     ("string.other.link punctuation.definition.string", None),
     ("meta.link.reference.literal.footnote-id", Some("pl-en")),
@@ -189,15 +198,30 @@ const SHELL: &[(&str, Class)] = &[
     ("variable.parameter.option", None),
     ("string.unquoted", None),
     ("meta.group.expansion.parameter", Some("pl-smi")),
-    ("meta.group.expansion.parameter variable.other.readwrite", None),
+    (
+        "meta.group.expansion.parameter variable.other.readwrite",
+        None,
+    ),
     ("variable.other.readwrite.assignment", None),
     ("keyword.operator.assignment", None),
-    ("meta.group.expansion keyword.operator.assignment", Some("pl-k")),
-    ("constant.numeric.integer.decimal.file-descriptor", Some("pl-k")),
+    (
+        "meta.group.expansion keyword.operator.assignment",
+        Some("pl-k"),
+    ),
+    (
+        "constant.numeric.integer.decimal.file-descriptor",
+        Some("pl-k"),
+    ),
     ("support.function.double-brace", None),
     ("meta.group.expansion.command", Some("pl-s")),
-    ("meta.group.expansion.command punctuation.definition.variable", Some("pl-pds")),
-    ("meta.group.expansion.command punctuation.section.parens", Some("pl-pds")),
+    (
+        "meta.group.expansion.command punctuation.definition.variable",
+        Some("pl-pds"),
+    ),
+    (
+        "meta.group.expansion.command punctuation.section.parens",
+        Some("pl-pds"),
+    ),
 ];
 
 /// Shared approximation of github.com's tree-sitter highlighting (GH §7.7: comments and strings
@@ -239,7 +263,10 @@ const PYTHON: &[(&str, Class)] = &[
     ("support.type", Some("pl-smi")),
     ("support.variable.magic", Some("pl-s1")),
     ("support.function.magic", None),
-    ("meta.function.parameters.annotation meta.generic-name", Some("pl-smi")),
+    (
+        "meta.function.parameters.annotation meta.generic-name",
+        Some("pl-smi"),
+    ),
     ("punctuation.separator.annotation.return", Some("pl-c1")),
     ("storage.type keyword.declaration", None),
     ("storage.type.string", Some("pl-s")),
@@ -251,7 +278,10 @@ const PYTHON: &[(&str, Class)] = &[
     ("variable.annotation", None),
     ("entity.name.class", Some("pl-v")),
     ("entity.other.inherited-class", Some("pl-v")),
-    ("meta.expression.generator keyword.control.loop.for.in", Some("pl-c1")),
+    (
+        "meta.expression.generator keyword.control.loop.for.in",
+        Some("pl-c1"),
+    ),
     ("source.regexp", None),
 ];
 
@@ -376,8 +406,14 @@ const GO: &[(&str, Class)] = &[
 const CSS: &[(&str, Class)] = &[
     ("punctuation", None),
     ("punctuation.separator.key-value", Some("pl-kos")),
-    ("entity.other.attribute-name.id punctuation.definition.entity", Some("pl-kos")),
-    ("entity.other.pseudo-class punctuation.definition.entity", Some("pl-kos")),
+    (
+        "entity.other.attribute-name.id punctuation.definition.entity",
+        Some("pl-kos"),
+    ),
+    (
+        "entity.other.pseudo-class punctuation.definition.entity",
+        Some("pl-kos"),
+    ),
     ("meta.property-name", None),
     ("support.type.property-name", Some("pl-c1")),
     ("keyword.other.unit", Some("pl-smi")),
@@ -389,7 +425,10 @@ const CSS: &[(&str, Class)] = &[
     ("punctuation.definition.entity", None),
     ("punctuation.separator.combinator", Some("pl-c1")),
     ("constant.other.color", Some("pl-pds")),
-    ("constant.other.color punctuation.definition.constant", Some("pl-kos")),
+    (
+        "constant.other.color punctuation.definition.constant",
+        Some("pl-kos"),
+    ),
     ("support.type.custom-property", Some("pl-s1")),
     ("support.type.custom-property punctuation", None),
     ("support.type.custom-property.name", None),
@@ -404,7 +443,10 @@ const HTML: &[(&str, Class)] = &[
     ("entity.other.attribute-name", Some("pl-c1")),
     ("meta.tag.sgml.doctype", Some("pl-c1")),
     ("meta.tag.sgml.doctype keyword", None),
-    ("meta.tag.sgml.doctype punctuation.definition.tag.begin", None),
+    (
+        "meta.tag.sgml.doctype punctuation.definition.tag.begin",
+        None,
+    ),
     ("constant.character.entity", None),
     ("source", None),
 ];
@@ -523,7 +565,10 @@ const LATEX: &[(&str, Class)] = &[
 /// XML (TextMate): CDATA sections are strings with `pl-pds` delimiters.
 const XML: &[(&str, Class)] = &[
     ("meta.tag.sgml.cdata", Some("pl-s")),
-    ("meta.tag.sgml.cdata punctuation.definition.tag", Some("pl-pds")),
+    (
+        "meta.tag.sgml.cdata punctuation.definition.tag",
+        Some("pl-pds"),
+    ),
     ("meta.tag.sgml.cdata keyword", Some("pl-pds")),
 ];
 
@@ -616,12 +661,18 @@ const RUBY: &[(&str, Class)] = &[
     ("variable.other.readwrite.instance", Some("pl-c1")),
     ("variable.other.readwrite.class", Some("pl-c1")),
     ("variable.other.readwrite.global", None),
-    ("variable.other.readwrite punctuation.definition.variable", None),
+    (
+        "variable.other.readwrite punctuation.definition.variable",
+        None,
+    ),
     ("variable.language", Some("pl-smi")),
     ("meta.interpolation", Some("pl-s1")),
     ("source.ruby.embedded", None),
     ("string.regexp keyword.other", None),
-    ("string.quoted.other.literal punctuation.definition.string", Some("pl-kos")),
+    (
+        "string.quoted.other.literal punctuation.definition.string",
+        Some("pl-kos"),
+    ),
     ("meta.block.parameters punctuation", None),
 ];
 
@@ -655,12 +706,16 @@ use TextIs::{Capitalized, OneOf};
 /// Text-conditioned classes per Linguist `tm_scope` ([`Variant::Hybrid`]): when a scope whose
 /// class is not `None` matches the selector and its first text satisfies the condition, the
 /// class given here is used instead.
-const BY_TEXT: &[(&str, &[(&str, TextIs, &str)])] = &[
+const BY_TEXT: &[(&str, TextTable)] = &[
     (
         "source.python",
         &[
             ("meta.generic-name", Capitalized, "pl-v"),
-            ("meta.function.parameters.annotation meta.generic-name", Capitalized, "pl-smi"),
+            (
+                "meta.function.parameters.annotation meta.generic-name",
+                Capitalized,
+                "pl-smi",
+            ),
             ("variable.function", Capitalized, "pl-en"),
         ],
     ),
@@ -668,8 +723,22 @@ const BY_TEXT: &[(&str, &[(&str, TextIs, &str)])] = &[
     ("source.ts", JS_BY_TEXT),
     ("source.tsx", JS_BY_TEXT),
     ("source.rust", RUST_BY_TEXT),
-    ("source.sql", &[("constant.language", OneOf(&["NULL", "null", "Null"]), "pl-k")]),
-    ("source.java", &[("storage.type", OneOf(&["class", "interface", "enum", "record"]), "pl-k")]),
+    (
+        "source.sql",
+        &[(
+            "constant.language",
+            OneOf(&["NULL", "null", "Null"]),
+            "pl-k",
+        )],
+    ),
+    (
+        "source.java",
+        &[(
+            "storage.type",
+            OneOf(&["class", "interface", "enum", "record"]),
+            "pl-k",
+        )],
+    ),
 ];
 
 /// tree-sitter-javascript: `((identifier) @constructor (#match? @constructor "^[A-Z]"))`.
@@ -682,8 +751,32 @@ const JS_BY_TEXT: &[(&str, TextIs, &str)] = &[
 /// Sublime's Rust scopes keywords like `let` and primitive types alike (`storage.type`), and
 /// constructors like `Some` like std types (`support.type`).
 const RUST_BY_TEXT: &[(&str, TextIs, &str)] = &[
-    ("storage.type", OneOf(&["let", "const", "static", "fn", "struct", "enum", "trait", "impl", "type", "mod", "union", "macro_rules!", "extern", "crate", "dyn"]), "pl-k"),
-    ("support.type", OneOf(&["Some", "None", "Ok", "Err"]), "pl-v"),
+    (
+        "storage.type",
+        OneOf(&[
+            "let",
+            "const",
+            "static",
+            "fn",
+            "struct",
+            "enum",
+            "trait",
+            "impl",
+            "type",
+            "mod",
+            "union",
+            "macro_rules!",
+            "extern",
+            "crate",
+            "dyn",
+        ]),
+        "pl-k",
+    ),
+    (
+        "support.type",
+        OneOf(&["Some", "None", "Ok", "Err"]),
+        "pl-v",
+    ),
     ("keyword.operator", OneOf(&["as"]), "pl-k"),
 ];
 
@@ -691,7 +784,7 @@ const RUST_BY_TEXT: &[(&str, TextIs, &str)] = &[
 /// rule tables, earlier tables winning ties. For languages github.com highlights with
 /// tree-sitter (GH §7.7) they approximate the tree-sitter capture → class mapping; for TextMate
 /// languages they bridge grammar differences.
-const OVERLAYS: &[(&str, &[&[(&str, Class)]])] = &[
+const OVERLAYS: &[(&str, &[Table])] = &[
     ("text.md", &[MARKDOWN]),
     ("source.json", &[JSON]),
     ("source.json.comments", &[JSON]),
@@ -790,10 +883,19 @@ impl Scheme {
                 .chain(ABSORB.iter().map(|(l, _)| *l))
                 .chain(BY_TEXT.iter().map(|(l, _)| *l));
             for lang in langs {
-                let tables = OVERLAYS.iter().filter(|(l, _)| *l == lang).flat_map(|(_, t)| *t);
+                let tables = OVERLAYS
+                    .iter()
+                    .filter(|(l, _)| *l == lang)
+                    .flat_map(|(_, t)| *t);
                 let rules = tables.flat_map(|t| t.iter().copied());
-                let absorb = ABSORB.iter().filter(|(l, _)| *l == lang).flat_map(|(_, s)| *s);
-                let by_text = BY_TEXT.iter().filter(|(l, _)| *l == lang).flat_map(|(_, t)| *t);
+                let absorb = ABSORB
+                    .iter()
+                    .filter(|(l, _)| *l == lang)
+                    .flat_map(|(_, s)| *s);
+                let by_text = BY_TEXT
+                    .iter()
+                    .filter(|(l, _)| *l == lang)
+                    .flat_map(|(_, t)| *t);
                 overlays.entry(lang).or_insert_with(|| Overlay {
                     rules: RuleSet::new(Precedence::LongestFirst, rules),
                     absorb: RuleSet::new(Precedence::LongestFirst, absorb.map(|s| (*s, ()))),
@@ -835,7 +937,11 @@ impl Scheme {
     ) -> (Class, Option<(TextIs, &'static str)>) {
         let class = match overlay.and_then(|o| o.rules.lookup_after(scope, parents, previous)) {
             Some(class) => *class,
-            None => self.base.lookup_after(scope, parents, previous).copied().flatten(),
+            None => self
+                .base
+                .lookup_after(scope, parents, previous)
+                .copied()
+                .flatten(),
         };
         let by_text = match class {
             Some(_) => overlay.and_then(|o| o.by_text.lookup_after(scope, parents, previous)),
@@ -872,7 +978,11 @@ mod tests {
     #[test]
     fn all_selectors_compile() {
         for v in Variant::ALL {
-            assert!(Scheme::get(v).rejected().is_empty(), "{v:?}: {:?}", Scheme::get(v).rejected());
+            assert!(
+                Scheme::get(v).rejected().is_empty(),
+                "{v:?}: {:?}",
+                Scheme::get(v).rejected()
+            );
         }
         assert_eq!(PRETTYLIGHTS_MAP.len(), 75);
     }
@@ -886,7 +996,10 @@ mod tests {
         assert_eq!(c("entity.name.tag.html"), Some("pl-ent"));
         assert_eq!(c("entity.other.attribute-name.html"), Some("pl-e"));
         assert_eq!(c("string.quoted.double.rust"), Some("pl-s"));
-        assert_eq!(c("punctuation.definition.string.begin.rust"), Some("pl-pds"));
+        assert_eq!(
+            c("punctuation.definition.string.begin.rust"),
+            Some("pl-pds")
+        );
         assert_eq!(c("constant.character.escape.rust"), Some("pl-cce"));
         assert_eq!(c("storage.type.java"), Some("pl-smi"));
         assert_eq!(c("storage.type.function.rust"), Some("pl-k"));

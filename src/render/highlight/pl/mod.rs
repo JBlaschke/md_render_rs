@@ -16,8 +16,8 @@ use syntect::parsing::{Scope, SyntaxReference};
 use super::GithubCode;
 use super::engine::{self, Event, Limits};
 
-pub(crate) use classes::{DEFAULT_VARIANT, Variant};
 use classes::{Class, Overlay, Scheme, TextIs};
+pub(crate) use classes::{DEFAULT_VARIANT, Variant};
 
 /// How a Linguist language is tokenized.
 #[derive(Clone, Copy, Debug)]
@@ -101,7 +101,10 @@ pub(crate) fn grammar(tm_scope: &str, language_name: &str) -> Option<Grammar> {
         _ => {}
     }
     let lookup = |table: &[(&str, &'static str)]| {
-        table.iter().find(|(from, _)| *from == tm_scope).and_then(|(_, to)| engine::syntax_by_scope(to))
+        table
+            .iter()
+            .find(|(from, _)| *from == tm_scope)
+            .and_then(|(_, to)| engine::syntax_by_scope(to))
     };
     lookup(SCOPE_OVERRIDES)
         .or_else(|| engine::syntax_by_scope(tm_scope))
@@ -114,8 +117,7 @@ pub(crate) fn grammar(tm_scope: &str, language_name: &str) -> Option<Grammar> {
 /// match: matching the name against file extensions, or using aliases/extensions, picks
 /// unrelated grammars far too often (Prolog → Perl, `cls` → TeX, ...).
 fn name_fallback(language_name: &str) -> Option<&'static SyntaxReference> {
-    engine::syntax_by_token(language_name)
-        .filter(|s| s.name.eq_ignore_ascii_case(language_name))
+    engine::syntax_by_token(language_name).filter(|s| s.name.eq_ignore_ascii_case(language_name))
 }
 
 /// The shell syntax used for shell-session commands.
@@ -161,7 +163,10 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
     // Tokenizer failure (limits, parse error, internal panic): same wrapper, no token spans.
     let mut html = html.unwrap_or_else(|_| escape_text(code));
     trim_trailing_newlines(&mut html, tm_scope);
-    GithubCode { scope, html: Some(html) }
+    GithubCode {
+        scope,
+        html: Some(html),
+    }
 }
 
 /// Linguist scopes github.com highlights with tree-sitter (GH §7.7, confirmed by output shape:
@@ -271,11 +276,15 @@ impl<'s> SpanWriter<'s> {
         match event {
             Event::Push(scope) => {
                 let entry = if self.entries.len() == self.root_depth {
-                    Entry { class: None, by_text: None }
+                    Entry {
+                        class: None,
+                        by_text: None,
+                    }
                 } else {
                     let parents = stack.get(..stack.len().saturating_sub(1)).unwrap_or(&[]);
                     let (class, by_text) =
-                        self.scheme.classify(self.overlay, scope, parents, self.previous);
+                        self.scheme
+                            .classify(self.overlay, scope, parents, self.previous);
                     if class.is_some() && Scheme::absorbs(self.overlay, scope, parents) {
                         self.absorb_parent();
                     }
@@ -305,7 +314,10 @@ impl<'s> SpanWriter<'s> {
     }
 
     pub(crate) fn push_class(&mut self, class: Class) {
-        self.push_entry(Entry { class, by_text: None });
+        self.push_entry(Entry {
+            class,
+            by_text: None,
+        });
     }
 
     fn push_entry(&mut self, entry: Entry) {
@@ -389,7 +401,9 @@ fn render(
     overlay: Option<&Overlay>,
 ) -> Result<String, engine::Error> {
     let mut writer = SpanWriter::new(scheme, overlay, code.len() * 2);
-    engine::tokenize(code, syntax, Limits::DEFAULT, |event, stack| writer.event(event, stack))?;
+    engine::tokenize(code, syntax, Limits::DEFAULT, |event, stack| {
+        writer.event(event, stack)
+    })?;
     Ok(writer.finish())
 }
 
@@ -423,7 +437,11 @@ mod tests {
         assert_eq!(r.scope.as_deref(), Some("source.c"));
         let html = r.html.unwrap();
         for line in html.split('\n') {
-            assert_eq!(line.matches("<span").count(), line.matches("</span>").count(), "{line}");
+            assert_eq!(
+                line.matches("<span").count(),
+                line.matches("</span>").count(),
+                "{line}"
+            );
         }
         assert!(html.starts_with("<span class=\"pl-c\">"), "{html}");
         assert!(html.contains("\n<span class=\"pl-c\">b "), "{html}");
@@ -437,7 +455,10 @@ mod tests {
         let html = r.html.unwrap();
         assert!(html.contains("&lt;&amp;&gt;'"), "{html}");
         assert!(html.contains('"'), "quotes stay literal: {html}");
-        assert_eq!(escape_text("<a href=\"x\">&</a>"), "&lt;a href=\"x\"&gt;&amp;&lt;/a&gt;");
+        assert_eq!(
+            escape_text("<a href=\"x\">&</a>"),
+            "&lt;a href=\"x\"&gt;&amp;&lt;/a&gt;"
+        );
     }
 
     #[test]
@@ -458,7 +479,10 @@ mod tests {
         assert_eq!(name("source.rust", "Rust").as_deref(), Some("Rust"));
         assert_eq!(name("text.md", "Markdown").as_deref(), Some("Markdown"));
         assert_eq!(name("source.kotlin", "Kotlin").as_deref(), Some("Kotlin"));
-        assert_eq!(name("text.shell-session", "ShellSession").as_deref(), Some("<session>"));
+        assert_eq!(
+            name("text.shell-session", "ShellSession").as_deref(),
+            Some("<session>")
+        );
         assert_eq!(name("source.powershell", "PowerShell"), None);
         assert_eq!(name("source.prolog", "Prolog"), None);
         assert!(shell_syntax().is_some());

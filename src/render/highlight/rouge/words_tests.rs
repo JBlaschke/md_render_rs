@@ -53,7 +53,11 @@ fn rust_words() {
     let code = "let v = Vec::new(); map.insert(x);";
     let segs = vec![seg(Some("kt"), 0..3), seg(None, 3..code.len())];
     let out = RUST.refine(code, segs);
-    let class_at = |i: usize| out.iter().find(|s| s.range.start == i).and_then(|s| s.class);
+    let class_at = |i: usize| {
+        out.iter()
+            .find(|s| s.range.start == i)
+            .and_then(|s| s.class)
+    };
     assert_eq!(class_at(0), Some("k"), "let");
     assert_eq!(class_at(4), Some("n"), "v");
     assert_eq!(class_at(8), Some("nn"), "Vec");
@@ -71,20 +75,31 @@ fn protected_and_boundaries() {
     let out = RUST.refine(code, segs);
     assert_eq!(out[0], seg(Some("s2"), 0..5), "strings are not re-read");
     assert!(out.contains(&seg(Some("n"), 9..12)), "{out:?}");
-    assert!(!out.iter().any(|s| s.range == (7..8)), "no identifier inside 1x: {out:?}");
+    assert!(
+        !out.iter().any(|s| s.range == (7..8)),
+        "no identifier inside 1x: {out:?}"
+    );
 }
 
 #[test]
 fn python_after_dot() {
     let code = "self.get(x).y len(True) print";
     let out = PYTHON.refine(code, vec![seg(None, 0..code.len())]);
-    let class_at = |i: usize| out.iter().find(|s| s.range.start == i).and_then(|s| s.class);
+    let class_at = |i: usize| {
+        out.iter()
+            .find(|s| s.range.start == i)
+            .and_then(|s| s.class)
+    };
     assert_eq!(class_at(0), Some("n"), "self");
     assert_eq!(class_at(5), Some("nf"), "get");
     assert_eq!(class_at(12), Some("n"), "y");
     assert_eq!(class_at(14), Some("nb"), "len");
     assert_eq!(class_at(18), Some("bp"), "True");
-    assert_eq!(class_at(24), Some("k"), "print is a (Python 2) keyword in Rouge");
+    assert_eq!(
+        class_at(24),
+        Some("k"),
+        "print is a (Python 2) keyword in Rouge"
+    );
 }
 
 #[test]
@@ -92,5 +107,8 @@ fn shell_builtins() {
     let code = "ls -la; ls-files";
     let out = SHELL.refine(code, vec![seg(None, 0..code.len())]);
     assert_eq!(out[0], seg(Some("nb"), 0..2));
-    assert!(out.contains(&seg(None, 8..10)), "a builtin followed by '-' is text: {out:?}");
+    assert!(
+        out.contains(&seg(None, 8..10)),
+        "a builtin followed by '-' is text: {out:?}"
+    );
 }

@@ -68,7 +68,9 @@ fn github_lookup() {
 #[test]
 fn github_grammar_presence() {
     // Known scope with a grammar: highlighted HTML.
-    for lang in ["rust", "python", "js", "console", "diff", "md", "json", "yaml", "toml", "html"] {
+    for lang in [
+        "rust", "python", "js", "console", "diff", "md", "json", "yaml", "toml", "html",
+    ] {
         assert!(github("x\n", lang).html.is_some(), "{lang}");
     }
     // Known scope without a two-face grammar: wrapper only (html None).
@@ -154,7 +156,10 @@ fn github_lookup_matches_github_probe() {
             wrong.push(format!("{lang}: ours {ours:?}, GitHub {want:?}"));
         }
     }
-    println!("Linguist lookup: {}/{total} probes agree", total - wrong.len());
+    println!(
+        "Linguist lookup: {}/{total} probes agree",
+        total - wrong.len()
+    );
     assert!(total > 150, "probe file parsed: {total}");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }

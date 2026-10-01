@@ -47,8 +47,9 @@ pub struct GithubCode {
 ///   fails, it is the escaped code without spans.
 pub fn github(code: &str, lang: &str) -> GithubCode {
     static MEMO: OnceLock<Memo<GithubCode>> = OnceLock::new();
-    MEMO.get_or_init(Memo::new)
-        .get_or(code, lang, || pl::highlight_with(code, lang, pl::DEFAULT_VARIANT))
+    MEMO.get_or_init(Memo::new).get_or(code, lang, || {
+        pl::highlight_with(code, lang, pl::DEFAULT_VARIANT)
+    })
 }
 
 impl Weigh for GithubCode {
@@ -90,8 +91,9 @@ pub struct GitlabCode {
 /// extra line and empty code has no lines (GL §6.8).
 pub fn gitlab(code: &str, lang: &str) -> GitlabCode {
     static MEMO: OnceLock<Memo<GitlabCode>> = OnceLock::new();
-    MEMO.get_or_init(Memo::new)
-        .get_or(code, lang, || rouge::highlight_with(code, lang, rouge::DEFAULT_VARIANT))
+    MEMO.get_or_init(Memo::new).get_or(code, lang, || {
+        rouge::highlight_with(code, lang, rouge::DEFAULT_VARIANT)
+    })
 }
 
 /// Minimal HTML text escaping (`&`, `<`, `>`, `"`).
@@ -115,7 +117,10 @@ mod tests {
 
     #[test]
     fn escape_helper() {
-        assert_eq!(escape("<a href=\"x\">&'</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;'&lt;/a&gt;");
+        assert_eq!(
+            escape("<a href=\"x\">&'</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&amp;'&lt;/a&gt;"
+        );
     }
 
     #[test]

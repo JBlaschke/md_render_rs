@@ -86,10 +86,14 @@ impl Limits {
         max_bytes: 256 * 1024,
         max_line_bytes: 4 * 1024,
         max_lines: 10_000,
-        max_run_cost: 1 << 22,
+        max_run_cost: 1 << 20,
         // The first use of a grammar includes compiling its regexes (TypeScript: ~60 ms in
         // release, seconds in unoptimized builds), hence the larger budget for debug builds.
-        max_time: Some(Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 3 })),
+        max_time: Some(Duration::from_secs(if cfg!(debug_assertions) {
+            30
+        } else {
+            3
+        })),
     };
 
     /// Whether `code` is small enough to be tokenized (the deterministic limits).
@@ -192,7 +196,11 @@ pub(crate) struct LineTokenizer {
 
 impl LineTokenizer {
     pub(crate) fn new(syntax: &'static SyntaxReference) -> Self {
-        LineTokenizer { syntax, state: ParseState::new(syntax), stack: ScopeStack::new() }
+        LineTokenizer {
+            syntax,
+            state: ParseState::new(syntax),
+            stack: ScopeStack::new(),
+        }
     }
 
     /// Forget all state (as if freshly created). Scopes still on the stack are *not* reported as
@@ -291,7 +299,10 @@ mod tests {
         assert!(syntax_by_scope("not a scope at all").is_none());
         assert!(syntax_by_token("").is_none());
         assert_eq!(syntax_by_token("rs").map(|s| s.name.as_str()), Some("Rust"));
-        assert_eq!(syntax_by_extension("py").map(|s| s.name.as_str()), Some("Python"));
+        assert_eq!(
+            syntax_by_extension("py").map(|s| s.name.as_str()),
+            Some("Python")
+        );
     }
 
     #[test]
@@ -335,16 +346,27 @@ mod tests {
     #[test]
     fn limits_reject_oversized_input() {
         let long = "x".repeat(Limits::DEFAULT.max_line_bytes + 1);
-        assert_eq!(tokenize(&long, rust(), Limits::DEFAULT, |_, _| {}), Err(Error));
+        assert_eq!(
+            tokenize(&long, rust(), Limits::DEFAULT, |_, _| {}),
+            Err(Error)
+        );
         let many = "x\n".repeat(Limits::DEFAULT.max_lines + 1);
-        assert_eq!(tokenize(&many, rust(), Limits::DEFAULT, |_, _| {}), Err(Error));
+        assert_eq!(
+            tokenize(&many, rust(), Limits::DEFAULT, |_, _| {}),
+            Err(Error)
+        );
         assert!(Limits::DEFAULT.admits(""));
         // 100 lines of 600 spaces: 36M run cost (10 s for SCSS without the budget).
         let spaces = (" ".repeat(600) + "x\n").repeat(100);
         assert!(!Limits::DEFAULT.admits(&spaces));
-        // Ordinary code is far below the budget.
+        // Ordinary code (~167 per 54-byte line) stays well below the budget: 2000 lines (108 KB)
+        // cost ~1/3 of it.
         let code = "    let value = compute(items.iter().map(|x| x * 2));\n".repeat(2000);
-        assert!(run_cost(&code) < Limits::DEFAULT.max_run_cost / 8, "{}", run_cost(&code));
+        assert!(
+            run_cost(&code) < Limits::DEFAULT.max_run_cost / 2,
+            "{}",
+            run_cost(&code)
+        );
         assert!(Limits::DEFAULT.admits(&code));
     }
 
@@ -358,11 +380,28 @@ mod tests {
 
     #[test]
     fn deadline_expires() {
-        let limits = Limits { max_time: Some(Duration::ZERO), ..Limits::DEFAULT };
+        let limits = Limits {
+            max_time: Some(Duration::ZERO),
+            ..Limits::DEFAULT
+        };
         assert_eq!(Deadline::start(&limits).check(), Err(Error));
-        let limits = Limits { max_time: None, ..Limits::DEFAULT };
+        let limits = Limits {
+            max_time: None,
+            ..Limits::DEFAULT
+        };
         assert_eq!(Deadline::start(&limits).check(), Ok(()));
-        assert_eq!(tokenize("x\n", rust(), Limits { max_time: Some(Duration::ZERO), ..Limits::DEFAULT }, |_, _| {}), Err(Error));
+        assert_eq!(
+            tokenize(
+                "x\n",
+                rust(),
+                Limits {
+                    max_time: Some(Duration::ZERO),
+                    ..Limits::DEFAULT
+                },
+                |_, _| {}
+            ),
+            Err(Error)
+        );
     }
 
     #[test]

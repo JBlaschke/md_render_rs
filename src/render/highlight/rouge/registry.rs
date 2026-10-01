@@ -76,8 +76,10 @@ fn data() -> &'static Data {
     DATA_CELL.get_or_init(|| {
         // Embedded at compile time and covered by unit tests; an unparsable file degrades to
         // "every language is plaintext" instead of panicking.
-        serde_json::from_str(DATA)
-            .unwrap_or_else(|_| Data { registry: HashMap::new(), lexers: HashMap::new() })
+        serde_json::from_str(DATA).unwrap_or_else(|_| Data {
+            registry: HashMap::new(),
+            lexers: HashMap::new(),
+        })
     })
 }
 
@@ -187,7 +189,16 @@ mod tests {
 
     #[test]
     fn unknown_case_sensitive_and_options() {
-        for lang in ["", "txt", "gql", "ps1", "rst", "Python", "RUST", "console?comments=true"] {
+        for lang in [
+            "",
+            "txt",
+            "gql",
+            "ps1",
+            "rst",
+            "Python",
+            "RUST",
+            "console?comments=true",
+        ] {
             assert_eq!(tag(lang), "plaintext", "{lang}");
         }
         assert_eq!(resolve("python"), Resolved::Rouge("python"));

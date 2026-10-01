@@ -45,7 +45,9 @@ pub const GITHUB_TUNING: &[&str] = &["github/api_gfm.html", "github/probes/langs
 pub fn github_heldout(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for sub in ["github/ctx", "github/pages", "github/comments"] {
-        let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir.join(sub)) else {
+            continue;
+        };
         let mut names: Vec<String> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -273,7 +275,11 @@ impl Score {
     }
 
     fn pct(n: usize, d: usize) -> f64 {
-        if d == 0 { 100.0 } else { 100.0 * n as f64 / d as f64 }
+        if d == 0 {
+            100.0
+        } else {
+            100.0 * n as f64 / d as f64
+        }
     }
 
     pub fn path_pct(&self) -> f64 {
@@ -340,14 +346,20 @@ pub fn evaluate_github(
         };
         let (scope, html) = highlight(code, lang);
         if scope.as_ref().map(|s| s.replace('.', "-")).as_deref() != Some(block.class.as_str()) {
-            eval.scope_mismatches.push((lang.clone(), scope, block.class.clone()));
+            eval.scope_mismatches
+                .push((lang.clone(), scope, block.class.clone()));
         }
         // No grammar: plain escaped code (as `highlight::github_plain`).
         let ours = html.unwrap_or_else(|| {
             let code = code.strip_suffix('\n').unwrap_or(code);
-            code.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+            code.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
         });
-        eval.scores.entry(block.class.clone()).or_default().add(score_github(&block.html, &ours));
+        eval.scores
+            .entry(block.class.clone())
+            .or_default()
+            .add(score_github(&block.html, &ours));
     }
     eval
 }
@@ -363,7 +375,10 @@ pub fn total(scores: &BTreeMap<String, Score>) -> Score {
 
 /// Render a per-language table.
 pub fn github_table(title: &str, scores: &BTreeMap<String, Score>) -> String {
-    let mut s = format!("{title}\n{:<28} {:>6} {:>7} {:>7} {:>7}\n", "highlight-", "chars", "path%", "inner%", "color%");
+    let mut s = format!(
+        "{title}\n{:<28} {:>6} {:>7} {:>7} {:>7}\n",
+        "highlight-", "chars", "path%", "inner%", "color%"
+    );
     for (lang, sc) in scores {
         s += &format!(
             "{lang:<28} {:>6} {:>7.1} {:>7.1} {:>7.1}{}\n",
@@ -371,7 +386,11 @@ pub fn github_table(title: &str, scores: &BTreeMap<String, Score>) -> String {
             sc.path_pct(),
             sc.inner_pct(),
             sc.color_pct(),
-            if sc.text_mismatch > 0 { "  TEXT MISMATCH" } else { "" }
+            if sc.text_mismatch > 0 {
+                "  TEXT MISMATCH"
+            } else {
+                ""
+            }
         );
     }
     let t = total(scores);
@@ -401,7 +420,10 @@ pub fn github_table(title: &str, scores: &BTreeMap<String, Score>) -> String {
 
 /// Decode a Ruby `String#inspect` literal (as written by `rouge_gitlab.rb --tokens`).
 pub fn ruby_unescape(lit: &str) -> String {
-    let inner = lit.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(lit);
+    let inner = lit
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(lit);
     let mut out = String::new();
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -440,7 +462,11 @@ pub fn rouge_char_classes(tsv: &str) -> Vec<String> {
         else {
             continue;
         };
-        let class = if short == "(text)" || short == "w" { "" } else { short };
+        let class = if short == "(text)" || short == "w" {
+            ""
+        } else {
+            short
+        };
         for _ in ruby_unescape(val).chars() {
             out.push(class.to_owned());
         }
@@ -456,7 +482,11 @@ pub fn our_char_classes(lines: &[String]) -> Vec<String> {
             out.push(String::new());
         }
         for (_, path) in class_paths(line) {
-            let class = path.iter().rev().find(|c| !c.starts_with("unicode-bidi")).cloned();
+            let class = path
+                .iter()
+                .rev()
+                .find(|c| !c.starts_with("unicode-bidi"))
+                .cloned();
             out.push(class.unwrap_or_default());
         }
     }
@@ -469,7 +499,12 @@ pub fn rouge_sample_langs(dir: &Path) -> Vec<String> {
     let mut langs: Vec<String> = std::fs::read_dir(dir.join("gitlab/rouge_samples"))
         .map(|rd| {
             rd.filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".tokens.tsv").map(str::to_owned))
+                .filter_map(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .strip_suffix(".tokens.tsv")
+                        .map(str::to_owned)
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -503,7 +538,11 @@ impl RougeScore {
 
 /// `scope_map.py`'s comparison: non-whitespace characters of `code`, up to the shorter of the
 /// two class sequences.
-pub fn score_rouge(code: &str, ours: &[String], rouge: &[String]) -> (RougeScore, Vec<(String, String)>) {
+pub fn score_rouge(
+    code: &str,
+    ours: &[String],
+    rouge: &[String],
+) -> (RougeScore, Vec<(String, String)>) {
     let code: Vec<char> = code.chars().collect();
     let n = ours.len().min(rouge.len());
     let mut s = RougeScore::default();
@@ -529,7 +568,10 @@ pub fn score_rouge(code: &str, ours: &[String], rouge: &[String]) -> (RougeScore
 pub fn evaluate_gitlab(
     dir: &Path,
     highlight: impl Fn(&str, &str) -> Vec<String>,
-) -> (BTreeMap<String, RougeScore>, BTreeMap<(String, String), usize>) {
+) -> (
+    BTreeMap<String, RougeScore>,
+    BTreeMap<(String, String), usize>,
+) {
     let base = dir.join("gitlab/rouge_samples");
     let samples = rouge_sample_langs(dir).into_iter().map(|lang| {
         let code = read(&base.join(format!("code.{lang}")));
@@ -543,7 +585,10 @@ pub fn evaluate_gitlab(
 pub fn evaluate_rouge_samples(
     samples: impl IntoIterator<Item = (String, String, String)>,
     highlight: impl Fn(&str, &str) -> Vec<String>,
-) -> (BTreeMap<String, RougeScore>, BTreeMap<(String, String), usize>) {
+) -> (
+    BTreeMap<String, RougeScore>,
+    BTreeMap<(String, String), usize>,
+) {
     let mut scores: BTreeMap<String, RougeScore> = BTreeMap::new();
     let mut confusions: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (lang, code, tsv) in samples {
@@ -561,10 +606,17 @@ pub fn evaluate_rouge_samples(
 /// A directory of extra Rouge oracles (`NNN.<lang>.code` + `NNN.<lang>.tokens.tsv`, made with
 /// `R/tools/rouge_gitlab.rb --tokens`), e.g. from `$MDR_ROUGE_HELDOUT`.
 pub fn rouge_dir_samples(dir: &Path) -> Vec<(String, String, String)> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = rd
         .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".code").map(str::to_owned))
+        .filter_map(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .strip_suffix(".code")
+                .map(str::to_owned)
+        })
         .collect();
     names.sort();
     names
@@ -595,7 +647,11 @@ pub fn gitlab_table(
         );
         t.add(*sc);
     }
-    s += &format!("TOTAL exact={:.1}% family={:.1}%\n", t.exact_pct(), t.family_pct());
+    s += &format!(
+        "TOTAL exact={:.1}% family={:.1}%\n",
+        t.exact_pct(),
+        t.family_pct()
+    );
     let mut conf: Vec<_> = confusions.iter().collect();
     conf.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     s += "top confusions (ours->rouge):";

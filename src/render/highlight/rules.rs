@@ -66,8 +66,15 @@ fn parse_selector(selector: &str) -> Option<Selector> {
         }
         _ => None,
     };
-    let ancestors = parts.into_iter().map(|p| Scope::new(p).ok()).collect::<Option<Vec<_>>>()?;
-    Some(Selector { ancestors, previous, scope })
+    let ancestors = parts
+        .into_iter()
+        .map(|p| Scope::new(p).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some(Selector {
+        ancestors,
+        previous,
+        scope,
+    })
 }
 
 impl<T> RuleSet<T> {
@@ -82,7 +89,12 @@ impl<T> RuleSet<T> {
         let mut rejected = Vec::new();
         let mut by_first_atom: HashMap<u16, Vec<usize>> = HashMap::new();
         for (text, value) in rules {
-            let Some(Selector { ancestors, previous, scope }) = parse_selector(text) else {
+            let Some(Selector {
+                ancestors,
+                previous,
+                scope,
+            }) = parse_selector(text)
+            else {
                 #[cfg(test)]
                 rejected.push(text);
                 continue;
@@ -95,8 +107,17 @@ impl<T> RuleSet<T> {
                 Precedence::AncestorFirst => 100 + own + context,
                 Precedence::LongestFirst => own * 64 + context,
             };
-            by_first_atom.entry(scope.atom_at(0)).or_default().push(out.len());
-            out.push(Rule { scope, ancestors, previous, specificity, value });
+            by_first_atom
+                .entry(scope.atom_at(0))
+                .or_default()
+                .push(out.len());
+            out.push(Rule {
+                scope,
+                ancestors,
+                previous,
+                specificity,
+                value,
+            });
         }
         RuleSet {
             rules: out,
@@ -140,7 +161,11 @@ impl<T> RuleSet<T> {
                     continue;
                 }
             }
-            if !rule.ancestors.iter().all(|a| parents.iter().any(|p| a.is_prefix_of(*p))) {
+            if !rule
+                .ancestors
+                .iter()
+                .all(|a| parents.iter().any(|p| a.is_prefix_of(*p)))
+            {
                 continue;
             }
             best = Some(rule);
@@ -159,7 +184,10 @@ mod tests {
 
     #[test]
     fn whole_atom_prefix() {
-        let r = RuleSet::new(Precedence::LongestFirst, [("string", 1), ("string.quoted", 2)]);
+        let r = RuleSet::new(
+            Precedence::LongestFirst,
+            [("string", 1), ("string.quoted", 2)],
+        );
         assert_eq!(r.lookup(s("string.quoted.double.rust"), &[]), Some(&2));
         assert_eq!(r.lookup(s("string.unquoted"), &[]), Some(&1));
         assert_eq!(r.lookup(s("stringy"), &[]), None);
@@ -168,7 +196,10 @@ mod tests {
 
     #[test]
     fn ancestor_precedence_orders() {
-        let rules = [("meta.mapping.key string", 10), ("string.quoted.double", 20)];
+        let rules = [
+            ("meta.mapping.key string", 10),
+            ("string.quoted.double", 20),
+        ];
         let gl = RuleSet::new(Precedence::AncestorFirst, rules);
         let gh = RuleSet::new(Precedence::LongestFirst, rules);
         let parents = [s("source.json"), s("meta.mapping.key.json")];
@@ -183,12 +214,21 @@ mod tests {
     fn previous_condition() {
         let r = RuleSet::new(
             Precedence::LongestFirst,
-            [("meta.generic-name", 1), ("punctuation.accessor + meta.generic-name", 2)],
+            [
+                ("meta.generic-name", 1),
+                ("punctuation.accessor + meta.generic-name", 2),
+            ],
         );
         let name = s("meta.generic-name.python");
         assert_eq!(r.lookup(name, &[]), Some(&1));
-        assert_eq!(r.lookup_after(name, &[], Some(s("punctuation.accessor.dot.python"))), Some(&2));
-        assert_eq!(r.lookup_after(name, &[], Some(s("keyword.python"))), Some(&1));
+        assert_eq!(
+            r.lookup_after(name, &[], Some(s("punctuation.accessor.dot.python"))),
+            Some(&2)
+        );
+        assert_eq!(
+            r.lookup_after(name, &[], Some(s("keyword.python"))),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -199,7 +239,10 @@ mod tests {
 
     #[test]
     fn bad_selectors_are_recorded() {
-        let r = RuleSet::new(Precedence::LongestFirst, [("", 1), ("  ", 2), ("+ x", 3), ("ok", 4)]);
+        let r = RuleSet::new(
+            Precedence::LongestFirst,
+            [("", 1), ("  ", 2), ("+ x", 3), ("ok", 4)],
+        );
         assert_eq!(r.rejected(), &["", "  ", "+ x"]);
         assert_eq!(r.lookup(s("ok"), &[]), Some(&4));
     }

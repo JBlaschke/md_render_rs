@@ -22,7 +22,10 @@ fn prompt_end(line: &str) -> Option<usize> {
 fn is_elision(line: &str) -> bool {
     let t = line.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b');
     let dots = |s: &str| !s.is_empty() && s.bytes().all(|b| b == b'.');
-    dots(t) || t.strip_prefix('<').and_then(|s| s.strip_suffix('>')).is_some_and(dots)
+    dots(t)
+        || t.strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .is_some_and(dots)
 }
 
 /// Tokenize a console session into segments.
@@ -52,7 +55,9 @@ pub(super) fn segments(
                 out.push(Segment::new(Some("gp"), base..base + end));
                 let rest = &line[end..];
                 let ws = rest.len()
-                    - rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b').len();
+                    - rest
+                        .trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b')
+                        .len();
                 if ws > 0 {
                     out.push(Segment::new(Some("w"), base + end..base + end + ws));
                 }
@@ -63,7 +68,10 @@ pub(super) fn segments(
                         let mut offset = cmd_base;
                         t.feed(command, &mut |event, stack| {
                             if let Event::Text(text) = event {
-                                out.push(Segment::new(shell.classify(stack), offset..offset + text.len()));
+                                out.push(Segment::new(
+                                    shell.classify(stack),
+                                    offset..offset + text.len(),
+                                ));
                                 offset += text.len();
                             }
                         })?;

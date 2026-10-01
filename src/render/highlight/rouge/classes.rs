@@ -208,7 +208,10 @@ pub(crate) const BASELINE_RULES: &[(&str, Rule)] = &[
     ("constant.other.color", Span("mh")),
     ("punctuation", Span("p")),
     ("punctuation.separator.key-value.mapping.yaml", Span("pi")),
-    ("punctuation.definition.block.sequence.item.yaml", Span("pi")),
+    (
+        "punctuation.definition.block.sequence.item.yaml",
+        Span("pi"),
+    ),
     ("punctuation.accessor", Span("p")),
     ("punctuation.separator.namespace", Span("p")),
     ("markup.heading", Span("gh")),
@@ -285,7 +288,10 @@ const PYTHON: &[(&str, Rule)] = &[
     ("string", Span("s")),
     ("punctuation.definition.string", Span("sh")),
     ("comment.block.documentation", Span("s")),
-    ("comment.block.documentation punctuation.definition.comment", Span("sh")),
+    (
+        "comment.block.documentation punctuation.definition.comment",
+        Span("sh"),
+    ),
     ("storage.type.function", Span("k")),
     ("storage.type.class", Span("k")),
     ("keyword.declaration", Span("k")),
@@ -309,7 +315,10 @@ const PYTHON: &[(&str, Rule)] = &[
 const JAVASCRIPT: &[(&str, Rule)] = &[
     ("punctuation.definition.string", Span("dl")),
     ("string.quoted.other", Span("s2")),
-    ("string.quoted.other punctuation.definition.string", Span("s2")),
+    (
+        "string.quoted.other punctuation.definition.string",
+        Span("s2"),
+    ),
     ("string.template", Span("s2")),
     ("string.template punctuation.definition.string", Span("s2")),
     ("punctuation.section.interpolation", Span("p")),
@@ -365,7 +374,10 @@ const C: &[(&str, Rule)] = &[
     ("meta.preprocessor constant", Span("cp")),
     ("constant.numeric.float", Span("mi")),
     ("punctuation.separator.decimal", Span("p")),
-    ("constant.numeric.integer.hexadecimal storage.type.numeric", Span("mh")),
+    (
+        "constant.numeric.integer.hexadecimal storage.type.numeric",
+        Span("mh"),
+    ),
     ("punctuation.definition.numeric", Inherit),
     ("storage.type", Plain),
     ("storage.modifier", Plain),
@@ -407,7 +419,10 @@ const SHELL: &[(&str, Rule)] = &[
     ("comment", Span("c")),
     ("variable.parameter.option", Span("nt")),
     ("punctuation.definition.parameter", Inherit),
-    ("meta.group.expansion.parameter punctuation.definition.variable", Span("nv")),
+    (
+        "meta.group.expansion.parameter punctuation.definition.variable",
+        Span("nv"),
+    ),
     ("punctuation.section.expansion.parameter", Span("k")),
     ("meta.group.expansion.parameter keyword.operator", Span("k")),
     ("variable.other.readwrite.assignment", Span("nv")),
@@ -429,7 +444,10 @@ const SHELL: &[(&str, Rule)] = &[
 const HTML: &[(&str, Rule)] = &[
     ("string.quoted", Span("s")),
     ("meta.class-name", Inherit),
-    ("meta.attribute-with-value punctuation.separator.key-value", Span("na")),
+    (
+        "meta.attribute-with-value punctuation.separator.key-value",
+        Span("na"),
+    ),
     ("meta.tag.sgml.doctype", Span("cp")),
     ("meta.tag.sgml.doctype punctuation", Span("cp")),
     ("meta.tag.sgml.doctype keyword", Span("cp")),
@@ -502,7 +520,10 @@ const MARKDOWN: &[(&str, Rule)] = &[
     ("meta.separator.thematic-break", Span("p")),
     ("meta.separator.thematic-break punctuation", Inherit),
     ("string.quoted", Span("s")),
-    ("meta.attribute-with-value punctuation.separator.key-value", Span("na")),
+    (
+        "meta.attribute-with-value punctuation.separator.key-value",
+        Span("na"),
+    ),
     ("constant.character.entity", Span("ni")),
     ("constant.character.entity punctuation", Span("ni")),
     ("comment", Span("c")),
@@ -540,8 +561,14 @@ const XML: &[(&str, Rule)] = &[
     ("meta.tag.sgml.cdata string", Span("cp")),
     ("string.quoted", Span("s")),
     ("meta.tag punctuation.separator.key-value", Span("na")),
-    ("entity.name.tag punctuation.separator.namespace", Span("nt")),
-    ("entity.other.attribute-name punctuation.separator.namespace", Span("na")),
+    (
+        "entity.name.tag punctuation.separator.namespace",
+        Span("nt"),
+    ),
+    (
+        "entity.other.attribute-name punctuation.separator.namespace",
+        Span("na"),
+    ),
     ("constant.character.entity", Span("ni")),
     ("constant.character.entity punctuation", Span("ni")),
 ];
@@ -684,7 +711,10 @@ impl Scheme {
                     overlays: OVERLAYS
                         .iter()
                         .map(|&(tag, rules)| {
-                            (tag, RuleSet::new(Precedence::AncestorFirst, rules.iter().copied()))
+                            (
+                                tag,
+                                RuleSet::new(Precedence::AncestorFirst, rules.iter().copied()),
+                            )
                         })
                         .collect(),
                     embedded: EMBEDDED
@@ -709,7 +739,10 @@ impl Scheme {
 
     /// The scheme specialised for Rouge lexer `tag`.
     pub(crate) fn for_lang(&self, tag: &str) -> ForLang<'_> {
-        ForLang { scheme: self, overlay: self.overlays.get(tag) }
+        ForLang {
+            scheme: self,
+            overlay: self.overlays.get(tag),
+        }
     }
 
     #[cfg(test)]
@@ -766,26 +799,40 @@ mod tests {
     }
 
     fn baseline(scopes: &str) -> Option<&'static str> {
-        Scheme::get(Variant::Baseline).for_lang("x").classify(&stack(scopes))
+        Scheme::get(Variant::Baseline)
+            .for_lang("x")
+            .classify(&stack(scopes))
     }
 
     #[test]
     fn all_selectors_compile() {
         assert_eq!(BASELINE_RULES.len(), 214);
         for v in Variant::ALL {
-            assert!(Scheme::get(v).rejected().is_empty(), "{v:?}: {:?}", Scheme::get(v).rejected());
+            assert!(
+                Scheme::get(v).rejected().is_empty(),
+                "{v:?}: {:?}",
+                Scheme::get(v).rejected()
+            );
         }
     }
 
     #[test]
     fn baseline_examples() {
-        assert_eq!(baseline("source.rust comment.line.double-slash.rust"), Some("c1"));
         assert_eq!(
-            baseline("source.rust comment.line.documentation.rust punctuation.definition.comment.rust"),
+            baseline("source.rust comment.line.double-slash.rust"),
+            Some("c1")
+        );
+        assert_eq!(
+            baseline(
+                "source.rust comment.line.documentation.rust punctuation.definition.comment.rust"
+            ),
             Some("cd"),
             "INHERIT is transparent"
         );
-        assert_eq!(baseline("source.rust meta.function.rust storage.type.function.rust"), Some("kd"));
+        assert_eq!(
+            baseline("source.rust meta.function.rust storage.type.function.rust"),
+            Some("kd")
+        );
         assert_eq!(baseline("source.rust"), None);
         assert_eq!(baseline("source.rust meta.block.rust"), None);
         assert_eq!(
@@ -797,7 +844,13 @@ mod tests {
             baseline("source.yaml meta.mapping.key.yaml string.unquoted.plain.out.yaml"),
             Some("na")
         );
-        assert_eq!(baseline("source.json string.quoted.double.json"), Some("s2"));
-        assert_eq!(baseline("text.html.basic meta.tag entity.name.tag.html"), Some("nt"));
+        assert_eq!(
+            baseline("source.json string.quoted.double.json"),
+            Some("s2")
+        );
+        assert_eq!(
+            baseline("text.html.basic meta.tag entity.name.tag.html"),
+            Some("nt")
+        );
     }
 }

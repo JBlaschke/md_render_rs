@@ -65,8 +65,20 @@ fn rules() -> Option<&'static Rules> {
 }
 
 fn classify(line: &str, r: &Rules) -> Option<LineClass> {
-    let whole = |class| Some(LineClass { class, len: line.len(), marker: 0 });
-    let marked = |class| Some(LineClass { class, len: line.len(), marker: 1 });
+    let whole = |class| {
+        Some(LineClass {
+            class,
+            len: line.len(),
+            marker: 0,
+        })
+    };
+    let marked = |class| {
+        Some(LineClass {
+            class,
+            len: line.len(),
+            marker: 1,
+        })
+    };
     if r.separator.is_match(line) {
         return whole("pl-ms");
     }
@@ -74,7 +86,11 @@ fn classify(line: &str, r: &Rules) -> Option<LineClass> {
         return whole("pl-mdr");
     }
     if let Some(m) = r.range_unified.find(line) {
-        return Some(LineClass { class: "pl-mdr", len: m.end(), marker: 0 });
+        return Some(LineClass {
+            class: "pl-mdr",
+            len: m.end(),
+            marker: 0,
+        });
     }
     if r.range_context.is_match(line) {
         return whole("pl-mdr");
@@ -151,10 +167,19 @@ mod tests {
     #[test]
     fn other_lines() {
         assert_eq!(diff("---\n"), "<span class=\"pl-ms\">---</span>");
-        assert_eq!(diff("# note\n"), "<span class=\"pl-c\"><span class=\"pl-c\">#</span> note</span>");
-        assert_eq!(diff("@@ -1 +1 @@ fn f()\n"), "<span class=\"pl-mdr\">@@ -1 +1 @@</span> fn f()");
+        assert_eq!(
+            diff("# note\n"),
+            "<span class=\"pl-c\"><span class=\"pl-c\">#</span> note</span>"
+        );
+        assert_eq!(
+            diff("@@ -1 +1 @@ fn f()\n"),
+            "<span class=\"pl-mdr\">@@ -1 +1 @@</span> fn f()"
+        );
         assert_eq!(diff("5c5\n"), "<span class=\"pl-mdr\">5c5</span>");
-        assert_eq!(diff("> new\n>x\n"), "<span class=\"pl-mi1\"><span class=\"pl-mi1\">&gt;</span> new</span>\n&gt;x");
+        assert_eq!(
+            diff("> new\n>x\n"),
+            "<span class=\"pl-mi1\"><span class=\"pl-mi1\">&gt;</span> new</span>\n&gt;x"
+        );
         assert_eq!(diff("plain & <b>\n"), "plain &amp; &lt;b&gt;");
     }
 }

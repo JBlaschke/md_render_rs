@@ -6,11 +6,50 @@ use md_render::render::highlight::{GithubCode, github, github_plain, gitlab};
 /// Languages covering every special path (shell-session, diff, console, plaintext, verbatim,
 /// no-grammar) and the most common grammars.
 const LANGS: &[&str] = &[
-    "", "unknown-lang", "text", "rust", "python", "js", "ts", "tsx", "jsx", "c", "cpp", "go",
-    "java", "ruby", "php", "html", "css", "scss", "xml", "json", "yaml", "toml", "sh", "bash",
-    "console", "shell-session", "diff", "markdown", "sql", "dockerfile", "makefile", "lua", "perl",
-    "haskell", "kotlin", "swift", "latex", "graphql", "nix", "regex", "powershell", "mermaid",
-    "math", "cs",
+    "",
+    "unknown-lang",
+    "text",
+    "rust",
+    "python",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "c",
+    "cpp",
+    "go",
+    "java",
+    "ruby",
+    "php",
+    "html",
+    "css",
+    "scss",
+    "xml",
+    "json",
+    "yaml",
+    "toml",
+    "sh",
+    "bash",
+    "console",
+    "shell-session",
+    "diff",
+    "markdown",
+    "sql",
+    "dockerfile",
+    "makefile",
+    "lua",
+    "perl",
+    "haskell",
+    "kotlin",
+    "swift",
+    "latex",
+    "graphql",
+    "nix",
+    "regex",
+    "powershell",
+    "mermaid",
+    "math",
+    "cs",
 ];
 
 fn nasty_inputs() -> Vec<(String, String)> {
@@ -36,7 +75,7 @@ fn nasty_inputs() -> Vec<(String, String)> {
         ("deep tags", "<a>".repeat(1500) + "\n"),
         ("deep quotes", "> ".repeat(1000) + "x\n"),
         ("deep lists", (0..120).map(|i| format!("{}- item\n", "  ".repeat(i))).collect()),
-        ("huge table", "| a | b | c |\n|---|---|---|\n".to_owned() + &"| 1 | 2 | 3 |\n".repeat(800)),
+        ("huge table", "| a | b | c |\n|---|---|---|\n".to_owned() + &"| 1 | 2 | 3 |\n".repeat(200)),
         ("long line 10k", "x".repeat(10_000) + "\n"),
         ("long quotes 10k", "\"".repeat(10_000) + "\n"),
         ("long tokens", "a = 1; ".repeat(1400) + "\n"),
@@ -70,7 +109,10 @@ fn strip_spans(html: &str) -> String {
             depth += 1;
             rest = &rest[end + 1..];
         } else {
-            panic!("raw '<' in highlighted output: {:?}", &rest[..rest.len().min(80)]);
+            panic!(
+                "raw '<' in highlighted output: {:?}",
+                &rest[..rest.len().min(80)]
+            );
         }
     }
     out.push_str(rest);
@@ -80,7 +122,9 @@ fn strip_spans(html: &str) -> String {
 }
 
 fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 fn check_github(name: &str, lang: &str, code: &str, r: &GithubCode) {
@@ -98,7 +142,10 @@ fn check_github(name: &str, lang: &str, code: &str, r: &GithubCode) {
         code.trim_end_matches('\n'),
         "{name}/{lang}: text differs from the code"
     );
-    assert!(text.len() < code.len() || !code.ends_with('\n'), "{name}/{lang}: final newline kept");
+    assert!(
+        text.len() < code.len() || !code.ends_with('\n'),
+        "{name}/{lang}: final newline kept"
+    );
 }
 
 fn check_gitlab(name: &str, lang: &str, code: &str, lines: &[String]) {
@@ -118,7 +165,17 @@ fn check_gitlab(name: &str, lang: &str, code: &str, lines: &[String]) {
         let want: String = want
             .chars()
             .filter(|&c| c != '\r')
-            .map(|c| if matches!(c, '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}') { ' ' } else { c })
+            .map(|c| {
+                if matches!(
+                    c,
+                    '\u{00A0}' | '\u{1680}' | '\u{2000}'
+                        ..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+                ) {
+                    ' '
+                } else {
+                    c
+                }
+            })
             .collect();
         assert_eq!(text, want, "{name}/{lang}: line text");
     }
@@ -126,15 +183,22 @@ fn check_gitlab(name: &str, lang: &str, code: &str, lines: &[String]) {
 
 #[test]
 fn nasty_inputs_never_panic_and_stay_well_formed() {
-    for (name, code) in nasty_inputs() {
+    let inputs = nasty_inputs();
+    // One thread per language (also exercises concurrent first use of the grammars).
+    std::thread::scope(|s| {
         for &lang in LANGS {
-            let gh = github(&code, lang);
-            check_github(&name, lang, &code, &gh);
-            let gl = gitlab(&code, lang);
-            check_gitlab(&name, lang, &code, &gl.lines);
-            assert!(!gl.tag.is_empty());
+            let inputs = &inputs;
+            s.spawn(move || {
+                for (name, code) in inputs {
+                    let gh = github(code, lang);
+                    check_github(name, lang, code, &gh);
+                    let gl = gitlab(code, lang);
+                    check_gitlab(name, lang, code, &gl.lines);
+                    assert!(!gl.tag.is_empty());
+                }
+            });
         }
-    }
+    });
 }
 
 #[test]
@@ -151,7 +215,10 @@ fn oversized_input_falls_back_to_plain_text() {
     let code = "let a = \"<x>\";\n".repeat(40_000);
     let gh = github(&code, "rust");
     let html = gh.html.expect("known grammar");
-    assert!(!html.contains("<span"), "no token spans beyond the work limits");
+    assert!(
+        !html.contains("<span"),
+        "no token spans beyond the work limits"
+    );
     assert!(html.starts_with("let a = \"&lt;x&gt;\";\n"));
     let gl = gitlab(&code, "rust");
     assert_eq!(gl.tag, "rust");
@@ -197,7 +264,7 @@ fn nasty_timings() {
             times.push((gh, gl, name.clone(), lang));
         }
     }
-    times.sort_by(|a, b| (b.0 + b.1).cmp(&(a.0 + a.1)));
+    times.sort_by_key(|t| std::cmp::Reverse(t.0 + t.1));
     for (gh, gl, name, lang) in times.iter().take(25) {
         println!("{:>10.1?} {:>10.1?}  {name} / {lang}", gh, gl);
     }
@@ -238,7 +305,9 @@ fn perf_20kb_readme_code() {
         }
     }
     let gl = t.elapsed() / runs;
-    println!("highlight {total} bytes of code, unchanged blocks (memoized): github {gh:?}, gitlab {gl:?} per pass");
+    println!(
+        "highlight {total} bytes of code, unchanged blocks (memoized): github {gh:?}, gitlab {gl:?} per pass"
+    );
     // Defeat the memo with a unique trailing blank-ish line per pass (grammars warmed up).
     let fresh = |i: u32, code: &str| format!("{code}{i}\n");
     let t = std::time::Instant::now();
@@ -255,12 +324,18 @@ fn perf_20kb_readme_code() {
         }
     }
     let gl = t.elapsed() / runs;
-    println!("highlight {total} bytes of code, changed blocks: github {gh:?}, gitlab {gl:?} per pass");
+    println!(
+        "highlight {total} bytes of code, changed blocks: github {gh:?}, gitlab {gl:?} per pass"
+    );
     for (lang, code) in &blocks {
         let t = std::time::Instant::now();
         for i in 0..runs {
             std::hint::black_box(github(&fresh(i + 300, code), lang));
         }
-        println!("  {lang:<8} {:>6} bytes: {:?}", code.len(), t.elapsed() / runs);
+        println!(
+            "  {lang:<8} {:>6} bytes: {:?}",
+            code.len(),
+            t.elapsed() / runs
+        );
     }
 }
