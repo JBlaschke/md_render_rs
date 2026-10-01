@@ -24,6 +24,7 @@ use super::deps;
 use super::events::{ErrorKind, WireEvent};
 use super::paths;
 use super::watcher::FsWatcher;
+use crate::flavor::{Flavor, Mode};
 use crate::render::{RenderOptions, Rendered, Renderer};
 
 /// How long a page load waits for the worker to render the current file.
@@ -85,7 +86,8 @@ impl RenderCtx {
 #[derive(Debug)]
 pub struct Content {
     pub version: u64,
-    /// SHA-256 of the source bytes.
+    /// Dedup hash of every input of the render: the source bytes and, for a GitLab
+    /// document with `::include` directives, the included files ([`Inputs`]).
     pub hash: [u8; 32],
     pub rendered: Arc<Rendered>,
     /// The serialized `content` event for this version.
@@ -153,15 +155,26 @@ impl DocSnapshot {
     }
 }
 
+/// What a dependency is to the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepKind {
+    /// Loaded by the page (an image, a video): a change sends an `assets` event.
+    Asset,
+    /// Part of the Markdown source (a GitLab `::include` file): a change re-renders.
+    Source,
+}
+
 /// A local file a document depends on, with its watch target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dep {
-    /// URL path the page uses for it (sent in `assets` events).
+    /// URL path the page uses for it (sent in `assets` events; the root-relative path for
+    /// [`DepKind::Source`]).
     pub url: String,
     /// Canonical directory to watch.
     pub dir: PathBuf,
     /// Canonical path events will carry.
     pub file: PathBuf,
+    pub kind: DepKind,
 }
 
 #[derive(Default)]
@@ -332,13 +345,18 @@ impl DocEntry {
             return (false, Vec::new());
         }
         // A directory-level event (rescan) re-checks the document; the hash makes it cheap.
-        let doc = changed
-            .iter()
-            .any(|p| t.doc_file.as_ref() == Some(p) || t.doc_dir.as_ref() == Some(p));
+        // So does a change of a file the source includes.
+        let doc = changed.iter().any(|p| {
+            t.doc_file.as_ref() == Some(p)
+                || t.doc_dir.as_ref() == Some(p)
+                || t.deps
+                    .iter()
+                    .any(|d| d.kind == DepKind::Source && (d.file == *p || d.dir == *p))
+        });
         let mut urls: Vec<String> = t
             .deps
             .iter()
-            .filter(|d| changed.contains(&d.file))
+            .filter(|d| d.kind == DepKind::Asset && changed.contains(&d.file))
             .map(|d| d.url.clone())
             .collect();
         urls.sort();
@@ -525,6 +543,110 @@ pub fn decode_markdown(mut bytes: Vec<u8>, name: &str) -> (String, Option<String
     }
 }
 
+/// The Markdown source of one render: raw bytes, or text already decoded while gathering.
+enum Source {
+    Bytes(Vec<u8>),
+    Text(String, Option<String>),
+}
+
+impl Source {
+    /// The decoded text and the invalid-UTF-8 warning, if any.
+    fn into_text(self, key: &str) -> (String, Option<String>) {
+        match self {
+            Source::Bytes(b) => decode_markdown(b, key),
+            Source::Text(t, w) => (t, w),
+        }
+    }
+}
+
+/// Everything a render reads (GL §3.3: included files belong to the document).
+struct Inputs {
+    source: Source,
+    /// Files read by GitLab `::include` directives (canonical, inside the root), in order.
+    includes: Vec<PathBuf>,
+    /// Dedup hash: SHA-256 of the source bytes when nothing is included; otherwise a hash
+    /// over that and every included file's path and bytes, so a page load or a watcher event
+    /// re-renders when only an included file changed.
+    hash: [u8; 32],
+}
+
+impl Inputs {
+    async fn gather(bytes: Vec<u8>, key: &str, opts: &RenderOptions) -> Result<Inputs, String> {
+        let doc_hash = sha256(&bytes);
+        if !may_include(&bytes, opts) {
+            return Ok(Inputs {
+                source: Source::Bytes(bytes),
+                includes: Vec::new(),
+                hash: doc_hash,
+            });
+        }
+        // Reading the included files is blocking I/O.
+        let (key, opts) = (key.to_owned(), opts.clone());
+        tokio::task::spawn_blocking(move || {
+            let (text, warning) = decode_markdown(bytes, &key);
+            let includes = crate::render::gitlab::included_files(&text, &opts);
+            let hash = inputs_hash(doc_hash, &includes);
+            Inputs {
+                source: Source::Text(text, warning),
+                includes,
+                hash,
+            }
+        })
+        .await
+        .map_err(|e| format!("reading the included files failed: {e}"))
+    }
+}
+
+/// Can this document `::include` files (GitLab readme mode with a directive in the text)?
+fn may_include(bytes: &[u8], opts: &RenderOptions) -> bool {
+    const DIRECTIVE: &[u8] = b"::include{file=";
+    opts.flavor == Flavor::Gitlab
+        && opts.mode == Mode::Readme
+        && bytes.windows(DIRECTIVE.len()).any(|w| w == DIRECTIVE)
+}
+
+/// Combined dedup hash of a document and the files it includes.
+fn inputs_hash(doc_hash: [u8; 32], includes: &[PathBuf]) -> [u8; 32] {
+    if includes.is_empty() {
+        return doc_hash;
+    }
+    let mut h = Sha256::new();
+    h.update(doc_hash);
+    for p in includes {
+        h.update(p.as_os_str().as_encoded_bytes());
+        h.update([0]);
+        match std::fs::read(p) {
+            Ok(b) => h.update(sha256(&b)),
+            Err(_) => h.update([0xff]), // vanished meanwhile: differs from any content
+        }
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// Watch entries for the files a document includes (a change re-renders the document).
+fn source_deps(root: &Path, includes: &[PathBuf]) -> Vec<Dep> {
+    includes
+        .iter()
+        .filter_map(|file| {
+            let dir = file.parent()?.to_path_buf();
+            let rel = file.strip_prefix(root).ok()?;
+            let url = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            Some(Dep {
+                url,
+                dir,
+                file: file.clone(),
+                kind: DepKind::Source,
+            })
+        })
+        .collect()
+}
+
 enum Outcome {
     Done,
     Stale,
@@ -595,7 +717,17 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
         }
     };
 
-    let hash = sha256(&bytes);
+    let opts = ctx.options_for(&entry.path);
+    let inputs = match Inputs::gather(bytes, &entry.key, &opts).await {
+        Ok(i) => i,
+        Err(message) => {
+            ctx.log(&format!("rendering {} failed: {message}", entry.key));
+            let v = entry.next_version();
+            publish_failure(entry, t0, v, ErrorKind::Render, message);
+            return Outcome::Done;
+        }
+    };
+    let hash = inputs.hash;
     if let Some(c) = &snap.content
         && c.hash == hash
     {
@@ -623,35 +755,44 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
     let v = entry.next_version();
     entry.broadcast(Arc::new(WireEvent::rendering(v)));
 
-    let (text, decode_warning) = decode_markdown(bytes, &entry.key);
     let renderer = ctx.renderer.clone();
-    let opts = ctx.options_for(&entry.path);
     let key = entry.key.clone();
     let root = ctx.root.clone();
     let follow = ctx.follow_symlinks;
+    let Inputs {
+        source, includes, ..
+    } = inputs;
     let joined = tokio::task::spawn_blocking(move || {
+        let (text, decode_warning) = source.into_text(&key);
         let result = renderer.render(&text, &opts);
         let deps = match &result {
-            Ok(r) => resolve_deps(&root, follow, deps::scan(&r.html, &key)),
+            Ok(r) => {
+                let mut deps = resolve_deps(&root, follow, deps::scan(&r.html, &key));
+                deps.extend(source_deps(&root, &includes));
+                deps
+            }
             Err(_) => Vec::new(),
         };
-        (result, deps)
+        (result, deps, decode_warning)
     })
     .await;
 
     // Drop stale results: a newer change arrived while rendering and the file differs again.
     if !force && entry.triggers.load(Ordering::SeqCst) != t0 {
-        let now = read_contained(ctx, &entry.path)
-            .await
-            .ok()
-            .map(|b| sha256(&b));
+        let now = match read_contained(ctx, &entry.path).await {
+            Ok(b) => Inputs::gather(b, &entry.key, &ctx.options_for(&entry.path))
+                .await
+                .ok()
+                .map(|i| i.hash),
+            Err(_) => None,
+        };
         if now != Some(hash) {
             return Outcome::Stale;
         }
     }
 
     match joined {
-        Ok((Ok(mut rendered), deps)) => {
+        Ok((Ok(mut rendered), deps, decode_warning)) => {
             if let Some(w) = decode_warning {
                 rendered.warnings.insert(0, w);
             }
@@ -665,7 +806,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             entry.broadcast(ev);
             entry.set_deps(deps, ctx.watcher.as_deref());
         }
-        Ok((Err(e), _)) => {
+        Ok((Err(e), _, _)) => {
             let kind = ctx.render_error_kind();
             let message = format!("{e:#}");
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
@@ -724,6 +865,7 @@ fn resolve_deps(root: &Path, follow_symlinks: bool, refs: Vec<deps::DepRef>) -> 
                 url: r.url,
                 dir,
                 file,
+                kind: DepKind::Asset,
             })
         })
         .collect()
@@ -732,7 +874,6 @@ fn resolve_deps(root: &Path, follow_symlinks: bool, refs: Vec<deps::DepRef>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flavor::Flavor;
     use std::sync::atomic::AtomicUsize;
 
     struct Counting(AtomicUsize);
@@ -925,7 +1066,120 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].url, "/img/a.png");
         assert_eq!(deps[0].file, root.join("img/a.png"));
+        assert_eq!(deps[0].kind, DepKind::Asset);
         // Workers stop on shutdown.
         tx.send(true).unwrap();
+    }
+
+    fn gitlab_hub(root: &Path) -> (Hub, watch::Sender<bool>) {
+        let (tx, rx) = watch::channel(false);
+        let mut options = RenderOptions::new(Flavor::Gitlab);
+        options.root = Some(root.to_path_buf());
+        let ctx = RenderCtx {
+            renderer: Arc::new(crate::render::OfflineRenderer),
+            options,
+            root: root.to_path_buf(),
+            follow_symlinks: false,
+            quiet: true,
+            watcher: None,
+        };
+        (Hub::new(Arc::new(ctx), rx), tx)
+    }
+
+    /// LIVE-1 / Q-INCLUDE-1: an edit of an `::include`d file re-renders the document on
+    /// the next page load, and the included files are tracked as source dependencies.
+    #[tokio::test]
+    async fn gitlab_includes_are_inputs_of_the_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("parts")).unwrap();
+        std::fs::write(
+            root.join("doc.md"),
+            "# Doc\n\n::include{file=inc.md}\n\n::include{file=parts/two.md}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("inc.md"), "FIRST_VERSION\n").unwrap();
+        std::fs::write(root.join("parts/two.md"), "OTHER_PART\n").unwrap();
+        let (hub, _stop) = gitlab_hub(&root);
+
+        let s = hub.current("doc.md").await.unwrap();
+        let html = &s.content.as_ref().unwrap().rendered.html;
+        assert!(
+            html.contains("FIRST_VERSION") && html.contains("OTHER_PART"),
+            "{html}"
+        );
+        let v1 = s.version;
+        let deps = hub.get("doc.md").unwrap().deps();
+        let sources: Vec<_> = deps
+            .iter()
+            .filter(|d| d.kind == DepKind::Source)
+            .map(|d| (d.url.as_str(), d.file.clone()))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                ("inc.md", root.join("inc.md")),
+                ("parts/two.md", root.join("parts/two.md"))
+            ]
+        );
+
+        // Unchanged inputs: no new version.
+        assert_eq!(hub.current("doc.md").await.unwrap().version, v1);
+
+        // Only the included file changes: the reload shows it.
+        std::fs::write(root.join("inc.md"), "SECOND_VERSION\n").unwrap();
+        let s = hub.current("doc.md").await.unwrap();
+        assert!(s.version > v1);
+        let html = &s.content.as_ref().unwrap().rendered.html;
+        assert!(html.contains("SECOND_VERSION"), "stale include: {html}");
+        let v2 = s.version;
+        std::fs::write(root.join("parts/two.md"), "CHANGED_PART\n").unwrap();
+        let s = hub.current("doc.md").await.unwrap();
+        assert!(s.version > v2);
+        let html = &s.content.as_ref().unwrap().rendered.html;
+        assert!(html.contains("CHANGED_PART"), "stale include: {html}");
+    }
+
+    #[test]
+    fn source_dependencies_trigger_the_document() {
+        let entry = DocEntry::new("doc.md", PathBuf::from("/r/doc.md"));
+        entry.lock().subscribers = 1;
+        entry.set_deps(
+            vec![
+                Dep {
+                    url: "/a.png".into(),
+                    dir: "/r/img".into(),
+                    file: "/r/img/a.png".into(),
+                    kind: DepKind::Asset,
+                },
+                Dep {
+                    url: "inc.md".into(),
+                    dir: "/r/parts".into(),
+                    file: "/r/parts/inc.md".into(),
+                    kind: DepKind::Source,
+                },
+            ],
+            None,
+        );
+        assert_eq!(
+            entry.match_paths(&["/r/parts/inc.md".into()]),
+            (true, Vec::new())
+        );
+        assert_eq!(
+            entry.match_paths(&["/r/img/a.png".into()]),
+            (false, vec!["/a.png".to_owned()])
+        );
+        assert_eq!(entry.match_paths(&["/r/img".into()]), (false, Vec::new()));
+        assert!(!may_include(
+            b"::include{file=x}",
+            &RenderOptions::new(Flavor::Github)
+        ));
+        assert!(may_include(
+            b"a\n::include{file=x}",
+            &RenderOptions::new(Flavor::Gitlab)
+        ));
+        let mut comment = RenderOptions::new(Flavor::Gitlab);
+        comment.mode = Mode::Comment;
+        assert!(!may_include(b"::include{file=x}", &comment));
     }
 }

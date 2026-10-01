@@ -352,3 +352,35 @@ async fn graceful_shutdown_ends_every_stream() {
     // The listener is gone.
     assert!(tokio::net::TcpStream::connect(s.addr).await.is_err());
 }
+
+/// LIVE-1 / Q-INCLUDE-1: editing a GitLab `::include`d file pushes new content, and a page
+/// load shows it too (the dedup hash covers the included files).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gitlab_included_files_are_watched() {
+    let f = Fixture::new();
+    f.file("README.md", "# GL doc\n\n::include{file=inc.md}\n\nafter\n");
+    f.file("inc.md", "Included **ONE**\n");
+    let s = f
+        .start(|cfg| {
+            cfg.flavor = md_render::flavor::Flavor::Gitlab;
+            cfg.renderer = std::sync::Arc::new(md_render::render::OfflineRenderer);
+        })
+        .await;
+    let (mut sse, _) = s.subscribe("README.md").await;
+    write_atomic(&s.path("inc.md"), "Included **TWO**\n");
+    let content = sse
+        .wait_until("content", |c| {
+            c["html"].as_str().is_some_and(|h| h.contains("TWO"))
+        })
+        .await
+        .json();
+    assert!(!content["html"].as_str().unwrap().contains("ONE"));
+    // An in-place write is seen as well, and the page itself is never stale.
+    write(&s.path("inc.md"), "Included **THREE**\n");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("THREE"))
+    })
+    .await;
+    write(&s.path("inc.md"), "Included **FOUR**\n");
+    assert!(s.get("/").await.text().contains("FOUR"));
+}
