@@ -547,6 +547,11 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             eprintln!(" * Shutting down...");
         }
         handle.shutdown();
+        // The handler stays installed while connections drain (up to SHUTDOWN_GRACE): a
+        // second Ctrl-C must not be swallowed (LIVE-11).
+        wait_for_signal().await;
+        eprintln!(" * Forced exit");
+        std::process::exit(130);
     });
     server.wait().await
 }

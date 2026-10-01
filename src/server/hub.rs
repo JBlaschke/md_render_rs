@@ -973,7 +973,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
     let Inputs {
         source, includes, ..
     } = inputs;
-    let joined = tokio::task::spawn_blocking(move || {
+    let joined = run_detached(move || {
         let (text, decode_warning) = source.into_text(&key);
         let result = renderer.render(&text, &opts);
         let deps = match &result {
@@ -1009,15 +1009,35 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
             publish_failure(entry, t0, v, kind, message);
         }
-        Err(join) => {
-            let message = if join.is_panic() {
-                "the renderer panicked".to_owned()
-            } else {
-                join.to_string()
-            };
+        Err(message) => {
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
             publish_failure(entry, t0, v, ErrorKind::Render, message);
         }
+    }
+}
+
+/// Run a blocking closure (a render) on a thread of its own instead of tokio's blocking pool.
+///
+/// Dropping a tokio runtime waits for every running `spawn_blocking` task, so a slow render
+/// (a large document in a debug build, an `--api` request with its 30 s timeout) would keep
+/// the process alive after Ctrl-C with the signal handler still installed (LIVE-11). A
+/// detached thread does not hold up the exit; its result is simply dropped. Renders happen
+/// once per change, so a thread per render costs nothing noticeable.
+async fn run_detached<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("md-render render".into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("cannot start a render thread: {e}"))?;
+    match rx.await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(_)) => Err("the renderer panicked".to_owned()),
+        Err(_) => Err("the render thread stopped unexpectedly".to_owned()),
     }
 }
 
@@ -1272,6 +1292,59 @@ mod tests {
         // 1.2 s of saves with 200 ms renders: about 5 renders finished. Dropping three of
         // every four as stale published at most 2.
         assert!(contents >= 3, "only {contents} content events");
+    }
+
+    /// LIVE-11: a render in progress does not keep the runtime (and so the process) alive
+    /// after shutdown.
+    #[test]
+    fn a_running_render_does_not_delay_runtime_shutdown() {
+        struct Stuck(Mutex<Option<std::sync::mpsc::Sender<()>>>);
+        impl Renderer for Stuck {
+            fn render(&self, _: &str, _: &RenderOptions) -> anyhow::Result<Rendered> {
+                if let Some(tx) = self.0.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                std::thread::sleep(Duration::from_secs(4));
+                Ok(Rendered::default())
+            }
+            fn name(&self) -> &'static str {
+                "offline"
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("a.md"), "x").unwrap();
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let stop = rt.block_on(async {
+            let (tx, rx) = watch::channel(false);
+            let ctx = RenderCtx {
+                renderer: Arc::new(Stuck(Mutex::new(Some(started_tx)))),
+                options: RenderOptions::new(Flavor::Github),
+                root: root.clone(),
+                follow_symlinks: false,
+                quiet: true,
+                watcher: None,
+            };
+            let hub = Hub::new(Arc::new(ctx), rx);
+            hub.entry("a.md").trigger();
+            tx
+        });
+        started
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the render started");
+        stop.send_replace(true);
+        let t = std::time::Instant::now();
+        drop(rt);
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "shutdown waited {:?} for the render",
+            t.elapsed()
+        );
     }
 
     /// LIVE-8: a document re-created after eviction continues above every version handed out
