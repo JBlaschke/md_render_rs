@@ -329,15 +329,24 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
                 }
                 // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the
                 // rendering flavor, while one bundle holds both (D9).
-                Command::Vendor(a) => Plan::Vendor(vendor_plan(a, g.flavor, bundle, &cwd, quiet)?),
-                Command::Cache(c) => match c.action {
-                    CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
-                    CacheAction::Path => Plan::CachePath(bundle.0),
-                },
+                Command::Vendor(a) => {
+                    warn_ignored(g, false, "the 'vendor' subcommand", &mut warnings);
+                    Plan::Vendor(vendor_plan(a, g.flavor, bundle, &cwd, quiet)?)
+                }
+                Command::Cache(c) => {
+                    warn_ignored(g, true, "the 'cache' subcommand", &mut warnings);
+                    match c.action {
+                        CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
+                        CacheAction::Path => Plan::CachePath(bundle.0),
+                    }
+                }
             }
         }
         // grip runs `--clear` before any path resolution (GRIP §2.2 step 5).
-        None if cli.serve.clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
+        None if cli.serve.clear => {
+            warn_ignored(g, true, "--clear", &mut warnings);
+            Plan::CacheClear(cache_clear_plan(host, bundle)?)
+        }
         None if cli.serve.export => {
             reject_with_export(&cli.serve)?;
             let flavor = render_flavor(g, host)?;
@@ -437,6 +446,42 @@ fn subcommand_name(cmd: &Command) -> &'static str {
         Command::Export(_) => "export",
         Command::Vendor(_) => "vendor",
         Command::Cache(_) => "cache",
+    }
+}
+
+/// Rendering and API options that are set although `vendor` / `cache` never read them (CLI-11).
+/// They are global (usable before and after a subcommand), so clap accepts them everywhere.
+/// `--flavor` counts too when `flavor_ignored` (the cache commands).
+fn ignored_options(g: &GlobalArgs, flavor_ignored: bool) -> Vec<&'static str> {
+    [
+        (flavor_ignored && g.flavor.is_some(), "--flavor"),
+        (g.mode.is_some(), "--mode"),
+        (g.user_content, "--user-content"),
+        (g.context.is_some(), "--context"),
+        (g.title.is_some(), "--title"),
+        (g.theme.is_some(), "--theme"),
+        (g.light_theme.is_some(), "--light-theme"),
+        (g.dark_theme.is_some(), "--dark-theme"),
+        (g.layout.is_some(), "--layout"),
+        (!g.css.is_empty(), "--css"),
+        (g.api, "--api"),
+        (g.api_url.is_some(), "--api-url"),
+        (g.token.is_some(), "--token"),
+    ]
+    .into_iter()
+    .filter_map(|(set, name)| set.then_some(name))
+    .collect()
+}
+
+/// Warn about [`ignored_options`] for `what` ("the 'vendor' subcommand", "--clear").
+fn warn_ignored(g: &GlobalArgs, flavor_ignored: bool, what: &str, warnings: &mut Vec<String>) {
+    let names: Vec<String> = ignored_options(g, flavor_ignored)
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect();
+    let verb = if names.len() == 1 { "has" } else { "have" };
+    if !names.is_empty() {
+        warnings.push(format!("{} {verb} no effect with {what}", names.join(", ")));
     }
 }
 

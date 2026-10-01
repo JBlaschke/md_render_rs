@@ -930,6 +930,53 @@ fn vendor_options() {
     assert_eq!(error(&fx, &["vendor", "--themes", "some"]).1, 2);
 }
 
+/// CLI-11 / Q-CLI-1: rendering and API options are global, so `vendor` and `cache` accept
+/// them; they say that the options do nothing instead of ignoring them silently.
+#[test]
+fn vendor_and_cache_warn_about_rendering_options() {
+    let fx = Fixture::new();
+    let warnings = |args: &[&str]| run(&fx, args).unwrap().warnings;
+    let w = warnings(&[
+        "vendor",
+        "-f",
+        "github",
+        "--api",
+        "--token",
+        "s3cr3t",
+        "--css",
+        "/nonexistent.css",
+        "--theme",
+        "dark_dimmed",
+        "--title",
+        "T",
+        "--user-content",
+        "--context",
+        "a/b",
+    ]);
+    assert_eq!(
+        w,
+        [
+            "'--user-content', '--context', '--title', '--theme', '--css', '--api', '--token' \
+          have no effect with the 'vendor' subcommand"
+        ]
+    );
+    assert!(!w[0].contains("s3cr3t") && !w[0].contains("--flavor"));
+    let w = warnings(&[
+        "cache", "path", "--api", "-f", "gitlab", "--mode", "comment",
+    ]);
+    assert_eq!(
+        w,
+        ["'--flavor', '--mode', '--api' have no effect with the 'cache' subcommand"]
+    );
+    assert_eq!(
+        warnings(&["--clear", "--layout", "bare"]),
+        ["'--layout' has no effect with --clear"]
+    );
+    // Options the commands do read are not reported.
+    assert!(warnings(&["vendor", "-f", "gitlab", "--styles", "x.tar.gz", "-q"]).is_empty());
+    assert!(warnings(&["cache", "path", "--styles", "x.tar.gz"]).is_empty());
+}
+
 #[test]
 fn cache_commands() {
     let fx = Fixture::new();
