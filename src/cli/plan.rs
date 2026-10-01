@@ -880,6 +880,11 @@ fn export_plan(
     cwd: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<ExportPlan, CliError> {
+    if !render.extra_css.is_empty() {
+        // `ExportConfig` (DESIGN §3.9) has no extra stylesheets.
+        warnings
+            .push("--css has no effect on exports (it is only applied when serving)".to_owned());
+    }
     let input = match a.path.as_deref() {
         Some(p) if p == OsStr::new("-") => {
             let text = read_stdin(host, render.quiet, warnings)?;

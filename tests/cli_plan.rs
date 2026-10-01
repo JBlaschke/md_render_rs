@@ -780,6 +780,16 @@ fn export_naming() {
 #[test]
 fn export_render_options() {
     let fx = Fixture::new();
+    // ExportConfig has no extra stylesheets: say so instead of ignoring --css silently.
+    let inv = run(&fx, &["export", "--css", "style.css"]).unwrap();
+    assert!(
+        inv.warnings
+            .iter()
+            .any(|w| w.contains("--css has no effect on exports")),
+        "{:?}",
+        inv.warnings
+    );
+    assert!(run(&fx, &["export"]).unwrap().warnings.is_empty());
     let p = export(
         &fx,
         &[
