@@ -58,6 +58,42 @@ impl fmt::Debug for Bundle {
     }
 }
 
+/// Largest style bundle md-render reads, compressed or decompressed: 512 MiB. A complete bundle
+/// (both flavors with their client libraries) decompresses to about 16 MB; the cap only stops a
+/// small hostile `.tar.gz` (a "gzip bomb" expands ~1000-fold) from exhausting memory.
+pub const MAX_BUNDLE_SIZE: u64 = 512 << 20;
+
+/// The tarfs limits every bundle is read with ([`MAX_BUNDLE_SIZE`]).
+pub(crate) fn bundle_limits() -> tarfs::Limits {
+    tarfs::Limits::default().with_max_decompressed_size(MAX_BUNDLE_SIZE)
+}
+
+/// Read the `.tar.gz` bytes of a bundle file, refusing files larger than [`MAX_BUNDLE_SIZE`]
+/// (`InvalidData`) without reading them whole.
+fn read_bundle_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let too_large = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file is larger than the {} MiB limit",
+                MAX_BUNDLE_SIZE >> 20
+            ),
+        )
+    };
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_BUNDLE_SIZE {
+        return Err(too_large());
+    }
+    let mut gz = Vec::new();
+    // `take`: the file may grow while we read it.
+    file.take(MAX_BUNDLE_SIZE + 1).read_to_end(&mut gz)?;
+    if gz.len() as u64 > MAX_BUNDLE_SIZE {
+        return Err(too_large());
+    }
+    Ok(gz)
+}
+
 /// Lowercase hex SHA-256 of `bytes`.
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
@@ -127,9 +163,10 @@ fn fallback_tag(flavors: &[Flavor]) -> String {
 
 impl Bundle {
     /// Open a bundle file (decompressed into memory, never unpacked to disk), parse and validate
-    /// its manifest: the schema must be [`SCHEMA`] and every listed path must exist.
+    /// its manifest: the schema must be [`SCHEMA`] and every listed path must exist. Neither the
+    /// file nor its decompressed contents may exceed [`MAX_BUNDLE_SIZE`].
     pub fn open(path: &Path) -> anyhow::Result<Bundle> {
-        let gz = std::fs::read(path)
+        let gz = read_bundle_file(path)
             .with_context(|| format!("reading style bundle {}", path.display()))?;
         Self::from_tar_gz_bytes(&gz, BundleOrigin::File(path.to_owned()))
             .with_context(|| format!("invalid style bundle {}", path.display()))
@@ -147,7 +184,8 @@ impl Bundle {
         sha256: String,
         origin: BundleOrigin,
     ) -> anyhow::Result<Bundle> {
-        let fs = tarfs::InMemoryFileSystem::from_tar_gz_bytes(gz).context("reading the archive")?;
+        let fs = tarfs::InMemoryFileSystem::from_tar_gz_bytes_with_limits(gz, bundle_limits())
+            .context("reading the archive")?;
         let raw = fs
             .get(MANIFEST_PATH)
             .with_context(|| format!("no {MANIFEST_PATH} in the archive"))?;
@@ -415,7 +453,7 @@ pub fn load_or_fallback(path: &Path) -> (Bundle, Option<String>) {
             // Suggest only what `md-render vendor` will do: it refuses to overwrite a file it
             // cannot read as an md-render bundle, except at the default location.
             let cmd = vendor_command(None, path);
-            let fix = if vendor::accepts_output(path) {
+            let fix = if vendor::accepts_output(path, &e) {
                 format!("run `{cmd}` to download them again")
             } else if path.is_file() {
                 format!("delete it, then run `{cmd}` to download them again")
@@ -503,7 +541,7 @@ impl SharedBundle {
     /// written file.
     pub fn reload(&self) -> anyhow::Result<bool> {
         let keep = "keeping the previously loaded styles";
-        let gz = match std::fs::read(&self.path) {
+        let gz = match read_bundle_file(&self.path) {
             Ok(gz) => gz,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(self.replace(Bundle::fallback()));

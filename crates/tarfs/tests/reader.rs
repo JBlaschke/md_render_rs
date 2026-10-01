@@ -457,3 +457,46 @@ fn concurrent_reads_from_many_threads() {
         }
     });
 }
+
+#[test]
+fn gzip_bombs_stop_at_the_decompressed_size_limit() {
+    // 16 MiB of zeros in one member: a few KB of gzip.
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    let mut h = Header::new_ustar();
+    h.set_path("zero.bin").unwrap();
+    h.set_size(16 << 20);
+    h.set_mode(0o644);
+    h.set_cksum();
+    gz.write_all(h.as_bytes()).unwrap();
+    for _ in 0..16 {
+        gz.write_all(&[0u8; 1 << 20]).unwrap();
+    }
+    gz.write_all(&[0u8; 1024]).unwrap();
+    let bomb = gz.finish().unwrap();
+    assert!(bomb.len() < 100_000, "{} bytes", bomb.len());
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bomb.tar.gz");
+    std::fs::write(&path, &bomb).unwrap();
+    let limits = tarfs::Limits::default().with_max_decompressed_size(1 << 20);
+    for result in [
+        InMemoryFileSystem::open_with_limits(&path, limits),
+        InMemoryFileSystem::from_tar_gz_bytes_with_limits(&bomb, limits),
+        InMemoryFileSystem::from_tar_gz_reader_with_limits(&bomb[..], limits),
+    ] {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::TooLarge { limit } if limit == 1 << 20),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "archive too large: it decompresses to more than 1048576 bytes"
+        );
+    }
+    // A limit that fits, and no limit at all (the default), both read it.
+    let roomy = tarfs::Limits::default().with_max_decompressed_size(17 << 20);
+    let fs = InMemoryFileSystem::open_with_limits(&path, roomy).unwrap();
+    assert_eq!(fs.file_size("zero.bin"), Some(16 << 20));
+    assert_eq!(InMemoryFileSystem::open(&path).unwrap().len(), 1);
+}

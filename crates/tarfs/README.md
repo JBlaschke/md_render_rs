@@ -82,7 +82,7 @@ fn main() -> tarfs::Result<()> {
 
 | TarFS.jl | tarfs | Notes |
 |---|---|---|
-| `InMemoryFileSystem(path)` | `InMemoryFileSystem::open(path)` | also `from_tar_gz_reader`, `from_tar_gz_bytes`, `from_tar_bytes` |
+| `InMemoryFileSystem(path)` | `InMemoryFileSystem::open(path)` | also `from_tar_gz_reader`, `from_tar_gz_bytes`, `from_tar_bytes`; `*_with_limits(…, Limits)` variants cap the decompressed size |
 | `InMemoryFileSystem()` | `InMemoryFileSystem::new()` / `Default` | alias `TarFs` |
 | `readfile(fs, p)` | `read_file(p) -> Result<Bytes>` | zero-copy; also `get(p) -> Option<&[u8]>` and `read_to_string(p)` |
 | `writefile(fs, p, c)` | `write_file(p, c)` | `c: impl Into<Bytes>`; checks `p` with `check_path` |
@@ -104,6 +104,7 @@ Every fallible call returns `tarfs::Result<T>`. The error type is `tarfs::Error`
 | `PathTooLong(path)` | the default writer cannot encode `path`; use the extended writer |
 | `EntryTooLarge { path, size }` | the default writer cannot encode a file of 8 GiB or more |
 | `Corrupt(msg)` | not a valid gzip-compressed tarball, or an unsupported or unsafe member |
+| `TooLarge { limit }` | the archive decompresses to more than `Limits::max_decompressed_size` |
 | `Utf8(path)` | `read_to_string` found bytes that are not UTF-8 |
 
 ### Paths
@@ -187,7 +188,11 @@ back, the two writers are interchangeable.
 * Regular files only. tarfs keeps no symlinks, hard links, permissions (everything
   becomes `0o644`) or timestamps, and it does not support GNU sparse files.
 * The whole decompressed archive stays in memory for the lifetime of the value.
-  There is no cap on decompressed size, so be careful with untrusted archives.
+  `open` and the other readers do not cap its size. For archives you did not
+  create, use `open_with_limits` (or `from_tar_gz_reader_with_limits`,
+  `from_tar_gz_bytes_with_limits`) with a `Limits` value: decompression then
+  stops with `TooLarge` once the cap is reached, so a small "gzip bomb" cannot
+  exhaust memory.
 * Data after the last gzip member, even zero padding, makes the archive `Corrupt`.
 
 ## Differences from TarFS.jl

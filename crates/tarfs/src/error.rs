@@ -49,6 +49,16 @@ pub enum Error {
     /// The input is not a valid (supported) gzip-compressed tarball.
     #[error("corrupt archive: {0}")]
     Corrupt(String),
+    /// The archive decompresses to more than
+    /// [`Limits::max_decompressed_size`](crate::Limits::max_decompressed_size)
+    /// bytes (a "gzip bomb", or just an archive too large for the caller's
+    /// limits). Decompression stops there, so no more than the limit is ever held
+    /// in memory.
+    #[error("archive too large: it decompresses to more than {limit} bytes")]
+    TooLarge {
+        /// The limit that was exceeded, in bytes.
+        limit: u64,
+    },
     /// [`read_to_string`](crate::InMemoryFileSystem::read_to_string) found
     /// non-UTF-8 content in this file.
     #[error("file is not valid UTF-8: {0}")]

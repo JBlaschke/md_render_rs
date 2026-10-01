@@ -7,24 +7,31 @@ use bytes::Bytes;
 use flate2::read::MultiGzDecoder;
 use tar::{Archive, EntryType};
 
-use crate::Entry;
 use crate::error::{Error, Result};
 use crate::path::normalize_member;
+use crate::{Entry, Limits};
 
-/// Decompress a complete gzip stream (every member) into memory.
+/// Decompress a complete gzip stream (every member) into memory, stopping with
+/// [`Error::TooLarge`] as soon as the output exceeds
+/// [`Limits::max_decompressed_size`].
 ///
 /// `MultiGzDecoder`, not `GzDecoder`: the latter silently stops after the first
 /// member of a multi-member stream (`cat a.gz b.gz`, pigz), truncating the tar
 /// (CR §6). Errors raised by `source` itself are reported as [`Error::Io`];
 /// everything the decoder rejects (bad magic, corrupt deflate data, CRC mismatch,
 /// truncation) as [`Error::Corrupt`].
-pub(crate) fn gunzip(source: impl Read) -> Result<Vec<u8>> {
+pub(crate) fn gunzip(source: impl Read, limits: Limits) -> Result<Vec<u8>> {
     let mut tap = ErrorTap {
         inner: source,
         failed: false,
     };
     let mut raw = Vec::new();
-    match MultiGzDecoder::new(&mut tap).read_to_end(&mut raw) {
+    let decoder = MultiGzDecoder::new(&mut tap);
+    // One byte more than allowed, so that reaching it proves the limit is exceeded
+    // while memory stays bounded by the limit (a gzip bomb expands ~1000-fold).
+    let max = limits.max_decompressed_size.unwrap_or(u64::MAX);
+    match decoder.take(max.saturating_add(1)).read_to_end(&mut raw) {
+        Ok(_) if raw.len() as u64 > max => Err(Error::TooLarge { limit: max }),
         Ok(_) => Ok(raw),
         Err(err) if tap.failed => Err(Error::Io(err)),
         Err(err) => Err(Error::Corrupt(format!("gzip: {err}"))),
@@ -146,16 +153,47 @@ mod tests {
         }
     }
 
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(data).unwrap();
+        gz.finish().unwrap()
+    }
+
     #[test]
     fn source_errors_are_io_and_decoder_errors_are_corrupt() {
+        let none = Limits::default();
         assert!(matches!(
-            gunzip(FailingReader),
+            gunzip(FailingReader, none),
             Err(Error::Io(e)) if e.kind() == io::ErrorKind::PermissionDenied
         ));
         assert!(
-            matches!(gunzip(&b"not gzip at all"[..]), Err(Error::Corrupt(m)) if m.starts_with("gzip:"))
+            matches!(gunzip(&b"not gzip at all"[..], none), Err(Error::Corrupt(m)) if m.starts_with("gzip:"))
         );
-        assert!(matches!(gunzip(&b""[..]), Err(Error::Corrupt(_))));
+        assert!(matches!(gunzip(&b""[..], none), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn decompressed_size_limit_is_exact_and_spans_members() {
+        let gz = gzip(&[0u8; 10_000]);
+        let limit = |n| Limits::default().with_max_decompressed_size(n);
+        assert_eq!(gunzip(&gz[..], Limits::default()).unwrap().len(), 10_000);
+        assert_eq!(gunzip(&gz[..], limit(10_000)).unwrap().len(), 10_000);
+        assert!(matches!(
+            gunzip(&gz[..], limit(9_999)),
+            Err(Error::TooLarge { limit: 9_999 })
+        ));
+        assert!(matches!(
+            gunzip(&gz[..], limit(0)),
+            Err(Error::TooLarge { limit: 0 })
+        ));
+        let mut two = gzip(&[1u8; 600]);
+        two.extend(gzip(&[2u8; 600]));
+        assert_eq!(gunzip(&two[..], limit(1200)).unwrap().len(), 1200);
+        assert!(matches!(
+            gunzip(&two[..], limit(1000)),
+            Err(Error::TooLarge { limit: 1000 })
+        ));
     }
 
     #[test]

@@ -689,11 +689,17 @@ fn fetch_all(fetcher: &dyn Fetch, urls: &[&str]) -> Vec<anyhow::Result<Response>
 // ------------------------------------------------------------------------------------------------
 // Writing the bundle
 
-/// Whether `md-render vendor -o output` would accept `output` (see [`existing_source`]): the
-/// file is absent, an md-render bundle this version can update, or an unreadable bundle at the
-/// default location. [`crate::styles::load_or_fallback`] uses it so that the command it suggests
-/// for an unusable bundle actually works.
-pub(crate) fn accepts_output(output: &Path) -> bool {
+/// Whether `md-render vendor -o output` would accept `output` (see [`existing_source`]), which
+/// [`crate::styles::Bundle::open`] just failed to open with `error`: the file is absent, an
+/// md-render bundle this version can update, or an unreadable bundle at the default location.
+/// [`crate::styles::load_or_fallback`] uses it so that the command it suggests for an unusable
+/// bundle actually works.
+pub(crate) fn accepts_output(output: &Path, error: &anyhow::Error) -> bool {
+    if error.chain().any(|e| e.is::<tarfs::Error>()) {
+        // existing_source would fail to read the archive the same way; don't decompress a
+        // possible gzip bomb a second time to find that out.
+        return output == crate::styles::default_bundle_path();
+    }
     existing_source(output, &Progress { quiet: true }).is_ok()
 }
 
@@ -710,7 +716,7 @@ fn existing_source<'p>(output: &'p Path, progress: &Progress) -> anyhow::Result<
     if !meta.is_file() {
         bail!("{} exists and is not a regular file", output.display());
     }
-    match tarfs::InMemoryFileSystem::open(output) {
+    match tarfs::InMemoryFileSystem::open_with_limits(output, crate::styles::bundle_limits()) {
         Ok(fs) if fs.is_empty() => Ok(Some(output)),
         Ok(fs) if fs.contains(MANIFEST_PATH) => {
             /// Just the schema, which every version's manifest has.
@@ -794,7 +800,15 @@ fn write_bundle(
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let from = existing_source(output, progress)?;
-    tarfs::open_tarball_gz(output, from, |fs| -> anyhow::Result<()> {
+    // tarfs::open_tarball_gz, but reading the existing bundle with md-render's size limits.
+    let mut fs = match from {
+        Some(source) => {
+            tarfs::InMemoryFileSystem::open_with_limits(source, crate::styles::bundle_limits())
+                .with_context(|| format!("reading style bundle {}", source.display()))?
+        }
+        None => tarfs::InMemoryFileSystem::new(),
+    };
+    let update = |fs: &mut tarfs::InMemoryFileSystem| -> anyhow::Result<()> {
         let mut manifest = existing_manifest(fs, output, progress)?;
         for o in outputs {
             fs.delete_prefix(o.flavor.as_str());
@@ -831,10 +845,10 @@ fn write_bundle(
         crate::styles::validate_manifest(&manifest, |p| fs.contains(p))?;
         let json = serde_json::to_vec_pretty(&manifest).context("serializing manifest.json")?;
         fs.write_file(MANIFEST_PATH, json)?;
+        fs.write_tarball_gz(output)?;
         Ok(())
-    })
-    .with_context(|| format!("writing style bundle {}", output.display()))?;
-    Ok(())
+    };
+    update(&mut fs).with_context(|| format!("writing style bundle {}", output.display()))
 }
 
 // ------------------------------------------------------------------------------------------------
