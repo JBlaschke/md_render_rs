@@ -785,22 +785,37 @@ fn canonical_root(cwd: &Path, root: &Path) -> Result<PathBuf, CliError> {
     }
 }
 
-/// grip's "File not found", plus a hint when the path looks like a host name (GRIP §2.3: a
-/// lone host without a port is a path).
-fn not_found(path: &Path) -> CliError {
+/// grip's "File not found". When serving, a PATH that was surely meant as the ADDRESS gets a
+/// hint (GRIP §2.3: a lone host without a port is a path): `localhost` or an IP literal, and an
+/// all-digit value, which is only a path because it is out of range as a port. Ordinary names
+/// (`notes`, `README`) get none: they are far more likely mistyped files (CLI-8).
+fn not_found(path: &Path, serving: bool) -> CliError {
     let shown = path.display().to_string();
     let mut msg = format!("File not found: {shown}");
-    let host_only =
-        address::split_address(&shown).is_some_and(|hp| hp.host.is_some() && hp.port.is_none());
-    // `localhost`, `myhost`, `0.0.0.0`, `[::1]` — but not `notes.md` or `docs/x`.
-    let looks_like_host = !shown.contains('/')
-        && (!shown.contains('.') || shown.chars().all(|c| c.is_ascii_digit() || c == '.'));
-    if host_only && looks_like_host {
-        msg.push_str(&format!(
-            " (to listen on host '{shown}' give both a path and an address, e.g. `md-render . {shown}`)"
-        ));
+    if serving {
+        if !shown.is_empty() && shown.bytes().all(|b| b.is_ascii_digit()) {
+            msg.push_str(&format!(
+                " (nor is it a port to listen on: ports go from 0 to {})",
+                u16::MAX
+            ));
+        } else if is_host_literal(&shown) {
+            msg.push_str(&format!(
+                " (to listen on host '{shown}' give both a path and an address, e.g. `md-render . {shown}`)"
+            ));
+        }
     }
     runtime(msg)
+}
+
+/// `localhost`, `*.localhost`, an IPv4 literal or a bracketed IPv6 literal.
+fn is_host_literal(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower == "localhost"
+        || (lower.ends_with(".localhost") && address::valid_hostname(&lower))
+        || s.parse::<std::net::Ipv4Addr>().is_ok()
+        || s.strip_prefix('[')
+            .and_then(|r| r.strip_suffix(']'))
+            .is_some_and(|v6| v6.parse::<std::net::Ipv6Addr>().is_ok())
 }
 
 /// Root and target for a file or directory PATH (D14): the directory itself or the file's
@@ -814,7 +829,7 @@ fn fs_target(
 ) -> Result<(PathBuf, Target), CliError> {
     let abs = absolutize(cwd, path);
     let meta = fs::metadata(&abs).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => not_found(path),
+        io::ErrorKind::NotFound => not_found(path, true),
         _ => runtime(format!("cannot access {}: {e}", path.display())),
     })?;
     let canon = |p: &Path| {
@@ -825,7 +840,10 @@ fn fs_target(
         (dir.clone(), dir, true)
     } else {
         // Keep the file name as given (a symlinked file keeps its own name); resolve the parent.
-        let name = abs.file_name().ok_or_else(|| not_found(path))?.to_owned();
+        let name = abs
+            .file_name()
+            .ok_or_else(|| not_found(path, true))?
+            .to_owned();
         let parent = canon(abs.parent().unwrap_or(cwd))?;
         (parent.clone(), parent.join(name), false)
     };
@@ -917,7 +935,7 @@ fn export_plan(
             let given = Path::new(p.unwrap_or(OsStr::new(".")));
             let abs = absolutize(cwd, given);
             let meta = fs::metadata(&abs).map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => not_found(given),
+                io::ErrorKind::NotFound => not_found(given, false),
                 _ => runtime(format!("cannot access {}: {e}", given.display())),
             })?;
             if meta.is_dir() {
@@ -1023,15 +1041,28 @@ mod tests {
 
     #[test]
     fn host_name_hint_only_for_host_like_paths() {
-        let msg = |p: &str| match not_found(Path::new(p)) {
+        let msg_for = |p: &str, serving| match not_found(Path::new(p), serving) {
             CliError::Runtime(e) => e.to_string(),
             other => panic!("{other:?}"),
         };
+        let msg = |p: &str| msg_for(p, true);
         assert!(msg("localhost").contains("md-render . localhost"));
         assert!(msg("0.0.0.0").contains("md-render . 0.0.0.0"));
+        assert!(msg("[::1]").contains("md-render . [::1]"));
+        assert!(msg("dev.localhost").contains("md-render . dev.localhost"));
         assert_eq!(msg("README.md"), "File not found: README.md");
         assert_eq!(msg("docs/x"), "File not found: docs/x");
         assert_eq!(msg("my_file"), "File not found: my_file");
+        // CLI-8: plain names are mistyped files, not hosts; no listen hint when exporting.
+        for name in ["notes", "README", "CHANGELOG", "help", "1.2.3"] {
+            assert_eq!(msg(name), format!("File not found: {name}"));
+        }
+        assert_eq!(
+            msg("70000"),
+            "File not found: 70000 (nor is it a port to listen on: ports go from 0 to 65535)"
+        );
+        assert_eq!(msg_for("localhost", false), "File not found: localhost");
+        assert_eq!(msg_for("70000", false), "File not found: 70000");
     }
 
     #[test]

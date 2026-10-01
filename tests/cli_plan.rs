@@ -262,9 +262,12 @@ fn lone_host_names_and_bad_ports_are_paths() {
     for (arg, hint) in [
         ("0.0.0.0", true),
         ("localhost", true),
-        ("70000", true),
+        ("70000", false),
         ("[::1]", true),
         ("notes.md", false),
+        // CLI-8: extension-less file names are not host names.
+        ("notes", false),
+        ("README", false),
     ] {
         let (msg, code) = error(&fx, &[arg]);
         assert_eq!(code, 1, "{arg}");
@@ -273,7 +276,16 @@ fn lone_host_names_and_bad_ports_are_paths() {
             "{msg}"
         );
         assert_eq!(msg.contains(&format!("md-render . {arg}")), hint, "{msg}");
+        // Exports never listen: no hint at all.
+        let (msg, code) = error(&fx, &["export", arg]);
+        assert_eq!(code, 1, "{arg}");
+        assert_eq!(msg, format!("error: File not found: {arg}"));
     }
+    assert!(
+        error(&fx, &["70000"]).0.contains("nor is it a port"),
+        "{:?}",
+        error(&fx, &["70000"])
+    );
     // `_` and unbracketed IPv6 never form an address: as a lone positional they are paths.
     assert!(
         error(&fx, &["my_host:80"])
