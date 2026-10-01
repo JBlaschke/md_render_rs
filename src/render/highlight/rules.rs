@@ -10,7 +10,7 @@
 //! * [`Precedence::LongestFirst`] — CSS-like (used for GitHub's PrettyLights map, GH §7.5/§7.6):
 //!   the longer `SCOPE` prefix wins; at equal length the rule with more ancestor atoms wins.
 //!
-//! Ties keep the rule listed first.
+//! Ties keep the rule listed first (as `scope_map.py`'s strict `>` comparison does).
 
 use std::collections::HashMap;
 
@@ -35,8 +35,11 @@ struct Rule<T> {
 #[derive(Debug)]
 pub(crate) struct RuleSet<T> {
     rules: Vec<Rule<T>>,
-    /// Indices of rules without ancestors, grouped by their first atom's prefix scope.
-    any_ancestors: bool,
+    /// Rule indices (in table order) keyed by the first atom of the rule's scope: a rule can only
+    /// match a scope with the same first atom, so a lookup only scans one bucket.
+    by_first_atom: HashMap<u16, Vec<usize>>,
+    /// Selectors that failed to parse (a unit test asserts that there are none).
+    rejected: Vec<&'static str>,
 }
 
 /// Parse a selector into `(ancestors, scope)`. Returns `None` for an empty or unparsable one.
@@ -46,16 +49,25 @@ fn parse_selector(selector: &str) -> Option<(Vec<Scope>, Scope)> {
         parts.push(Scope::new(part).ok()?);
     }
     let scope = parts.pop()?;
+    if scope.is_empty() {
+        return None;
+    }
     Some((parts, scope))
 }
 
 impl<T> RuleSet<T> {
     /// Compile `(selector, value)` pairs. Selectors that do not parse as syntect scopes are
-    /// skipped (the tables are static, a unit test asserts that none is skipped).
-    pub(crate) fn new(precedence: Precedence, rules: impl IntoIterator<Item = (&'static str, T)>) -> Self {
+    /// skipped and recorded (see [`RuleSet::rejected`]).
+    pub(crate) fn new(
+        precedence: Precedence,
+        rules: impl IntoIterator<Item = (&'static str, T)>,
+    ) -> Self {
         let mut out = Vec::new();
+        let mut rejected = Vec::new();
+        let mut by_first_atom: HashMap<u16, Vec<usize>> = HashMap::new();
         for (selector, value) in rules {
             let Some((ancestors, scope)) = parse_selector(selector) else {
+                rejected.push(selector);
                 continue;
             };
             let own = scope.len();
@@ -65,10 +77,10 @@ impl<T> RuleSet<T> {
                 Precedence::AncestorFirst => 100 + own + anc,
                 Precedence::LongestFirst => own * 64 + anc,
             };
+            by_first_atom.entry(scope.atom_at(0)).or_default().push(out.len());
             out.push(Rule { scope, ancestors, specificity, value });
         }
-        let any_ancestors = out.iter().any(|r| !r.ancestors.is_empty());
-        RuleSet { rules: out, any_ancestors }
+        RuleSet { rules: out, by_first_atom, rejected }
     }
 
     /// Number of compiled rules.
@@ -76,14 +88,21 @@ impl<T> RuleSet<T> {
         self.rules.len()
     }
 
+    /// Selectors that could not be compiled.
+    pub(crate) fn rejected(&self) -> &[&'static str] {
+        &self.rejected
+    }
+
     /// The most specific rule matching `scope` with `parents` (outermost first) further out.
     pub(crate) fn lookup(&self, scope: Scope, parents: &[Scope]) -> Option<&T> {
+        let bucket = self.by_first_atom.get(&scope.atom_at(0))?;
         let mut best: Option<&Rule<T>> = None;
-        for rule in &self.rules {
-            if !rule.scope.is_prefix_of(scope) {
+        for &i in bucket {
+            let rule = &self.rules[i];
+            if best.is_some_and(|b| b.specificity >= rule.specificity) {
                 continue;
             }
-            if best.is_some_and(|b| b.specificity >= rule.specificity) {
+            if !rule.scope.is_prefix_of(scope) {
                 continue;
             }
             if !rule
@@ -96,38 +115,6 @@ impl<T> RuleSet<T> {
             best = Some(rule);
         }
         best.map(|r| &r.value)
-    }
-
-    /// Whether any rule has ancestors (lookups then depend on the stack, not just the scope).
-    pub(crate) fn has_ancestor_rules(&self) -> bool {
-        self.any_ancestors
-    }
-}
-
-/// Memoizes [`RuleSet::lookup`] for rule sets whose results only depend on the scope (no
-/// ancestor rules), or on the scope plus the stack's root scope (the only ancestor the
-/// language-conditional rules use is checked by the caller through the key).
-pub(crate) struct Memo<'r, T> {
-    rules: &'r RuleSet<T>,
-    cache: HashMap<(Scope, Scope), Option<&'r T>>,
-}
-
-impl<'r, T> Memo<'r, T> {
-    pub(crate) fn new(rules: &'r RuleSet<T>) -> Self {
-        Memo { rules, cache: HashMap::new() }
-    }
-
-    /// Lookup with memoization when the result cannot depend on anything but `scope` and the
-    /// root; falls through to a full lookup otherwise.
-    pub(crate) fn lookup(&mut self, scope: Scope, parents: &[Scope], context_free: bool) -> Option<&'r T> {
-        if !context_free {
-            return self.rules.lookup(scope, parents);
-        }
-        let root = parents.first().copied().unwrap_or_default();
-        *self
-            .cache
-            .entry((scope, root))
-            .or_insert_with(|| self.rules.lookup(scope, parents))
     }
 }
 
@@ -145,6 +132,8 @@ mod tests {
         assert_eq!(r.lookup(s("string.quoted.double.rust"), &[]), Some(&2));
         assert_eq!(r.lookup(s("string.unquoted"), &[]), Some(&1));
         assert_eq!(r.lookup(s("stringy"), &[]), None);
+        assert_eq!(r.lookup(s("comment"), &[]), None);
+        assert_eq!(r.len(), 2);
     }
 
     #[test]
@@ -158,12 +147,18 @@ mod tests {
         assert_eq!(gh.lookup(scope, &parents), Some(&20));
         // Without the ancestor only the plain rule applies.
         assert_eq!(gl.lookup(scope, &[s("source.json")]), Some(&20));
-        assert!(gl.has_ancestor_rules());
     }
 
     #[test]
     fn ties_keep_first_rule() {
         let r = RuleSet::new(Precedence::LongestFirst, [("comment", 1), ("comment", 2)]);
         assert_eq!(r.lookup(s("comment.line"), &[]), Some(&1));
+    }
+
+    #[test]
+    fn bad_selectors_are_recorded() {
+        let r = RuleSet::new(Precedence::LongestFirst, [("", 1), ("  ", 2), ("ok", 3)]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.rejected(), &["", "  "]);
     }
 }

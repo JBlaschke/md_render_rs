@@ -4,11 +4,12 @@
 //! The syntax set is loaded once (`OnceLock`) and shared by all threads (`SyntaxSet: Send + Sync`;
 //! syntect compiles each grammar's regexes lazily and thread-safely on first use).
 //!
-//! [`tokenize`] drives `ParseState` + `ScopeStack` line by line (CR §2 "Tokenising API") and
+//! [`LineTokenizer`] drives `ParseState` + `ScopeStack` line by line (CR §2 "Tokenising API") and
 //! reports a flat stream of [`Event`]s: basic scope pushes/pops (`ScopeStack::apply_with_hook`
 //! turns syntect's `Clear`/`Restore` ops into plain pops and pushes) and text segments. Text
 //! segments never span lines; the line terminator is reported as part of the last segment of a
-//! line, exactly as syntect's `*_newlines` grammars see it.
+//! line, exactly as syntect's `*_newlines` grammars see it. [`tokenize`] runs it over a whole
+//! block.
 //!
 //! Work is bounded ([`Limits`]) and every failure mode of the parser (a `ParsingError`, a
 //! `ScopeError`, or a panic inside syntect) is reported as [`Error`] so that callers can fall
@@ -31,6 +32,23 @@ pub(crate) fn syntaxes() -> &'static SyntaxSet {
 pub(crate) fn syntax_by_scope(scope: &str) -> Option<&'static SyntaxReference> {
     let scope = Scope::new(scope).ok()?;
     syntaxes().find_syntax_by_scope(scope)
+}
+
+/// syntect's own token lookup (file extension first, then syntax name, both ASCII
+/// case-insensitive; CR §2 "Language token lookup").
+pub(crate) fn syntax_by_token(token: &str) -> Option<&'static SyntaxReference> {
+    if token.is_empty() {
+        return None;
+    }
+    syntaxes().find_syntax_by_token(token)
+}
+
+/// Look up a syntax by file extension only (ASCII case-insensitive).
+pub(crate) fn syntax_by_extension(ext: &str) -> Option<&'static SyntaxReference> {
+    if ext.is_empty() {
+        return None;
+    }
+    syntaxes().find_syntax_by_extension(ext)
 }
 
 /// Upper bounds on the work done for one code block. Inputs beyond them are not tokenized (the
@@ -86,6 +104,74 @@ pub(crate) enum Event<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Error;
 
+/// Run `f`, turning a panic inside syntect into [`Error`].
+///
+/// syntect has a few internal `unwrap`s (lazy regex compilation, context resolution); a panic
+/// there must not take down the render, so it is contained here and reported as an error.
+pub(crate) fn guarded<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or(Err(Error))
+}
+
+/// Incremental tokenizer for one syntax: feed it one line at a time (with its terminator).
+///
+/// Callers must run it inside [`guarded`].
+pub(crate) struct LineTokenizer {
+    syntax: &'static SyntaxReference,
+    state: ParseState,
+    stack: ScopeStack,
+}
+
+impl LineTokenizer {
+    pub(crate) fn new(syntax: &'static SyntaxReference) -> Self {
+        LineTokenizer { syntax, state: ParseState::new(syntax), stack: ScopeStack::new() }
+    }
+
+    /// Forget all state (as if freshly created). Scopes still on the stack are *not* reported as
+    /// popped; callers track their own output state.
+    pub(crate) fn reset(&mut self) {
+        self.state = ParseState::new(self.syntax);
+        self.stack = ScopeStack::new();
+    }
+
+    /// The current scope stack (outermost first).
+    pub(crate) fn stack(&self) -> &[Scope] {
+        self.stack.as_slice()
+    }
+
+    /// Tokenize one line (`\n` only as its last byte, if at all), calling `sink(event, stack)`
+    /// for every event, where `stack` is the scope stack after the event was applied.
+    pub(crate) fn feed<'c>(
+        &mut self,
+        line: &'c str,
+        sink: &mut impl FnMut(Event<'c>, &[Scope]),
+    ) -> Result<(), Error> {
+        let ops = self.state.parse_line(line, syntaxes()).map_err(|_| Error)?;
+        let mut pos = 0usize;
+        for (offset, op) in &ops {
+            // Offsets are byte offsets into `line` and lie on char boundaries; be defensive
+            // anyway, a bad offset must never slice mid-character.
+            let offset = (*offset).min(line.len());
+            if offset > pos {
+                let text = line.get(pos..offset).ok_or(Error)?;
+                sink(Event::Text(text), self.stack.as_slice());
+                pos = offset;
+            }
+            // The hook sees the stack after each basic op (for `Clear`, after the whole clear).
+            self.stack
+                .apply_with_hook(op, |basic, scopes| match basic {
+                    BasicScopeStackOp::Push(scope) => sink(Event::Push(scope), scopes),
+                    BasicScopeStackOp::Pop => sink(Event::Pop, scopes),
+                })
+                .map_err(|_| Error)?;
+        }
+        if pos < line.len() {
+            let text = line.get(pos..).ok_or(Error)?;
+            sink(Event::Text(text), self.stack.as_slice());
+        }
+        Ok(())
+    }
+}
+
 /// Tokenize `code` with `syntax`, calling `sink(event, stack)` for every event, where `stack` is
 /// the scope stack after the event was applied.
 ///
@@ -95,53 +181,20 @@ pub(crate) struct Error;
 /// buffer their output and discard it on error.
 pub(crate) fn tokenize<'c>(
     code: &'c str,
-    syntax: &SyntaxReference,
+    syntax: &'static SyntaxReference,
     limits: Limits,
     mut sink: impl FnMut(Event<'c>, &[Scope]),
 ) -> Result<(), Error> {
     if !limits.admits(code) {
         return Err(Error);
     }
-    // syntect has a few internal `unwrap`s (lazy regex compilation, context resolution); a
-    // panic there must not take down the render, so it is contained and reported as an error.
-    catch_unwind(AssertUnwindSafe(|| tokenize_inner(code, syntax, &mut sink)))
-        .unwrap_or(Err(Error))
-}
-
-fn tokenize_inner<'c>(
-    code: &'c str,
-    syntax: &SyntaxReference,
-    sink: &mut impl FnMut(Event<'c>, &[Scope]),
-) -> Result<(), Error> {
-    let set = syntaxes();
-    let mut state = ParseState::new(syntax);
-    let mut stack = ScopeStack::new();
-    for line in code.split_inclusive('\n') {
-        let ops = state.parse_line(line, set).map_err(|_| Error)?;
-        let mut pos = 0usize;
-        for (offset, op) in &ops {
-            // Offsets are byte offsets into `line` and lie on char boundaries; be defensive
-            // anyway, a bad offset must never slice mid-character.
-            let offset = (*offset).min(line.len());
-            if offset > pos {
-                let text = line.get(pos..offset).ok_or(Error)?;
-                sink(Event::Text(text), stack.as_slice());
-                pos = offset;
-            }
-            // The hook sees the stack after each basic op (for `Clear`, after the whole clear).
-            stack
-                .apply_with_hook(op, |basic, scopes| match basic {
-                    BasicScopeStackOp::Push(scope) => sink(Event::Push(scope), scopes),
-                    BasicScopeStackOp::Pop => sink(Event::Pop, scopes),
-                })
-                .map_err(|_| Error)?;
+    guarded(|| {
+        let mut tokenizer = LineTokenizer::new(syntax);
+        for line in code.split_inclusive('\n') {
+            tokenizer.feed(line, &mut sink)?;
         }
-        if pos < line.len() {
-            let text = line.get(pos..).ok_or(Error)?;
-            sink(Event::Text(text), stack.as_slice());
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -165,6 +218,9 @@ mod tests {
             assert!(syntax_by_scope(scope).is_some(), "{scope}");
         }
         assert!(syntax_by_scope("not a scope at all").is_none());
+        assert!(syntax_by_token("").is_none());
+        assert_eq!(syntax_by_token("rs").map(|s| s.name.as_str()), Some("Rust"));
+        assert_eq!(syntax_by_extension("py").map(|s| s.name.as_str()), Some("Python"));
     }
 
     #[test]
@@ -189,11 +245,34 @@ mod tests {
     }
 
     #[test]
+    fn line_tokenizer_resets() {
+        let mut t = LineTokenizer::new(rust());
+        let mut texts = Vec::new();
+        guarded(|| {
+            t.feed("/* open\n", &mut |e, _| {
+                if let Event::Text(s) = e {
+                    texts.push(s.to_owned())
+                }
+            })
+        })
+        .unwrap();
+        assert!(t.stack().len() > 1, "inside the block comment");
+        t.reset();
+        assert!(t.stack().is_empty());
+    }
+
+    #[test]
     fn limits_reject_oversized_input() {
         let long = "x".repeat(Limits::DEFAULT.max_line_bytes + 1);
         assert_eq!(tokenize(&long, rust(), Limits::DEFAULT, |_, _| {}), Err(Error));
         let many = "x\n".repeat(Limits::DEFAULT.max_lines + 1);
         assert_eq!(tokenize(&many, rust(), Limits::DEFAULT, |_, _| {}), Err(Error));
         assert!(Limits::DEFAULT.admits(""));
+    }
+
+    #[test]
+    fn guarded_contains_panics() {
+        let r: Result<(), Error> = guarded(|| panic!("boom"));
+        assert_eq!(r, Err(Error));
     }
 }
