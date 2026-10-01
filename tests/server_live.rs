@@ -427,3 +427,40 @@ async fn gitlab_included_files_are_watched() {
     write(&s.path("inc.md"), "Included **FOUR**\n");
     assert!(s.get("/").await.text().contains("FOUR"));
 }
+
+/// LIVE-10: re-pointing a symlinked document (`ln -sfn`, a checkout that changes the link)
+/// pushes the new target's content, and the new target is watched from then on.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repointing_a_symlinked_document() {
+    let f = Fixture::new();
+    f.file("real/one.md", "Real one");
+    f.file("other/two.md", "Real two");
+    std::os::unix::fs::symlink("real/one.md", f.root.join("link.md")).unwrap();
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("link.md").await;
+    write_atomic(&s.path("real/one.md"), "Real one edited");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("Real one edited"))
+    })
+    .await;
+
+    // Atomically replace the link (like `ln -sfn` with a rename).
+    let tmp = s.path(".link.tmp");
+    std::os::unix::fs::symlink("other/two.md", &tmp).unwrap();
+    std::fs::rename(&tmp, s.path("link.md")).unwrap();
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("Real two"))
+    })
+    .await;
+    // Edits of the new target arrive; the old target no longer matters.
+    write_atomic(&s.path("other/two.md"), "Real two edited");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("Real two edited"))
+    })
+    .await;
+}
