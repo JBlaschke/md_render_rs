@@ -336,6 +336,42 @@ fn truncate(s: &str) -> String {
     s.chars().take(120).collect()
 }
 
+/// GL-WIKI-1: Gollum links to external images render as images, wrapped like every image.
+#[test]
+fn wiki_link_images() {
+    let mut o = opts();
+    o.sourcepos = false;
+    let html = render(
+        "[[https://example.com/logo.png]] [[Logo|https://example.com/logo.PNG]] [[https://example.com/page]]\n",
+        &o,
+    )
+    .html;
+    assert!(
+        html.starts_with(
+            "<p dir=\"auto\"><a class=\"no-attachment-icon\" href=\"https://example.com/logo.png\" \
+             target=\"_blank\" rel=\"nofollow noreferrer noopener\"><img class=\"gfm\" \
+             src=\"https://example.com/logo.png\""
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            "<a class=\"no-attachment-icon\" href=\"https://example.com/logo.PNG\" target=\"_blank\" \
+             rel=\"nofollow noreferrer noopener\"><img class=\"gfm\" src=\"https://example.com/logo.PNG\""
+        ),
+        "{html}"
+    );
+    assert!(!html.contains(">Logo<"), "link text is dropped: {html}");
+    assert!(
+        html.contains(
+            "<a href=\"https://example.com/page\" data-wikilink=\"true\" class=\"gfm\" \
+             data-canonical-src=\"https://example.com/page\" data-link=\"true\" data-gollum=\"true\" \
+             rel=\"nofollow noreferrer noopener\" target=\"_blank\">https://example.com/page</a>"
+        ),
+        "{html}"
+    );
+}
+
 /// Fastest of three renders.
 fn best_of_3(md: &str) -> Duration {
     let o = opts();

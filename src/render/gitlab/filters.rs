@@ -173,22 +173,48 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
 
 /// Offline version of `WikiLinkGollumFilter`: links keep their relative `href` (the local server
 /// resolves them), page links get `gfm gfm-gollum-wiki-page` so GitLab's CSS draws the icon.
+/// URL targets behave exactly as on GitLab: image URLs become `<img class="gfm">`
+/// (`process_image_link`; ImageLinkFilter wraps them later), other URLs get
+/// `set_common_attributes`. Relative image targets would be looked up in the project wiki,
+/// which offline cannot see, so they stay page links.
 pub(super) fn wiki_links(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["a"]) {
         let a = root.tree.get_unchecked(&id);
         let (Some(href), true) = (dom::attr(&a, "href"), a.has_attr("data-wikilink")) else {
             continue;
         };
+        // `url?` = `start_with?('http', 'https')`.
+        let url = href.starts_with("http");
+        if url && is_wiki_image(&href) {
+            let img = dom::new_element(root.tree, "img", &[("class", "gfm"), ("src", &href)]);
+            a.insert_before(&img);
+            a.remove_from_parent();
+            continue;
+        }
         if href.eq_ignore_ascii_case("_toc_") && dom::text(&a).eq_ignore_ascii_case("_toc_") {
             continue;
         }
-        if href.starts_with("http") {
+        if url {
+            // set_common_attributes
             dom::add_class(&a, "gfm");
+            a.set_attr("data-canonical-src", &href);
+            a.set_attr("data-link", "true");
+            a.set_attr("data-gollum", "true");
         } else {
             dom::add_class(&a, "gfm");
             dom::add_class(&a, "gfm-gollum-wiki-page");
         }
     }
+}
+
+/// `ALLOWED_IMAGE_EXTENSIONS` = `/(jpg|png|gif|svg|bmp)\z/i`: an unanchored suffix match, so
+/// `.../png` counts as well.
+fn is_wiki_image(href: &str) -> bool {
+    let b = href.as_bytes();
+    let tail = &b[b.len().saturating_sub(3)..];
+    ["jpg", "png", "gif", "svg", "bmp"]
+        .iter()
+        .any(|ext| tail.eq_ignore_ascii_case(ext.as_bytes()))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1444,8 +1470,31 @@ mod tests {
                 wiki_links
             ),
             "<a href=\"Page\" data-wikilink=\"true\" class=\"gfm gfm-gollum-wiki-page\">P</a>\
-             <a href=\"https://e.com\" data-wikilink=\"true\" class=\"gfm\">E</a>\
+             <a href=\"https://e.com\" data-wikilink=\"true\" class=\"gfm\" data-canonical-src=\"https://e.com\" \
+             data-link=\"true\" data-gollum=\"true\">E</a>\
              <a href=\"_TOC_\" data-wikilink=\"true\">_TOC_</a><a href=\"x\">plain</a>"
         );
+    }
+
+    /// GL-WIKI-1: `process_image_link` for URL targets ending in an image extension.
+    #[test]
+    fn wiki_link_images() {
+        assert_eq!(
+            apply(
+                "<p><a href=\"https://e.com/logo.png\" data-wikilink=\"true\">https://e.com/logo.png</a> \
+                 <a href=\"http://e.com/L.PNG\" data-wikilink=\"true\">Logo</a> \
+                 <a href=\"https://e.com/x/svg\" data-wikilink=\"true\">s</a> \
+                 <a href=\"images/logo.png\" data-wikilink=\"true\">rel</a> \
+                 <a href=\"https://e.com/logo.png\">plain</a></p>",
+                wiki_links
+            ),
+            "<p><img class=\"gfm\" src=\"https://e.com/logo.png\"> \
+             <img class=\"gfm\" src=\"http://e.com/L.PNG\"> \
+             <img class=\"gfm\" src=\"https://e.com/x/svg\"> \
+             <a href=\"images/logo.png\" data-wikilink=\"true\" class=\"gfm gfm-gollum-wiki-page\">rel</a> \
+             <a href=\"https://e.com/logo.png\">plain</a></p>"
+        );
+        assert!(is_wiki_image("a.jpg") && is_wiki_image("a.Bmp") && is_wiki_image("gif"));
+        assert!(!is_wiki_image("a.jpeg") && !is_wiki_image("a.png?x") && !is_wiki_image("pn"));
     }
 }
