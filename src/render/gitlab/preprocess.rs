@@ -273,6 +273,49 @@ fn has_git_component(path: &Path) -> bool {
     })
 }
 
+/// The on-disk spelling of `rel` (an existing path below `root`) when some component is
+/// spelled differently from the directory entry it opened, in ASCII letter case only. A
+/// component that matches an entry exactly is fine (also when a case-sensitive file system
+/// holds both `a.md` and `A.md`); one that matches no entry even ignoring ASCII case was
+/// opened through another equivalence (Unicode case folding or normalisation), which is
+/// accepted rather than risking a false `not found`.
+fn case_mismatch(root: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut dir = root.to_path_buf();
+    let mut on_disk = PathBuf::new();
+    let mut mismatch = false;
+    for c in rel.components() {
+        let Component::Normal(name) = c else {
+            continue;
+        };
+        let mut exact = false;
+        let mut folded = None;
+        for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+            let entry = entry.file_name();
+            if entry == name {
+                exact = true;
+                break;
+            }
+            if folded.is_none()
+                && entry
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(name.as_encoded_bytes())
+            {
+                folded = Some(entry);
+            }
+        }
+        let actual = match folded {
+            Some(f) if !exact => {
+                mismatch = true;
+                f
+            }
+            _ => name.to_owned(),
+        };
+        dir.push(&actual);
+        on_disk.push(&actual);
+    }
+    mismatch.then_some(on_disk)
+}
+
 /// `target_http?` of IncludeFilter.
 fn target_http(file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
@@ -313,6 +356,15 @@ fn read_include(file: &str, ctx: &IncludeContext, out: &mut Included) -> String 
     }
     if !abs.is_file() {
         return error_message(file, "not found", out);
+    }
+    // GitLab resolves the path in the case-sensitive git tree; a case-insensitive file system
+    // (APFS, NTFS) would open `SUB/A.MD` for `sub/a.md` and hide the broken include.
+    if let Some(on_disk) = case_mismatch(root, &target) {
+        let hint = format!(
+            "(the file is spelled `{}` on disk; GitLab matches letter case exactly)",
+            on_disk.display()
+        );
+        return error_message_hint(file, "not found", &hint, out);
     }
     // Not done: restricting includes to git-tracked files (`git ls-files --error-unmatch`),
     // which would model GitLab's committed-blob semantics more closely and also hide untracked
@@ -556,6 +608,54 @@ mod tests {
         );
         assert_eq!(res, "IGNORE-OK\nDOTDIR-OK");
         assert!(out.warnings.is_empty());
+    }
+
+    /// GL-INC-2: letter case must match like in a git tree, also on case-insensitive file
+    /// systems (where this fails without the check; elsewhere the open fails anyway).
+    #[test]
+    fn include_paths_are_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("sub/Deep")).unwrap();
+        std::fs::write(root.join("sub/a.md"), "A").unwrap();
+        std::fs::write(root.join("sub/Deep/B.md"), "B").unwrap();
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        for file in [
+            "SUB/A.MD",
+            "sub/A.md",
+            "Sub/a.md",
+            "sub/deep/B.md",
+            "sub/Deep/b.md",
+        ] {
+            let mut out = Included::default();
+            let text = format!("::include{{file={file}}}");
+            let res = includes(&text, &ctx, &mut out);
+            assert!(res.ends_with("': not found**"), "{file}: {res}");
+            assert!(out.files.is_empty(), "{file}");
+        }
+        let mut out = Included::default();
+        let res = includes(
+            "::include{file=sub/a.md}\n::include{file=./sub/../sub/Deep/B.md}",
+            &ctx,
+            &mut out,
+        );
+        assert_eq!(res, "A\nB");
+        assert!(out.warnings.is_empty());
+        // The banner names the on-disk spelling where the file system reveals it.
+        assert_eq!(
+            case_mismatch(&root, Path::new("sub/Deep/B.md")),
+            None,
+            "exact spelling"
+        );
+        if root.join("SUB/A.MD").exists() {
+            assert_eq!(
+                case_mismatch(&root, Path::new("SUB/A.MD")),
+                Some(PathBuf::from("sub/a.md"))
+            );
+        }
     }
 
     /// GL-INC-3: repeated includes cannot amplify a short source past the total budget.
