@@ -177,7 +177,7 @@ pub struct GlobalArgs {
     )]
     pub quiet: bool,
 
-    /// More log output (-v: debug, -vv: trace)
+    /// More log output (-v: debug, -vv: trace, -vvv: trace for the libraries too)
     #[arg(short, long, action = ArgAction::Count, global = true, help_heading = "Output")]
     pub verbose: u8,
 

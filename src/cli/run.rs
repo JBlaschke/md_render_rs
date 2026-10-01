@@ -54,12 +54,17 @@ fn report(e: &CliError) -> ExitCode {
     ExitCode::from(e.exit_code())
 }
 
-/// The log filter for `--quiet` / `-v` / `-vv`, unless `RUST_LOG` is set.
+/// The log filter for `--quiet` / `-v` / `-vv` / `-vvv`, unless `RUST_LOG` is set.
+///
+/// `-vv` traces md-render and tarfs only: the HTML parser and selector engine log a line per
+/// character at TRACE/DEBUG, which would bury md-render's own messages (CLI-5). `-vvv` traces
+/// everything (still without the secret-bearing crates, see [`SECRET_BEARING_CRATES`]).
 pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
     match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn,md_render=info,tarfs=info",
         (false, 1) => "info,md_render=debug,tarfs=debug",
+        (false, 2) => "info,md_render=trace,tarfs=trace",
         (false, _) => "trace",
     }
 }
@@ -256,7 +261,62 @@ mod tests {
         assert_eq!(log_filter(true, 3), "error");
         assert_eq!(log_filter(false, 0), "warn,md_render=info,tarfs=info");
         assert_eq!(log_filter(false, 1), "info,md_render=debug,tarfs=debug");
-        assert_eq!(log_filter(false, 2), "trace");
+        assert_eq!(log_filter(false, 2), "info,md_render=trace,tarfs=trace");
+        assert_eq!(log_filter(false, 3), "trace");
+    }
+
+    /// Collects what a subscriber writes.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'w self) -> Capture {
+            self.clone()
+        }
+    }
+
+    fn logged(verbose: u8) -> String {
+        let capture = Capture::default();
+        let subscriber = log_subscriber(None, false, verbose, capture.clone(), false);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "html5ever::tokenizer", "got character x");
+            tracing::debug!(target: "selectors::matching", "matching");
+            tracing::trace!(target: "md_render::render::api", "own trace");
+            tracing::trace!(target: "tarfs::fs", "tarfs trace");
+            tracing::info!(target: "html5ever::tree_builder", "parser info");
+        });
+        String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned()
+    }
+
+    /// CLI-5: `-vv` traces md-render, not every dependency.
+    #[test]
+    fn very_verbose_traces_md_render_but_not_the_html_parser() {
+        let log = logged(2);
+        assert!(
+            log.contains("own trace") && log.contains("tarfs trace"),
+            "{log}"
+        );
+        assert!(log.contains("parser info"), "{log}");
+        assert!(
+            !log.contains("got character") && !log.contains("matching"),
+            "{log}"
+        );
+        let all = logged(3);
+        assert!(
+            all.contains("got character") && all.contains("own trace"),
+            "{all}"
+        );
     }
 
     #[test]
