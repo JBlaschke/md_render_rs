@@ -103,7 +103,7 @@ fn has_ancestor(n: &NodeRef<'_>, pred: impl Fn(&NodeRef<'_>) -> bool) -> bool {
 // Normalization
 
 /// Oracle (gitlab.com server HTML) -> offline contract.
-fn normalize_oracle(root: &NodeRef<'_>) {
+fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
     // Reference links (need GitLab's database): back to what the author wrote.
     for a in all_elements(root) {
         if name(&a).as_deref() != Some("a") || !a.has_attr("data-reference-type") {
@@ -137,7 +137,7 @@ fn normalize_oracle(root: &NodeRef<'_>) {
         target.remove_from_parent();
     }
     // Footnote suffix: every `li[id^=fn-]` of the section shares one `-NNNN`.
-    let suffix = all_elements(root)
+    let suffix = live.then(|| all_elements(root)).unwrap_or_default()
         .into_iter()
         .filter(|n| name(n).as_deref() == Some("li"))
         .filter_map(|n| attr(&n, "id"))
@@ -376,7 +376,7 @@ struct Outcome {
     report: String,
 }
 
-fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool) -> Outcome {
+fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool, live: bool) -> Outcome {
     let strict = strict_highlight();
     let registry = highlighter_has_registry() || strict;
 
@@ -393,7 +393,7 @@ fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool) -> Outcom
             oracle = fc;
         }
     }
-    normalize_oracle(&oracle);
+    normalize_oracle(&oracle, live);
     normalize_code(&oracle, strict, registry);
     trim_root_whitespace(&oracle);
 
@@ -462,7 +462,7 @@ fn run_set(dir: &Path, subdir: &str, mode: Mode, residuals: &[(&str, &str)]) -> 
         opts.mode = mode;
         opts.source_path = Some(md_path.clone());
         let rendered = render(&md, &opts);
-        let o = compare(&stem, &rendered.html, &oracle, subdir == "samples");
+        let o = compare(&stem, &rendered.html, &oracle, subdir == "samples", true);
         total += 1;
         let residual = residuals.iter().find(|(n, _)| *n == stem);
         let status = match (o.differing == 0, residual) {
@@ -506,11 +506,125 @@ fn gitlab_golden_issues() {
     assert!(unexpected.is_empty(), "unexpected golden differences: {unexpected:?} (GOLDEN_VERBOSE=1 shows diffs)");
 }
 
+// ------------------------------------------------------------------------------------------------
+// Differential testing against the validated Python prototype (`R/tools/glpost.py`) for
+// arbitrary inputs. Needs `GLFM_HARNESS` (built per `R/MANIFEST.md`) and a Python with bs4 +
+// html5lib (`GLPOST_PYTHON`, default `R/tools/.venv/bin/python`). Run with
+// `cargo test --test gitlab_golden -- --ignored --nocapture`.
+
+const GLPOST_DRIVER: &str = r#"
+import sys, json, os
+sys.path.insert(0, os.environ['GLPOST_DIR'])
+import glpost
+out = []
+for md in json.load(sys.stdin):
+    try:
+        out.append(glpost.render(md))
+    except Exception as e:
+        out.append(None)
+json.dump(out, sys.stdout)
+"#;
+
+fn glpost_render(dir: &Path, inputs: &[String]) -> Option<Vec<Option<String>>> {
+    use std::io::Write;
+    std::env::var_os("GLFM_HARNESS")?;
+    let tools = dir.join("gitlab/tools");
+    let python = std::env::var_os("GLPOST_PYTHON").map(PathBuf::from).unwrap_or_else(|| tools.join(".venv/bin/python"));
+    let mut child = std::process::Command::new(python)
+        .arg("-c")
+        .arg(GLPOST_DRIVER)
+        .env("GLPOST_DIR", &tools)
+        .env_remove("GLPOST_ROUGE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let payload = serde_json::to_string(inputs).ok()?;
+    child.stdin.take()?.write_all(payload.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+/// Inputs: `comrak_raw/features.md`, the GLFM specification examples (`markdown.yml`) and the
+/// gem's comrak-level spec fixtures.
+fn differential_inputs(dir: &Path) -> Vec<(String, String)> {
+    let g = dir.join("gitlab");
+    let mut inputs = Vec::new();
+    if let Ok(s) = std::fs::read_to_string(g.join("comrak_raw/features.md")) {
+        inputs.push(("features.md".to_owned(), s));
+    }
+    if let Ok(s) = std::fs::read_to_string(g.join("glfm_specification_2024-09-23/output_example_snapshots/markdown.yml")) {
+        if let Ok(docs) = yaml_rust2::YamlLoader::load_from_str(&s) {
+            if let Some(map) = docs.first().and_then(|d| d.as_hash()) {
+                for (k, v) in map {
+                    if let (Some(k), Some(v)) = (k.as_str(), v.as_str()) {
+                        inputs.push((k.to_owned(), v.to_owned()));
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(g.join("glfm-markdown-gem-0.0.43-spec-fixtures")) {
+        let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        files.sort();
+        for f in files {
+            let Ok(s) = std::fs::read_to_string(&f) else { continue };
+            let stem = f.file_stem().unwrap().to_string_lossy().to_string();
+            let fence = "````````````````````````````````";
+            let mut n = 0;
+            for block in s.split(&format!("{fence} example\n")).skip(1) {
+                let Some(body) = block.split(&format!("\n{fence}")).next() else { continue };
+                let md = body.split("\n.\n").next().unwrap_or("").replace('→', "\t");
+                n += 1;
+                inputs.push((format!("{stem}#{n}"), format!("{md}\n")));
+            }
+        }
+    }
+    inputs
+}
+
+#[test]
+#[ignore = "needs GLFM_HARNESS and a Python with bs4/html5lib (see R/MANIFEST.md)"]
+fn gitlab_differential_glpost() {
+    let Some(dir) = golden_dir() else {
+        println!("gitlab_differential_glpost: SKIPPED (set MD_RENDER_GOLDEN_DIR)");
+        return;
+    };
+    let inputs = differential_inputs(&dir);
+    let mds: Vec<String> = inputs.iter().map(|(_, m)| m.clone()).collect();
+    let Some(theirs) = glpost_render(&dir, &mds) else {
+        println!("gitlab_differential_glpost: SKIPPED (set GLFM_HARNESS / GLPOST_PYTHON)");
+        return;
+    };
+    let mut pass = 0;
+    let mut failed = Vec::new();
+    for ((name, md), oracle) in inputs.iter().zip(theirs) {
+        let Some(oracle) = oracle else { continue };
+        let opts = RenderOptions::new(Flavor::Gitlab);
+        let ours = render(md, &opts).html;
+        // glpost.py offline mode has no lazy-load filter: drop decoding too.
+        let ours = ours.replace(" decoding=\"async\"", "");
+        let o = compare(name, &ours, &oracle, false, false);
+        if o.differing == 0 {
+            pass += 1;
+        } else {
+            failed.push((name.clone(), o.differing, o.report));
+        }
+    }
+    println!("differential vs glpost.py: {pass}/{} identical", pass + failed.len());
+    for (name, d, report) in &failed {
+        println!("{name}: {d} differing lines");
+        if std::env::var("GOLDEN_VERBOSE").is_ok_and(|v| v == "1") {
+            print!("{report}");
+        }
+    }
+}
+
 #[test]
 fn normalizer_self_check() {
     // A server-shaped snippet and its offline counterpart must normalize to the same lines.
     let oracle = "<div class=\"file-content js-markup-content md\">\n<p data-sourcepos=\"1:1-1:5\" dir=\"auto\"><a class=\"no-attachment-icon gfm\" href=\"/g/p/-/raw/main/i.png\" target=\"_blank\" rel=\"noopener noreferrer\" data-canonical-src=\"i.png\"><img data-sourcepos=\"1:1-1:5\" src=\"data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==\" alt=\"x\" decoding=\"async\" class=\"lazy gfm\" data-src=\"/g/p/-/raw/main/i.png\" data-canonical-src=\"i.png\"></a> <a href=\"/g/p/-/issues/1\" data-original=\"#1\" data-reference-type=\"issue\" class=\"gfm gfm-issue\">Title (#1)</a></p>\n</div>";
     let ours = "<p data-sourcepos=\"1:1-1:5\" dir=\"auto\"><a class=\"no-attachment-icon\" href=\"i.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img data-sourcepos=\"1:1-1:5\" src=\"i.png\" alt=\"x\" decoding=\"async\" loading=\"lazy\"></a> #1</p>";
-    let o = compare("self", ours, oracle, true);
+    let o = compare("self", ours, oracle, true, true);
     assert_eq!(o.differing, 0, "{}", o.report);
 }
