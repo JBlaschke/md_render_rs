@@ -1,0 +1,7 @@
+shell
+<span class="c">#!/usr/bin/env bash</span>
+<span class="nb">set</span> <span class="nt">-euo</span> pipefail
+<span class="k">for </span>f <span class="k">in</span> <span class="k">*</span>.md<span class="p">;</span> <span class="k">do</span>
+<span class="k">  </span><span class="nb">echo</span> <span class="s2">"rendering </span><span class="nv">$f</span><span class="s2">"</span>
+  md-render <span class="nb">export</span> <span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span> <span class="o">&gt;</span> <span class="s2">"</span><span class="k">${</span><span class="nv">f</span><span class="p">%.md</span><span class="k">}</span><span class="s2">.html"</span>
+<span class="k">done</span>

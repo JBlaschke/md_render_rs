@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+for f in *.md; do
+  echo "rendering $f"
+  md-render export "$f" > "${f%.md}.html"
+done

@@ -1,0 +1,4 @@
+$ cargo install md-render
+    Updating crates.io index
+$ md-render README.md --flavor gitlab
+Serving on http://localhost:6419

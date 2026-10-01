@@ -1,0 +1,10 @@
+typescript
+<span class="kr">interface</span> <span class="nx">User</span> <span class="p">{</span>
+  <span class="nl">id</span><span class="p">:</span> <span class="kr">number</span><span class="p">;</span>
+  <span class="nl">name</span><span class="p">?:</span> <span class="kr">string</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="k">export</span> <span class="kd">function</span> <span class="nf">greet</span><span class="p">(</span><span class="nx">user</span><span class="p">:</span> <span class="nx">User</span><span class="p">):</span> <span class="kr">string</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">greeting</span> <span class="o">=</span> <span class="s2">`Hello, </span><span class="p">${</span><span class="nx">user</span><span class="p">.</span><span class="nx">name</span> <span class="o">??</span> <span class="dl">"</span><span class="s2">anonymous</span><span class="dl">"</span><span class="p">}</span><span class="s2">`</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">greeting</span><span class="p">;</span>
+<span class="p">}</span>

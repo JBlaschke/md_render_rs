@@ -1,0 +1,5 @@
+console
+<span class="gp">$</span><span class="w"> </span>cargo <span class="nb">install </span>md-render
+<span class="go">    Updating crates.io index</span>
+<span class="gp">$</span><span class="w"> </span>md-render README.md <span class="nt">--flavor</span> gitlab
+<span class="go">Serving on http://localhost:6419</span>

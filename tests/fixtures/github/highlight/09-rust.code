@@ -1,0 +1,7 @@
+use std::fs;
+
+/// Reads a file.
+fn read(path: &str) -> std::io::Result<String> {
+    let text = fs::read_to_string(path)?;
+    Ok(text.trim().to_owned())
+}

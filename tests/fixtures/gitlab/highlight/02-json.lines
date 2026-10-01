@@ -1,0 +1,8 @@
+json
+<span class="p">{</span>
+<span class="w">  </span><span class="nl">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"md-render"</span><span class="p">,</span>
+<span class="w">  </span><span class="nl">"keywords"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"markdown"</span><span class="p">,</span><span class="w"> </span><span class="s2">"preview"</span><span class="p">],</span>
+<span class="w">  </span><span class="nl">"private"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nl">"version"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">  </span><span class="nl">"config"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nl">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">6419</span><span class="p">,</span><span class="w"> </span><span class="nl">"host"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">}</span>
+<span class="p">}</span>
