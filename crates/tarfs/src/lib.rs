@@ -1,265 +1,687 @@
-//! tarfs: an in-memory filesystem backed by a `.tar.gz` archive (Rust port of TarFS.jl).
+//! An in-memory filesystem backed by a `.tar.gz` archive: a Rust port of
+//! [TarFS.jl](https://github.com/JBlaschke/TarFS.jl).
 //!
-//! SKELETON PLACEHOLDER: functional but minimal. The `tarfs` owner replaces this with the full
-//! TarFS.jl-parity implementation (hand-rolled deterministic USTAR writer, extended writer,
-//! `open_tarball_gz`, exhaustive tests). The public API below is the frozen contract
-//! (docs/DESIGN.md, .dev/design/tarfs-spec.md).
+//! Load an archive once, read files by path, stage new, changed or deleted files
+//! in memory, and flush everything back to a gzip-compressed POSIX tarball
+//! atomically. The archive is never unpacked to disk. This is a library-level view
+//! of one file, not a mount, and not POSIX.
+//!
+//! ```
+//! use tarfs::{InMemoryFileSystem, open_tarball_gz};
+//!
+//! # fn main() -> tarfs::Result<()> {
+//! let dir = tempfile::tempdir()?;
+//! let archive = dir.path().join("results.tar.gz");
+//!
+//! // Write: stage files, flush on success.
+//! open_tarball_gz(&archive, None, |fs| {
+//!     fs.write_file("summary.csv", "x,y\n1,2\n")?;
+//!     fs.write_file("meta/run.txt", "seed = 42\n")?;
+//!     Ok::<_, tarfs::Error>(())
+//! })?;
+//!
+//! // Read: decompressed once, every read is a zero-copy slice.
+//! let fs = InMemoryFileSystem::open(&archive)?;
+//! assert_eq!(fs.read_to_string("meta/run.txt")?, "seed = 42\n");
+//!
+//! // Read-modify-write in place: safe, because the flush is atomic.
+//! open_tarball_gz(&archive, Some(&archive), |fs| {
+//!     let old = fs.read_to_string("summary.csv")?;
+//!     fs.write_file("summary.csv", old + "3,4\n")?;
+//!     fs.delete_file("meta/run.txt");
+//!     Ok::<_, tarfs::Error>(())
+//! })?;
+//! let fs = InMemoryFileSystem::open(&archive)?;
+//! assert_eq!(fs.paths().collect::<Vec<_>>(), ["summary.csv"]);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Guarantees
+//!
+//! * **Atomic flushes.** [`InMemoryFileSystem::write_tarball_gz`] writes a
+//!   temporary file next to the target and renames it into place only once
+//!   complete. A failure leaves any existing archive untouched, which is what makes
+//!   read-modify-write onto the source archive safe. There is no `fsync`:
+//!   durability across power loss is left to the filesystem.
+//! * **Reproducible bytes.** Entries are written in sorted path order with fixed
+//!   metadata (mode `0o644`, uid/gid/mtime `0`). The tar bytes are identical to
+//!   TarFS.jl's for the same contents, and, unlike TarFS.jl, the gzip layer is
+//!   reproducible across platforms too (fixed header, pure-Rust compressor).
+//! * **Zero-copy reads, streaming writes.** The decompressed archive is one
+//!   immutable [`Bytes`] buffer; reading a file is an O(1) reference-counted slice
+//!   and flushing streams source-backed files straight from it.
+//! * **Thread safe.** [`InMemoryFileSystem`] is `Send + Sync`: share it (e.g. in an
+//!   `Arc`) and read from many threads at once. Mutation needs `&mut self`.
+//!
+//! # Limitations
+//!
+//! Regular files only: no symlinks, hard links, permissions (everything is
+//! `0o644`), timestamps or GNU sparse members. The whole decompressed archive
+//! lives in memory for the lifetime of the value. The default writer is limited to
+//! USTAR paths (100 bytes, or a 155-byte prefix plus a 100-byte name split at a
+//! `/`) and entries under 8 GiB; [`InMemoryFileSystem::write_tarball_gz_extended`]
+//! lifts both limits and adds directory entries.
+#![warn(missing_docs)]
+
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::{self, Read, Write};
+use std::fmt;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::ops::Bound;
 use std::path::Path;
 
 use bytes::Bytes;
-use flate2::Compression;
-use flate2::read::MultiGzDecoder;
-use tar::{Archive, EntryType, Header, HeaderMode};
 
-/// Errors produced by tarfs.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("i/o error: {0}")]
-    Io(#[from] io::Error),
-    #[error("no such file in archive: {0}")]
-    NotFound(String),
-    #[error("invalid path {path:?}: {reason}")]
-    InvalidPath { path: String, reason: &'static str },
-    #[error("path too long for USTAR (use write_tarball_gz_extended): {0}")]
-    PathTooLong(String),
-    #[error("entry too large for USTAR: {path} ({size} bytes)")]
-    EntryTooLarge { path: String, size: u64 },
-    #[error("corrupt archive: {0}")]
-    Corrupt(String),
-    #[error("file is not valid UTF-8: {0}")]
-    Utf8(String),
-}
+mod error;
+mod path;
+mod read;
+mod ustar;
+mod write;
 
-/// Result alias for tarfs operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub use error::{Error, Result};
+pub use path::check_path;
 
+/// Where an entry's bytes live.
 #[derive(Debug, Clone)]
 enum Entry {
     /// Backed by the source tarball: byte range into `InMemoryFileSystem::tarball`.
     Source { offset: usize, size: usize },
-    /// Staged by `write_file`; owns its bytes.
+    /// Staged by `write_file`; owns its bytes (TarFS.jl `pos = -1`).
     Owned(Bytes),
 }
 
 /// An in-memory filesystem backed by a (decompressed) tarball.
-#[derive(Debug, Clone, Default)]
+///
+/// Construct it empty with [`new`](Self::new) or from an archive with
+/// [`open`](Self::open) (or the `from_*` constructors); read with
+/// [`read_file`](Self::read_file) / [`get`](Self::get); stage changes with
+/// [`write_file`](Self::write_file) / [`delete_file`](Self::delete_file); flush
+/// with [`write_tarball_gz`](Self::write_tarball_gz) or [`open_tarball_gz`].
+///
+/// Cloning is cheap: the source buffer and staged contents are reference-counted.
+///
+/// ```
+/// let mut fs = tarfs::InMemoryFileSystem::new();
+/// fs.write_file("a.txt", "hello")?;
+/// let copy = fs.clone();
+/// fs.delete_file("a.txt");
+/// assert!(copy.contains("a.txt") && !fs.contains("a.txt"));
+/// # Ok::<(), tarfs::Error>(())
+/// ```
+#[derive(Clone, Default)]
 pub struct InMemoryFileSystem {
     tarball: Bytes,
     entries: BTreeMap<String, Entry>,
 }
 
-/// Short alias.
+/// Short alias for [`InMemoryFileSystem`].
+///
+/// ```
+/// let fs: tarfs::TarFs = tarfs::TarFs::new();
+/// assert!(fs.is_empty());
+/// ```
 pub type TarFs = InMemoryFileSystem;
 
-/// TarFS.jl `_check_path`: relative, '/'-separated, no "", ".", ".." segments, no NUL.
-pub fn check_path(path: &str) -> Result<()> {
-    let bad = |reason| Err(Error::InvalidPath { path: path.to_owned(), reason });
-    if path.is_empty() {
-        return bad("empty path");
+impl fmt::Debug for InMemoryFileSystem {
+    /// Summarizes instead of dumping the (possibly huge) buffer.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InMemoryFileSystem")
+            .field("files", &self.entries.len())
+            .field("tarball_bytes", &self.tarball.len())
+            .finish_non_exhaustive()
     }
-    if path.contains('\0') {
-        return bad("NUL byte in path");
-    }
-    if path.starts_with('/') {
-        return bad("absolute path");
-    }
-    if path.contains('\\') {
-        return bad("backslash in path");
-    }
-    if path.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
-        return bad("empty, '.' or '..' segment");
-    }
-    Ok(())
-}
-
-fn normalize_member(raw: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(raw).ok()?;
-    let s = s.trim_start_matches("./").trim_end_matches('/');
-    check_path(s).ok()?;
-    Some(s.to_owned())
 }
 
 impl InMemoryFileSystem {
-    /// Empty, writable filesystem with no backing tarball.
+    /// Empty, writable filesystem with no backing tarball (TarFS.jl
+    /// `InMemoryFileSystem()`).
+    ///
+    /// ```
+    /// let fs = tarfs::InMemoryFileSystem::new();
+    /// assert!(fs.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Load `path` (.tar.gz), decompress it into memory and index its regular files.
+    /// Load the `.tar.gz` at `path`, decompress it into memory and index its
+    /// regular files (TarFS.jl `InMemoryFileSystem(path)`).
+    ///
+    /// The file is read once and not kept open. Multi-member gzip is supported.
+    /// Directories, links and other non-regular members are skipped, as are macOS
+    /// AppleDouble `._*` companions; a leading `./` is stripped from member paths.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the file cannot be read; [`Error::Corrupt`] if it is not a
+    /// valid gzip-compressed tarball, contains GNU sparse members, or has a member
+    /// path that is not UTF-8 or not safe (absolute, `..`, ...).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// # let dir = tempfile::tempdir()?;
+    /// # let path = dir.path().join("data.tar.gz");
+    /// # let mut fs = tarfs::InMemoryFileSystem::new();
+    /// # fs.write_file("data/p175.csv", "x,y\n1,2\n")?;
+    /// # fs.write_tarball_gz(&path)?;
+    /// let fs = tarfs::InMemoryFileSystem::open(&path)?;
+    /// assert_eq!(fs.get("data/p175.csv"), Some(&b"x,y\n1,2\n"[..]));
+    /// assert!(matches!(
+    ///     tarfs::InMemoryFileSystem::open(dir.path().join("missing.tar.gz")),
+    ///     Err(tarfs::Error::Io(_))
+    /// ));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let gz = fs::read(path)?;
-        Self::from_tar_gz_bytes(&gz)
+        let path = path.as_ref();
+        let with_path = |err| match err {
+            Error::Io(e) => error::io_context(e, "reading", path),
+            Error::Corrupt(msg) => Error::Corrupt(format!("{}: {msg}", path.display())),
+            other => other,
+        };
+        let file = File::open(path).map_err(|e| error::io_context(e, "opening", path))?;
+        read::gunzip(file)
+            .and_then(Self::from_tar_bytes)
+            .map_err(with_path)
     }
 
     /// Decompress a `.tar.gz` stream (multi-member gzip supported) and index it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] for errors raised by `reader` itself, [`Error::Corrupt`] for
+    /// invalid gzip or tar data (see [`open`](Self::open)).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// # let mut fs = tarfs::InMemoryFileSystem::new();
+    /// # fs.write_file("a.txt", "hello")?;
+    /// # let dir = tempfile::tempdir()?;
+    /// # let path = dir.path().join("a.tar.gz");
+    /// # fs.write_tarball_gz(&path)?;
+    /// let file = std::fs::File::open(&path)?;
+    /// let fs = tarfs::InMemoryFileSystem::from_tar_gz_reader(file)?;
+    /// assert_eq!(fs.read_to_string("a.txt")?, "hello");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_tar_gz_reader(r: impl Read) -> Result<Self> {
-        let mut raw = Vec::new();
-        MultiGzDecoder::new(r).read_to_end(&mut raw)?;
-        Self::from_tar_bytes(raw)
+        Self::from_tar_bytes(read::gunzip(r)?)
     }
 
     /// Decompress `.tar.gz` bytes and index them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Corrupt`] for invalid gzip or tar data (see [`open`](Self::open)).
+    ///
+    /// ```
+    /// let err = tarfs::InMemoryFileSystem::from_tar_gz_bytes(b"not gzip").unwrap_err();
+    /// assert!(matches!(err, tarfs::Error::Corrupt(_)));
+    /// ```
     pub fn from_tar_gz_bytes(gz: &[u8]) -> Result<Self> {
         Self::from_tar_gz_reader(gz)
     }
 
-    /// Index an uncompressed tarball held in memory.
+    /// Index an uncompressed tarball held in memory. The buffer is kept (shared,
+    /// not copied) and every source-backed read is a slice of it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Corrupt`] for invalid tar data (see [`open`](Self::open)).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// let tar: Vec<u8> = fs.write_tarball(Vec::new())?;
+    ///
+    /// let back = tarfs::InMemoryFileSystem::from_tar_bytes(tar)?;
+    /// assert_eq!(back.get("a.txt"), Some(&b"hello"[..]));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_tar_bytes(buf: impl Into<Bytes>) -> Result<Self> {
-        let buf: Bytes = buf.into();
-        let mut entries = BTreeMap::new();
-        {
-            let mut ar = Archive::new(&buf[..]);
-            for e in ar.entries()? {
-                let e = e?;
-                if !matches!(e.header().entry_type(), EntryType::Regular | EntryType::Continuous) {
-                    continue;
-                }
-                let Some(p) = normalize_member(&e.path_bytes()) else { continue };
-                if p.rsplit('/').next().is_some_and(|b| b.starts_with("._")) {
-                    continue;
-                }
-                let offset = e.raw_file_position() as usize;
-                let size = e.size() as usize;
-                if offset.checked_add(size).is_none_or(|end| end > buf.len()) {
-                    return Err(Error::Corrupt(format!("{p}: data out of bounds")));
-                }
-                entries.insert(p, Entry::Source { offset, size });
-            }
-        }
-        Ok(Self { tarball: buf, entries })
+        let tarball: Bytes = buf.into();
+        let entries = read::index(&tarball)?;
+        Ok(Self { tarball, entries })
     }
 
-    /// Contents of `path` (zero-copy, reference-counted slice).
+    /// Contents of `path` as a zero-copy, reference-counted slice (TarFS.jl
+    /// `readfile`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] if there is no such file.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("bytes.bin", vec![0x00, 0xff, 0x10])?;
+    /// assert_eq!(&fs.read_file("bytes.bin")?[..], [0x00, 0xff, 0x10]);
+    /// assert!(matches!(fs.read_file("nope"), Err(tarfs::Error::NotFound(_))));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn read_file(&self, path: &str) -> Result<Bytes> {
         match self.entries.get(path) {
-            Some(Entry::Source { offset, size }) => Ok(self.tarball.slice(*offset..*offset + *size)),
-            Some(Entry::Owned(b)) => Ok(b.clone()),
+            Some(Entry::Source { offset, size }) => {
+                Ok(self.tarball.slice(*offset..*offset + *size))
+            }
+            Some(Entry::Owned(bytes)) => Ok(bytes.clone()),
             None => Err(Error::NotFound(path.to_owned())),
         }
     }
 
     /// Contents of `path` as UTF-8 text.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] if there is no such file, [`Error::Utf8`] if its
+    /// contents are not valid UTF-8.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("unicode.txt", "unicode ✓ content")?;
+    /// fs.write_file("binary.bin", vec![0xff, 0xfe])?;
+    /// assert_eq!(fs.read_to_string("unicode.txt")?, "unicode ✓ content");
+    /// assert!(matches!(fs.read_to_string("binary.bin"), Err(tarfs::Error::Utf8(_))));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn read_to_string(&self, path: &str) -> Result<String> {
-        let b = self.read_file(path)?;
-        String::from_utf8(b.to_vec()).map_err(|_| Error::Utf8(path.to_owned()))
+        let bytes = self
+            .get(path)
+            .ok_or_else(|| Error::NotFound(path.to_owned()))?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| Error::Utf8(path.to_owned()))
     }
 
     /// Borrowed contents of `path`, if present.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// assert_eq!(fs.get("a.txt"), Some(&b"hello"[..]));
+    /// assert_eq!(fs.get("b.txt"), None);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn get(&self, path: &str) -> Option<&[u8]> {
-        match self.entries.get(path)? {
-            Entry::Source { offset, size } => Some(&self.tarball[*offset..*offset + *size]),
-            Entry::Owned(b) => Some(&b[..]),
-        }
+        self.entries.get(path).map(|entry| self.bytes_of(entry))
     }
 
-    /// Whether `path` exists.
+    /// Whether `path` is a file in this filesystem (directories are implicit and
+    /// never "exist" on their own).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("dir/a.txt", "")?;
+    /// assert!(fs.contains("dir/a.txt"));
+    /// assert!(!fs.contains("dir"));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn contains(&self, path: &str) -> bool {
         self.entries.contains_key(path)
     }
 
     /// Number of files.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a", "1")?;
+    /// fs.write_file("a", "2")?; // overwrite
+    /// fs.write_file("b", "3")?;
+    /// assert_eq!(fs.len(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// True when there are no files.
+    ///
+    /// ```
+    /// assert!(tarfs::InMemoryFileSystem::new().is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Sorted paths.
+    /// All file paths, sorted by bytes (the order the writers use).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// for p in ["b/x", "a", "b-c"] {
+    ///     fs.write_file(p, "")?;
+    /// }
+    /// assert_eq!(fs.paths().collect::<Vec<_>>(), ["a", "b-c", "b/x"]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
 
-    /// Size of `path` in bytes.
+    /// All files as `(path, contents)` pairs, sorted by path.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("b", "2")?;
+    /// fs.write_file("a", "1")?;
+    /// let all: Vec<(&str, &[u8])> = fs.iter().collect();
+    /// assert_eq!(all, [("a", &b"1"[..]), ("b", &b"2"[..])]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.entries
+            .iter()
+            .map(|(path, entry)| (path.as_str(), self.bytes_of(entry)))
+    }
+
+    /// Size of `path` in bytes, if present.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// assert_eq!(fs.file_size("a.txt"), Some(5));
+    /// assert_eq!(fs.file_size("b.txt"), None);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn file_size(&self, path: &str) -> Option<u64> {
-        self.get(path).map(|b| b.len() as u64)
+        self.get(path).map(|bytes| bytes.len() as u64)
     }
 
-    /// Sorted paths below `prefix/` (directory-style listing; recursive).
+    /// Sorted paths of every file below the directory `prefix` (recursive).
+    ///
+    /// Trailing slashes on `prefix` are ignored, and `""` lists everything. The
+    /// match is per path segment: `read_dir("a")` lists `a/x` and `a/b/y`, but not
+    /// `a`, `ab` or `a-b/z`.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// for p in ["a", "a/x", "a/b/y", "ab", "a-b/z"] {
+    ///     fs.write_file(p, "")?;
+    /// }
+    /// assert_eq!(fs.read_dir("a").collect::<Vec<_>>(), ["a/b/y", "a/x"]);
+    /// assert_eq!(fs.read_dir("a/b/").collect::<Vec<_>>(), ["a/b/y"]);
+    /// assert_eq!(fs.read_dir("").count(), 5);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn read_dir<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        let p = prefix.trim_end_matches('/');
-        self.paths().filter(move |k| {
-            p.is_empty() || (k.len() > p.len() && k.starts_with(p) && k.as_bytes()[p.len()] == b'/')
-        })
+        let dir = prefix.trim_end_matches('/');
+        // Keys starting with `dir` form one contiguous run of the sorted map; within
+        // it keep those continuing with '/' ("a-b" and "ab" sort among them too).
+        self.entries
+            .range::<str, _>((Bound::Included(dir), Bound::Unbounded))
+            .map(|(key, _)| key.as_str())
+            .take_while(move |key| key.starts_with(dir))
+            .filter(move |key| dir.is_empty() || key.as_bytes().get(dir.len()) == Some(&b'/'))
     }
 
-    /// Stage (or overwrite) a file.
+    /// Stage (or overwrite) a file (TarFS.jl `writefile`).
+    ///
+    /// `content` is anything convertible into [`Bytes`] (`Vec<u8>`, `String`,
+    /// `&'static str`, `Bytes`, ...); it is taken over without copying. Overwriting
+    /// a source-backed file replaces the entry, so read, transform, write is a
+    /// read-modify-write. Nothing touches the disk until a flush.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] if `path` fails [`check_path`].
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "v1")?;
+    /// fs.write_file("a.txt", String::from("v2"))?;
+    /// assert_eq!(fs.read_to_string("a.txt")?, "v2");
+    /// assert!(matches!(
+    ///     fs.write_file("../escape", "x"),
+    ///     Err(tarfs::Error::InvalidPath { .. })
+    /// ));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn write_file(&mut self, path: &str, content: impl Into<Bytes>) -> Result<()> {
         check_path(path)?;
-        self.entries.insert(path.to_owned(), Entry::Owned(content.into()));
+        self.entries
+            .insert(path.to_owned(), Entry::Owned(content.into()));
         Ok(())
     }
 
-    /// Remove `path`; returns whether it existed.
+    /// Remove `path`; returns whether it existed (TarFS.jl `deletefile`, which is a
+    /// no-op for absent paths).
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "x")?;
+    /// assert!(fs.delete_file("a.txt"));
+    /// assert!(!fs.delete_file("a.txt"));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn delete_file(&mut self, path: &str) -> bool {
         self.entries.remove(path).is_some()
     }
 
-    /// Remove every file below `prefix/`; returns how many were removed.
+    /// Remove every file below the directory `prefix` (same matching as
+    /// [`read_dir`](Self::read_dir), so `""` removes everything); returns how many
+    /// were removed.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// for p in ["github/a.css", "github/img/b.png", "gitlab/c.css", "github.txt"] {
+    ///     fs.write_file(p, "")?;
+    /// }
+    /// assert_eq!(fs.delete_prefix("github"), 2);
+    /// assert_eq!(fs.paths().collect::<Vec<_>>(), ["github.txt", "gitlab/c.css"]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn delete_prefix(&mut self, prefix: &str) -> usize {
         let doomed: Vec<String> = self.read_dir(prefix).map(str::to_owned).collect();
-        for p in &doomed {
-            self.entries.remove(p);
+        for path in &doomed {
+            self.entries.remove(path);
         }
         doomed.len()
     }
 
-    /// Write the filesystem as an uncompressed tarball to `w`.
+    /// Write the filesystem as an uncompressed POSIX (ustar) tarball to `w` and
+    /// return `w` (TarFS.jl `write_tarball`).
+    ///
+    /// The bytes are identical to TarFS.jl's: entries in sorted order, mode
+    /// `0o644`, uid/gid/mtime `0`, no directory entries, two zero blocks at the
+    /// end. Every entry is validated before anything is written. `w` is not
+    /// flushed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PathTooLong`] for a path the ustar name/prefix fields cannot hold,
+    /// [`Error::EntryTooLarge`] for a file of 8 GiB or more (use
+    /// [`write_tarball_extended`](Self::write_tarball_extended) for either), and
+    /// [`Error::Io`] if `w` fails.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// let tar = fs.write_tarball(Vec::new())?;
+    /// assert_eq!(tar.len(), 512 + 512 + 1024); // header, padded data, end marker
+    /// assert_eq!(&tar[..5], b"a.txt");
+    ///
+    /// assert!(tarfs::InMemoryFileSystem::new().write_tarball(Vec::new())? == vec![0; 1024]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn write_tarball<W: Write>(&self, w: W) -> Result<W> {
-        let mut b = tar::Builder::new(w);
-        b.mode(HeaderMode::Deterministic);
-        for path in self.entries.keys() {
-            let data = self.read_file(path)?;
-            let mut h = Header::new_gnu();
-            h.set_entry_type(EntryType::Regular);
-            h.set_size(data.len() as u64);
-            h.set_mode(0o644);
-            h.set_mtime(0);
-            h.set_uid(0);
-            h.set_gid(0);
-            b.append_data(&mut h, path, &data[..])?;
-        }
-        Ok(b.into_inner()?)
+        write::write_ustar(self, w)
     }
 
-    /// Flush to a `.tar.gz` at `path`, atomically (temp file in the same directory + rename).
+    /// Write the filesystem as an uncompressed tarball with explicit directory
+    /// entries and no path or size limits, and return `w`.
+    ///
+    /// Members are POSIX ustar headers (mode `0o644` for files, `0o755` for
+    /// directories, uid/gid/mtime `0`) in sorted path order, every directory before
+    /// its contents; a PAX extended header carries any path that does not fit the
+    /// ustar fields and any size of 8 GiB or more. Deterministic. Use this format
+    /// when the archive is consumed by `tar -x`, docker and other tools that care
+    /// about directory entries; for archives read back by tarfs both writers are
+    /// interchangeable.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] if a file path is also the parent directory of other
+    /// files (`a` and `a/b`), which no extractor can reproduce; [`Error::Io`] if
+    /// `w` fails.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// let long = format!("deep/{}/leaf.txt", vec!["x".repeat(90); 3].join("/"));
+    /// fs.write_file(&long, "leaf")?;
+    /// assert!(matches!(fs.write_tarball(Vec::new()), Err(tarfs::Error::PathTooLong(_))));
+    ///
+    /// let tar = fs.write_tarball_extended(Vec::new())?;
+    /// let back = tarfs::InMemoryFileSystem::from_tar_bytes(tar)?;
+    /// assert_eq!(back.get(&long), Some(&b"leaf"[..]));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_tarball_extended<W: Write>(&self, w: W) -> Result<W> {
+        write::write_extended(self, w)
+    }
+
+    /// Flush to a `.tar.gz` at `path`, atomically (TarFS.jl `write_tarball_gz`).
+    ///
+    /// The tar layer is [`write_tarball`](Self::write_tarball). The gzip layer has a
+    /// fixed header (mtime 0, OS "unknown", no name) and default compression, so
+    /// equal contents give byte-identical files on every platform. The archive is
+    /// written to a temporary file in the same directory (created `0o600`, set to
+    /// `0o644` on Unix) and renamed over `path` once complete: on any error the
+    /// temporary file is removed and an existing archive at `path` is untouched. A
+    /// symlink at `path` is replaced, as `mv` would. No `fsync`.
+    ///
+    /// # Errors
+    ///
+    /// As [`write_tarball`](Self::write_tarball), plus [`Error::Io`] for failures
+    /// creating, writing or renaming the temporary file.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let dir = tempfile::tempdir()?;
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// let (one, two) = (dir.path().join("1.tar.gz"), dir.path().join("2.tar.gz"));
+    /// fs.write_tarball_gz(&one)?;
+    /// fs.write_tarball_gz(&two)?;
+    /// assert_eq!(std::fs::read(&one)?, std::fs::read(&two)?); // reproducible
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn write_tarball_gz(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        let dir = match path.parent() {
-            Some(d) if !d.as_os_str().is_empty() => d,
-            _ => Path::new("."),
-        };
-        let tmp = tempfile::NamedTempFile::new_in(dir)?;
-        {
-            let gz = flate2::GzBuilder::new()
-                .mtime(0)
-                .operating_system(255)
-                .write(tmp.as_file(), Compression::default());
-            let gz = self.write_tarball(gz)?;
-            gz.finish()?.flush()?;
+        // Validate before creating the temporary file: cheap, and keeps the
+        // directory untouched for an unencodable filesystem.
+        for (p, data) in self.iter() {
+            ustar::validate(p, data.len() as u64)?;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644))?;
-        }
-        tmp.persist(path).map_err(|e| Error::Io(e.error))?;
-        Ok(())
+        write::atomic_gz(path.as_ref(), |gz| self.write_tarball(gz).map(drop))
     }
 
-    /// Flush via the `tar` crate with long-name support and explicit directory entries.
+    /// Flush to a `.tar.gz` at `path` in the extended format of
+    /// [`write_tarball_extended`](Self::write_tarball_extended) (TarFS.jl
+    /// `write_tarball_gz_viatar`), with the same atomic, reproducible discipline as
+    /// [`write_tarball_gz`](Self::write_tarball_gz). Unlike TarFS.jl, no temporary
+    /// directory is involved: the `tar` crate writes straight from memory.
+    ///
+    /// # Errors
+    ///
+    /// As [`write_tarball_extended`](Self::write_tarball_extended), plus
+    /// [`Error::Io`] for failures creating, writing or renaming the temporary file.
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("via.tar.gz");
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file(&format!("L/{}/leaf.txt", "s".repeat(300)), "leafdata")?;
+    /// fs.write_tarball_gz_extended(&path)?;
+    /// let back = tarfs::InMemoryFileSystem::open(&path)?;
+    /// assert_eq!(back.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn write_tarball_gz_extended(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_tarball_gz(path)
+        write::atomic_gz(path.as_ref(), |gz| {
+            self.write_tarball_extended(gz).map(drop)
+        })
+    }
+
+    fn bytes_of<'a>(&'a self, entry: &'a Entry) -> &'a [u8] {
+        match entry {
+            // In bounds: `read::index` checked every range against this buffer.
+            Entry::Source { offset, size } => &self.tarball[*offset..*offset + *size],
+            Entry::Owned(bytes) => bytes,
+        }
     }
 }
 
-/// Run `f` on a writable filesystem (seeded from `from` if given), then flush it to `path`
-/// atomically — only if `f` returns `Ok`. `from == path` (read-modify-write) is safe.
+/// Run `f` on a writable filesystem, then flush it to `path` atomically (TarFS.jl
+/// `open_tarball_gz`).
+///
+/// The filesystem starts empty, or seeded from the archive at `from`. The flush
+/// ([`InMemoryFileSystem::write_tarball_gz`]) happens only if `f` returns `Ok`; on
+/// `Err` nothing is written and the error is returned. `from == path`
+/// (read-modify-write in place) is safe: the source is fully loaded up front and the
+/// flush is atomic. Returns `f`'s value together with the final filesystem.
+///
+/// `f` may use any error type that tarfs errors convert into (`tarfs::Error`
+/// itself, `anyhow::Error`, ...).
+///
+/// # Errors
+///
+/// Loading `from` or flushing to `path` ([`Error`], converted into `E`), or
+/// whatever `f` returns.
+///
+/// ```
+/// # fn main() -> tarfs::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let path = dir.path().join("rmw.tar.gz");
+/// tarfs::open_tarball_gz(&path, None, |fs| fs.write_file("a.txt", "v1"))?;
+///
+/// // A failing closure leaves the archive untouched.
+/// let failed = tarfs::open_tarball_gz(&path, Some(&path), |fs| {
+///     fs.write_file("a.txt", "SHOULD NOT LAND")?;
+///     Err::<(), _>(tarfs::Error::Corrupt("boom".into()))
+/// });
+/// assert!(failed.is_err());
+///
+/// let (old, fs) = tarfs::open_tarball_gz(&path, Some(&path), |fs| {
+///     let old = fs.read_to_string("a.txt")?;
+///     fs.write_file("a.txt", "v2")?;
+///     Ok::<_, tarfs::Error>(old)
+/// })?;
+/// assert_eq!(old, "v1");
+/// assert_eq!(fs.read_to_string("a.txt")?, "v2");
+/// # Ok(())
+/// # }
+/// ```
 pub fn open_tarball_gz<T, E, F>(
     path: impl AsRef<Path>,
     from: Option<&Path>,
@@ -270,10 +692,98 @@ where
     F: FnOnce(&mut InMemoryFileSystem) -> std::result::Result<T, E>,
 {
     let mut fs = match from {
-        Some(p) => InMemoryFileSystem::open(p)?,
+        Some(source) => InMemoryFileSystem::open(source)?,
         None => InMemoryFileSystem::new(),
     };
     let out = f(&mut fs)?;
     fs.write_tarball_gz(path)?;
     Ok((out, fs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn assert_send_sync<T: Send + Sync>() {}
+    const _: () = assert_send_sync::<InMemoryFileSystem>();
+    const _: () = assert_send_sync::<Error>();
+
+    #[test]
+    fn debug_summarizes_instead_of_dumping() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.write_file("a", vec![0u8; 10_000]).unwrap();
+        let text = format!("{fs:?}");
+        assert!(text.contains("files: 1"), "{text}");
+        assert!(text.len() < 100, "{text}");
+    }
+
+    #[test]
+    fn source_backed_reads_are_zero_copy_slices() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.write_file("a.txt", "hello").unwrap();
+        let tar = Bytes::from(fs.write_tarball(Vec::new()).unwrap());
+        let back = InMemoryFileSystem::from_tar_bytes(tar.clone()).unwrap();
+        let got = back.read_file("a.txt").unwrap();
+        assert_eq!(&got[..], b"hello");
+        // Same allocation: the slice points into the shared tarball.
+        assert_eq!(got.as_ptr(), tar[512..].as_ptr());
+        assert_eq!(back.get("a.txt").unwrap().as_ptr(), tar[512..].as_ptr());
+    }
+
+    #[test]
+    fn read_dir_handles_neighbours_and_slashes() {
+        let mut fs = InMemoryFileSystem::new();
+        for p in ["a", "a.txt", "a-b/z", "a/x", "a/b/y", "ab", "b/a/x"] {
+            fs.write_file(p, "").unwrap();
+        }
+        let ls = |p| fs.read_dir(p).collect::<Vec<_>>();
+        assert_eq!(ls("a"), ["a/b/y", "a/x"]);
+        assert_eq!(ls("a/"), ["a/b/y", "a/x"]);
+        assert_eq!(ls("a//"), ["a/b/y", "a/x"]);
+        assert_eq!(ls("a/b"), ["a/b/y"]);
+        assert_eq!(ls("a/x"), Vec::<&str>::new()); // a file is not a directory
+        assert_eq!(ls("b/a"), ["b/a/x"]);
+        assert_eq!(ls("zzz"), Vec::<&str>::new());
+        assert_eq!(ls("").len(), 7);
+        assert_eq!(ls("/").len(), 7);
+    }
+
+    #[test]
+    fn delete_prefix_counts_and_spares_neighbours() {
+        let mut fs = InMemoryFileSystem::new();
+        for p in ["a", "a/x", "a/b/y", "ab"] {
+            fs.write_file(p, "").unwrap();
+        }
+        assert_eq!(fs.delete_prefix("a"), 2);
+        assert_eq!(fs.paths().collect::<Vec<_>>(), ["a", "ab"]);
+        assert_eq!(fs.delete_prefix("a"), 0);
+        assert_eq!(fs.delete_prefix(""), 2);
+        assert!(fs.is_empty());
+    }
+
+    #[test]
+    fn write_file_takes_ownership_without_aliasing_the_caller() {
+        let mut fs = InMemoryFileSystem::new();
+        let mut v = vec![1u8, 2, 3];
+        fs.write_file("b.bin", v.clone()).unwrap();
+        v[0] = 9;
+        assert_eq!(fs.get("b.bin"), Some(&[1u8, 2, 3][..]));
+        fs.write_file("w.bin", Bytes::copy_from_slice(&v[1..]))
+            .unwrap();
+        assert_eq!(fs.get("w.bin"), Some(&[2u8, 3][..]));
+    }
+
+    #[test]
+    fn write_file_rejects_bad_paths_and_keeps_state() {
+        let mut fs = InMemoryFileSystem::new();
+        for bad in [
+            "", "/abs.txt", "a/../b", "..", ".", "./a", "a//b", "a/", "a\0b", "a\\b",
+        ] {
+            assert!(
+                matches!(fs.write_file(bad, "x"), Err(Error::InvalidPath { .. })),
+                "{bad:?}"
+            );
+        }
+        assert!(fs.is_empty());
+    }
 }
