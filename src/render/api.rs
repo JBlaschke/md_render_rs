@@ -696,7 +696,8 @@ impl ApiRenderer {
                     let mut fm_opts = opts.clone();
                     fm_opts.sourcepos = false;
                     let fm = super::github::render(front, &fm_opts);
-                    rendered.html = format!("{}\n{}", fm.html.trim_end(), rendered.html);
+                    // The table is the first element, then "\n\n" and the rest (GH §8.12).
+                    rendered.html = format!("{}\n\n{}", fm.html.trim_end(), rendered.html);
                     rendered.warnings.extend(fm.warnings);
                 }
                 Ok(rendered)
