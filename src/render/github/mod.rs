@@ -3,9 +3,9 @@
 //!
 //! Pipeline (CQ §3.1):
 //! 1. normalize line endings; README context: split off YAML front matter (GH §8.12),
-//! 2. comrak 0.55 parse with GitHub's GFM options (GH §10) and AST passes ([`ast`]),
-//! 3. neutral formatter output with sanitizer markers ([`formatter`]),
-//! 4. `dom_query` DOM, sanitized with GitHub's raw-HTML allowlist ([`sanitize`]),
+//! 2. comrak 0.55 parse with GitHub's GFM options (GH §10) and AST passes (`ast`),
+//! 3. neutral formatter output with sanitizer markers (`formatter`),
+//! 4. `dom_query` DOM, sanitized with GitHub's raw-HTML allowlist (`sanitize`),
 //! 5. DOM filters in CQ §3.1 order: alerts, dollar math, task lists, headings, raw-text autolinks, raw `<pre>`, emoji,
 //!    tables, images, links, details, comment-mode code classes, `dir="auto"`,
 //! 6. top-level `data-sourcepos` bookkeeping and serialization.
