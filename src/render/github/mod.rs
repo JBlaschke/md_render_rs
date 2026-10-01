@@ -167,7 +167,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     features.mermaid |= feats.1;
     filters::emoji(&doc, &ctx);
     filters::tables(&doc, &ctx);
-    filters::images(&doc);
+    filters::images(&doc, &ctx);
     filters::links(&doc);
     filters::details(&doc);
     if ctx.comment {

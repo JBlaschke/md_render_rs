@@ -145,7 +145,9 @@ fn would_camo(url: &str) -> bool {
     })
 }
 
-/// `https://github.com/O/R/blob/REF/path` image URLs are served from `/raw/` (GH §2.3).
+/// `https://github.com/O/R/blob/REF/path` image URLs are served from `/raw/` in the README /
+/// file context (GH §2.3; `S/ctx/rhysd_*`, `S/pages/lifeparticle_*`). Comments keep them
+/// (API probe with context, 2026-10-01).
 fn blob_to_raw(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://github.com/")?;
     let mut parts = rest.splitn(4, '/');
@@ -161,8 +163,9 @@ fn is_attachment(url: &str) -> bool {
     })
 }
 
-pub(super) fn images(doc: &Document) {
+pub(super) fn images(doc: &Document, ctx: &Ctx) {
     let root = dom::root(doc);
+    let rewrite_blobs = !ctx.comment;
     // In README and comment contexts only user-attachment videos survive (GH §8.11;
     // `S/api_gfm_ctx.html` drops `<video src="https://example.com/v.mp4">`).
     for video in dom::elements_named(doc, "video") {
@@ -173,7 +176,7 @@ pub(super) fn images(doc: &Document) {
     }
     for source in dom::elements_named(doc, "source") {
         if let Some(set) = source.attr("srcset").map(|s| s.to_string()) {
-            if let Some(r) = blob_to_raw(&set) {
+            if let Some(r) = blob_to_raw(&set).filter(|_| rewrite_blobs) {
                 source.set_attr("srcset", &r);
             }
         }
@@ -189,7 +192,7 @@ pub(super) fn images(doc: &Document) {
             } else if src.starts_with("//") {
                 // camo cannot proxy protocol-relative URLs; GitHub empties them.
                 img.set_attr("src", "");
-            } else if let Some(r) = blob_to_raw(&src) {
+            } else if let Some(r) = blob_to_raw(&src).filter(|_| rewrite_blobs) {
                 img.set_attr("src", &r);
                 href = Some(src);
             }
@@ -344,9 +347,7 @@ pub(super) fn dir_auto(doc: &Document) {
     for n in dom::elements(doc) {
         let Some(name) = dom::name(&n) else { continue };
         let wanted = match &*name {
-            "p" => true,
-            // An empty heading stays a bare `<hN></hN>` (GH §6.1).
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => n.first_child().is_some(),
+            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => true,
             "ul" | "ol" => !n.has_class("contains-task-list"),
             "div" => !n.has_class("snippet-clipboard-content"),
             _ => false,
@@ -410,16 +411,20 @@ mod tests {
         );
     }
 
+    fn readme_images(doc: &Document) {
+        images(doc, &Ctx::for_tests(false));
+    }
+
     #[test]
     fn images_filter() {
-        let out = apply(r#"<p><img src="x.png" alt="a"></p>"#, images);
+        let out = apply(r#"<p><img src="x.png" alt="a"></p>"#, readme_images);
         assert_eq!(
             out,
             r#"<p><a target="_blank" rel="noopener noreferrer" href="x.png"><img src="x.png" alt="a" style="max-width: 100%;"></a></p>"#
         );
         let out = apply(
             r#"<a href="u"><img src="https://img.shields.io/x"></a>"#,
-            images,
+            readme_images,
         );
         assert_eq!(
             out,
@@ -427,13 +432,13 @@ mod tests {
         );
         let out = apply(
             r#"<div><img src="https://e.com/a.png" width="100" height="50"></div>"#,
-            images,
+            readme_images,
         );
         assert!(out.contains(r#"style="max-width: 100%; height: auto; max-height: 50px;; aspect-ratio: 100 / 50; background-color: var(--bgColor-muted); border-radius: 6px" class="js-gh-image-fallback""#));
         assert!(out.starts_with(r#"<div><a target="_blank" rel="noopener noreferrer nofollow" href="https://e.com/a.png">"#));
         let out = apply(
             r#"<p><img src="//x.com/p.png"><img src="data:x"></p>"#,
-            images,
+            readme_images,
         );
         assert_eq!(
             out,
@@ -442,7 +447,7 @@ mod tests {
         // A top-level raw image becomes a paragraph, except user attachments.
         let out = apply(
             r#"<img src="a.png"><img src="https://github.com/user-attachments/assets/x">"#,
-            images,
+            readme_images,
         );
         assert_eq!(
             out,
@@ -451,7 +456,7 @@ mod tests {
         // `/blob/` image URLs load from `/raw/`; the link keeps the blob URL.
         let out = apply(
             r#"<p><img src="https://github.com/o/r/blob/main/i.png"></p>"#,
-            images,
+            readme_images,
         );
         assert_eq!(
             out,
@@ -460,13 +465,13 @@ mod tests {
         assert_eq!(
             apply(
                 r#"<p><video src="https://e.com/v.mp4"></video></p>"#,
-                images
+                readme_images
             ),
             "<p></p>"
         );
         let out = apply(
             r#"<picture><source srcset="a.png"><img src="b.png"></picture>"#,
-            images,
+            readme_images,
         );
         assert_eq!(
             out,

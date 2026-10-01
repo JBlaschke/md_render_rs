@@ -291,8 +291,33 @@ pub(super) fn math_html(ctx: &Ctx, tex: &str, delim: &str, display: bool) -> Str
     s
 }
 
-/// A paragraph consisting only of `$$…$$` (single or multi-line) is display math — except
-/// inside list items, where github.com applies the inline rules (`S/pages/atapas_*`).
+/// Splits `text` into `$$…$$` spans separated only by whitespace: `Some([(start, end)])`
+/// covering the whole text, or `None` if anything else occurs.
+fn display_spans(text: &str) -> Option<Vec<(usize, usize)>> {
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    loop {
+        pos += text[pos..].len() - text[pos..].trim_start().len();
+        if pos == text.len() {
+            break;
+        }
+        if !text[pos..].starts_with("$$") {
+            return None;
+        }
+        let close = pos + 2 + text[pos + 2..].find("$$")?;
+        if text[pos + 2..close].trim().is_empty() {
+            return None;
+        }
+        spans.push((pos, close + 2));
+        pos = close + 2;
+    }
+    (!spans.is_empty()).then_some(spans)
+}
+
+/// A paragraph consisting only of `$$…$$` spans (single or multi-line, several separated by
+/// whitespace) is display math — except inside list items, where github.com applies the
+/// inline rules (`S/pages/atapas_*`; API probes: `$$a$$ $$b$$` gives two display blocks,
+/// `> $$x$$` and alerts are display, `- $$z$$` is inline).
 fn display_math<'a>(arena: &'a Arena<'a>, para: &'a AstNode<'a>, ctx: &Ctx, info: &mut AstInfo) {
     if para
         .ancestors()
@@ -308,18 +333,23 @@ fn display_math<'a>(arena: &'a Arena<'a>, para: &'a AstNode<'a>, ctx: &Ctx, info
             _ => return,
         }
     }
-    if text.len() < 5 || !text.starts_with("$$") || !text.ends_with("$$") {
+    if !text.starts_with("$$") {
         return;
     }
-    let inner = &text[2..text.len() - 2];
-    if inner.trim().is_empty() {
-        return;
-    }
-    let html = math_html(ctx, inner, "$$", true);
+    let Some(spans) = display_spans(&text) else { return };
     for child in para.children().collect::<Vec<_>>() {
         child.detach();
     }
-    para.append(arena.alloc(AstNode::from(NodeValue::Raw(html))));
+    let mut last = 0;
+    for (start, end) in spans {
+        if start > last {
+            let gap = Cow::Owned(text[last..start].to_owned());
+            para.append(arena.alloc(AstNode::from(NodeValue::Text(gap))));
+        }
+        let html = math_html(ctx, &text[start + 2..end - 2], "$$", true);
+        para.append(arena.alloc(AstNode::from(NodeValue::Raw(html))));
+        last = end;
+    }
     info.math = true;
 }
 
@@ -478,6 +508,17 @@ mod tests {
     }
 
     /// GH §8.6 and `S/probes/math{,2,3,4}.gfm.html`.
+    #[test]
+    fn display_math_paragraphs() {
+        assert_eq!(display_spans("$$x$$"), Some(vec![(0, 5)]));
+        assert_eq!(display_spans("$$\na\nb\n$$"), Some(vec![(0, 9)]));
+        assert_eq!(display_spans("$$a$$ $$b$$"), Some(vec![(0, 5), (6, 11)]));
+        assert_eq!(display_spans("$$a$$b"), None);
+        assert_eq!(display_spans("$$a$$ text"), None);
+        assert_eq!(display_spans("$$ $$"), None);
+        assert_eq!(display_spans("$$a"), None);
+    }
+
     #[test]
     fn inline_math_boundaries() {
         assert_eq!(spans("$x$ at start", true), ["$x$"]);
