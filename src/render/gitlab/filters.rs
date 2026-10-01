@@ -1071,8 +1071,8 @@ fn column_header_text(
         .iter()
         .position(|c| c.id == cell.id)?;
     let table = dom::ancestor(input, "table", root)?;
-    let first_row = dom::elements_named(&table, &["tr"]).into_iter().next()?;
-    let first_row = root.tree.get_unchecked(&first_row);
+    // `table.css('tr').first`, without walking the whole table once per checkbox.
+    let first_row = dom::first_element_named(&table, &["tr"])?;
     let header = dom::element_children(&first_row).into_iter().nth(index)?;
     Some(dom::ruby_strip(&dom::text(&header)).to_owned())
 }
@@ -1387,6 +1387,22 @@ mod tests {
                      <td class=\"task-table-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\"> </td></tr></tbody></table>";
         assert!(
             apply(table, task_list).contains("aria-label=\"Check option in column &quot;B&quot;\"")
+        );
+        // GL-PERF-1: the header row is `table.css('tr').first`, also for later rows and when
+        // the table holds a nested table further down.
+        let rows =
+            "<tr><td class=\"task-table-item\"><input class=\"task-list-item-checkbox\"> </td>\
+                    <td><table><tr><td>nested</td></tr></table></td></tr>"
+                .repeat(3);
+        let table = format!(
+            "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>{rows}</tbody></table>"
+        );
+        let out = apply(&table, task_list);
+        assert_eq!(
+            out.matches("aria-label=\"Check option in column &quot;a&quot;\"")
+                .count(),
+            3,
+            "{out}"
         );
         assert!(
             apply(
