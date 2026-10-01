@@ -1,12 +1,12 @@
 //! Vendor the real GitHub and GitLab styles into a bundle (network access required).
 //!
 //! ```text
-//! cargo run --example vendor_live -- [OUTPUT.tar.gz] [github|gitlab|all] [--all-themes] [--no-libs]
+//! cargo run --example vendor_live -- OUTPUT.tar.gz [github|gitlab|all] [--all-themes] [--no-libs] [--quiet]
 //! ```
 //!
 //! This is the manual end-to-end check of `md-render vendor` that `cargo test` cannot do (it
-//! never touches the network). Without arguments it writes `.dev/bundles/styles.tar.gz` below
-//! the current directory, then reopens the bundle and lists its contents.
+//! never touches the network). It vendors into OUTPUT (updating it in place if it exists),
+//! then reopens the bundle exactly like a server would and lists its contents.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -26,8 +26,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
+    const USAGE: &str = "usage: vendor_live OUTPUT.tar.gz [github|gitlab|all] [--all-themes] \
+                         [--no-libs] [--quiet]";
+    // Never default to the user's real cache bundle: the output is always explicit.
     let mut opts = VendorOptions {
-        output: PathBuf::from(".dev/bundles/styles.tar.gz"),
+        output: PathBuf::new(),
         ..VendorOptions::default()
     };
     for arg in std::env::args().skip(1) {
@@ -38,9 +41,16 @@ fn run() -> anyhow::Result<()> {
             "--all-themes" => opts.all_github_themes = true,
             "--no-libs" => opts.libs = false,
             "--quiet" => opts.quiet = true,
-            other if other.starts_with('-') => anyhow::bail!("unknown option {other}"),
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            other if other.starts_with('-') => anyhow::bail!("unknown option {other}\n{USAGE}"),
             other => opts.output = PathBuf::from(other),
         }
+    }
+    if opts.output.as_os_str().is_empty() {
+        anyhow::bail!("no output file given\n{USAGE}");
     }
 
     let report = vendor::vendor(&opts)?;

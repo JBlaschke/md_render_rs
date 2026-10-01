@@ -3,10 +3,10 @@
 //!
 //! For each requested flavor:
 //! 1. GET the source page and scrape its `<link rel=stylesheet>` tags (`href` and `data-href`,
-//!    with `media`), classify them into roles by file-name stem ([`scrape`]);
+//!    with `media`), classify them into roles by file-name stem (`scrape`);
 //! 2. download every selected stylesheet (any failure is fatal), find each `url()` / `@import`
-//!    ([`css`]), resolve it against the stylesheet URL, map it to a bundle path mirroring the
-//!    site path ([`paths`]) and rewrite the reference to a *relative* bundle path (D10);
+//!    (`css`), resolve it against the stylesheet URL, map it to a bundle path mirroring the
+//!    site path (`paths`) and rewrite the reference to a *relative* bundle path (D10);
 //! 3. download the referenced assets (and `@import`ed stylesheets, recursively) — failures are
 //!    recorded in the manifest and are not fatal (GitHub's own CSS references a 404);
 //! 4. with `libs`, download the pinned client libraries and GitHub's custom emoji ([`libs`]).
