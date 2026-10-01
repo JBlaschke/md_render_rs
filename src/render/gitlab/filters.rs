@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use dom_query::NodeRef;
 use regex::Regex;
 
-use super::{dom, emoji, highlight, sanitize};
+use super::{dom, emoji, highlight, sanitize, spaced_link};
 
 /// gitlab.com's `FILTER_ITEM_LIMIT`.
 pub(super) const FILTER_ITEM_LIMIT: usize = 1000;
@@ -34,7 +34,8 @@ impl Default for FilterContext {
 /// Runs the GitLab filter chain on the parsed fragment `root` (GL §2 rows 4-34).
 pub(super) fn run(root: &NodeRef<'_>, ctx: &FilterContext) {
     code_language(root);
-    // JsonTableFilter, PlantumlFilter, SpacedLinkFilter: optional, not implemented (GL §2).
+    // JsonTableFilter and PlantumlFilter: optional, not implemented (GL §2, §6.10, §7).
+    spaced_link::spaced_links(root, &super::render_snippet);
     sanitize::iframe_to_img(root);
     sanitize::sanitize(root);
     if !sanitize::sanitize_links(root) {

@@ -33,3 +33,5 @@ Media: ![clip](video/clip.mp4 "A clip") ![sound](audio/sound.ogg) ![pic](img/pic
 Wiki: [[Wiki Page]], [[Title|https://example.com/page]].
 
 [TOC]
+
+Spaced link: [my doc](docs/my doc.md "Doc") and image ![shot](img/screen shot.png).

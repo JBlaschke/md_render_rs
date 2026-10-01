@@ -29,6 +29,7 @@ mod highlight;
 mod postjs;
 mod preprocess;
 mod sanitize;
+mod spaced_link;
 
 use std::path::PathBuf;
 
@@ -92,7 +93,12 @@ fn markdown_to_html(
     } else {
         text
     };
-    // MarkdownFilter: `@text.delete("\r")`, then `render(...).rstrip`; empty input renders "".
+    render_snippet(&text)
+}
+
+/// `MarkdownFilter#call`: `@text.delete("\r")`, comrak with GitLab's options, `rstrip`; empty
+/// input renders "". Also used by SpacedLinkFilter for its snippets.
+fn render_snippet(text: &str) -> String {
     let text = text.replace('\r', "");
     if text.is_empty() {
         return String::new();
