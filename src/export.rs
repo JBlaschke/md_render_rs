@@ -96,15 +96,21 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
 
     let (bundle, warning) = crate::styles::load_or_fallback(&cfg.bundle_path);
     if !cfg.quiet {
-        if let Some(w) = &warning {
-            eprintln!("md-render: warning: {w}");
-        }
-        if bundle.flavor(cfg.flavor).is_none_or(|m| m.fallback) {
-            eprintln!(
-                "md-render: no vendored {flavor} styles in {}; the export uses minimal fallback styles \
-                 (run `md-render vendor --flavor {flavor}` to download them)",
+        let fallback = bundle.flavor(cfg.flavor).is_none_or(|m| m.fallback);
+        match &warning {
+            Some(w) => eprintln!("md-render: warning: {w}"),
+            None if fallback => eprintln!(
+                "md-render: warning: {} has no vendored {} styles; using minimal fallback styles",
                 cfg.bundle_path.display(),
-                flavor = cfg.flavor
+                cfg.flavor
+            ),
+            None => {}
+        }
+        if fallback {
+            // DESIGN D11: always name the exact command.
+            eprintln!(
+                "md-render: hint: run `md-render vendor --flavor {}` to export with the site's own styles",
+                cfg.flavor
             );
         }
     }
