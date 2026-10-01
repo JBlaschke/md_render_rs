@@ -26,8 +26,18 @@ where
     }
     match execute(inv) {
         Ok(()) => ExitCode::SUCCESS,
+        // `md-render export README.md - | head`: the reader went away, which is not an error
+        // (grip ignores EPIPE too, GRIP §2.6).
+        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => report(&CliError::Runtime(e)),
     }
+}
+
+/// Whether `e` was caused by writing to a closed pipe.
+pub fn is_broken_pipe(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|cause| cause.downcast_ref::<io::Error>())
+        .any(|io| io.kind() == io::ErrorKind::BrokenPipe)
 }
 
 /// Print `e` the way its kind expects and return its exit code.
@@ -258,6 +268,17 @@ mod tests {
         assert!(!is_secret_bearing("ureq::run", Level::DEBUG));
         assert!(!is_secret_bearing("ureqx", Level::TRACE));
         assert!(!is_secret_bearing("md_render::render::api", Level::TRACE));
+    }
+
+    #[test]
+    fn broken_pipes_are_recognized_through_context() {
+        let pipe = anyhow::Error::new(io::Error::from(io::ErrorKind::BrokenPipe))
+            .context("writing the HTML to stdout");
+        assert!(is_broken_pipe(&pipe));
+        let other =
+            anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied)).context("writing");
+        assert!(!is_broken_pipe(&other));
+        assert!(!is_broken_pipe(&anyhow::anyhow!("plain")));
     }
 
     #[test]
