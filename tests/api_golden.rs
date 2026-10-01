@@ -29,7 +29,10 @@ fn golden_dir() -> Option<PathBuf> {
     if dir.is_dir() {
         Some(dir)
     } else {
-        eprintln!("SKIPPED (set MD_RENDER_GOLDEN_DIR): {} does not exist", dir.display());
+        eprintln!(
+            "SKIPPED (set MD_RENDER_GOLDEN_DIR): {} does not exist",
+            dir.display()
+        );
         None
     }
 }
@@ -39,12 +42,21 @@ struct Canned(String);
 
 impl HttpTransport for Canned {
     fn post_json(&self, _: &ApiRequest) -> Result<ApiResponse, TransportError> {
-        Ok(ApiResponse { status: 200, headers: vec![], body: self.0.clone() })
+        Ok(ApiResponse {
+            status: 200,
+            headers: vec![],
+            body: self.0.clone(),
+        })
     }
 }
 
 fn renderer(flavor: Flavor, body: String) -> ApiRenderer {
-    let cfg = ApiConfig { flavor, api_url: None, token: None, fallback_offline: false };
+    let cfg = ApiConfig {
+        flavor,
+        api_url: None,
+        token: None,
+        fallback_offline: false,
+    };
     ApiRenderer::with_transport(cfg, Arc::new(Canned(body))).expect("renderer")
 }
 
@@ -61,7 +73,10 @@ fn normalize(html: &str) -> Vec<String> {
     // Deliberate difference (GRIP C51): `--api` shows canonical image URLs instead of camo
     // proxies, so apply the same rewrite to the oracle.
     for img in doc.select("img[data-canonical-src]").nodes().iter() {
-        let canonical = img.attr("data-canonical-src").map(|v| v.to_string()).unwrap_or_default();
+        let canonical = img
+            .attr("data-canonical-src")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         let src = img.attr("src").map(|v| v.to_string());
         if let Some(a) = img.parent().filter(|p| p.has_name("a")) {
             if a.attr("href").map(|h| h.to_string()) == src {
@@ -102,7 +117,11 @@ fn differences(got: &[String], want: &[String]) -> Vec<String> {
     let mut lcs = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            lcs[i][j] = if got[i] == want[j] { lcs[i + 1][j + 1] + 1 } else { lcs[i + 1][j].max(lcs[i][j + 1]) };
+            lcs[i][j] = if got[i] == want[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
         }
     }
     let (mut i, mut j, mut out) = (0, 0, Vec::new());
@@ -125,14 +144,24 @@ fn differences(got: &[String], want: &[String]) -> Vec<String> {
 fn github_readme_mode_matches_the_readme_view() {
     let Some(dir) = golden_dir() else { return };
     let pages = dir.join("github/pages");
-    let names = ["dipree_github-markdown", "atapas_markdown-cheatsheet", "lifeparticle_Markdown-Cheatsheet"];
+    let names = [
+        "dipree_github-markdown",
+        "atapas_markdown-cheatsheet",
+        "lifeparticle_Markdown-Cheatsheet",
+    ];
     let mut report = String::new();
     for name in names {
         let read = |suffix: &str| fs::read_to_string(pages.join(format!("{name}.{suffix}")));
-        let (Ok(source), Ok(api), Ok(oracle), Ok(req)) =
-            (read("README.md"), read("README.api_gfm.html"), read("README.api_html.html"), read("req_gfm.json"))
-        else {
-            eprintln!("SKIPPED {name}: fixture files missing under {}", pages.display());
+        let (Ok(source), Ok(api), Ok(oracle), Ok(req)) = (
+            read("README.md"),
+            read("README.api_gfm.html"),
+            read("README.api_html.html"),
+            read("req_gfm.json"),
+        ) else {
+            eprintln!(
+                "SKIPPED {name}: fixture files missing under {}",
+                pages.display()
+            );
             continue;
         };
         let req: serde_json::Value = serde_json::from_str(&req).expect("request json");
@@ -140,7 +169,9 @@ fn github_readme_mode_matches_the_readme_view() {
         opts.mode = Mode::Readme;
         opts.context = req["context"].as_str().map(str::to_owned);
         opts.sourcepos = false;
-        let out = renderer(Flavor::Github, api).render(&source, &opts).expect("render");
+        let out = renderer(Flavor::Github, api)
+            .render(&source, &opts)
+            .expect("render");
         let got = normalize(&out.html);
         let want = normalize(&article_inner(&oracle));
         let diffs = differences(&got, &want);
@@ -165,15 +196,22 @@ fn github_comment_mode_matches_stored_comments() {
     let mut report = String::new();
     for issue in ["cli_14520", "cli_14522", "cli_14545", "cli_14554"] {
         let read = |suffix: &str| fs::read_to_string(comments.join(format!("{issue}.{suffix}")));
-        let (Ok(source), Ok(api), Ok(stored)) = (read("md"), read("api_gfm.html"), read("bodyHTML.html")) else {
-            eprintln!("SKIPPED {issue}: fixture files missing under {}", comments.display());
+        let (Ok(source), Ok(api), Ok(stored)) =
+            (read("md"), read("api_gfm.html"), read("bodyHTML.html"))
+        else {
+            eprintln!(
+                "SKIPPED {issue}: fixture files missing under {}",
+                comments.display()
+            );
             continue;
         };
         let mut opts = RenderOptions::new(Flavor::Github);
         opts.mode = Mode::Comment;
         opts.context = Some("cli/cli".into());
         opts.sourcepos = false;
-        let out = renderer(Flavor::Github, api).render(&source, &opts).expect("render");
+        let out = renderer(Flavor::Github, api)
+            .render(&source, &opts)
+            .expect("render");
         let diffs = differences(&normalize(&out.html), &normalize(&stored));
         eprintln!("{issue}: {} normalized lines differ", diffs.len());
         for d in diffs.iter().take(40) {
@@ -207,14 +245,24 @@ fn gitlab_issue_bodies_are_unlazied() {
             .expect("render");
         let doc = Document::fragment(out.html.as_str());
         let name = path.display();
-        assert!(!doc.select("img.lazy, img[data-src]").exists(), "{name}: lazy image left");
-        assert!(!doc.select(r#"img[src^="data:image/gif"]"#).exists(), "{name}: placeholder left");
+        assert!(
+            !doc.select("img.lazy, img[data-src]").exists(),
+            "{name}: lazy image left"
+        );
+        assert!(
+            !doc.select(r#"img[src^="data:image/gif"]"#).exists(),
+            "{name}: placeholder left"
+        );
         for img in doc.select("img").nodes().iter() {
             let src = img.attr("src").map(|s| s.to_string()).unwrap_or_default();
             assert!(!src.starts_with("/-/"), "{name}: relative upload URL {src}");
         }
         for pre in doc.select("pre.js-syntax-highlight").nodes().iter() {
-            assert!(pre.has_class("code-syntax-highlight-theme"), "{name}: {}", pre.html());
+            assert!(
+                pre.has_class("code-syntax-highlight-theme"),
+                "{name}: {}",
+                pre.html()
+            );
         }
         checked += 1;
     }

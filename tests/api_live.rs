@@ -20,26 +20,58 @@ fn options(flavor: Flavor, mode: Mode) -> RenderOptions {
 #[test]
 #[ignore = "network: POST https://api.github.com/markdown (works unauthenticated, 60 requests/hour)"]
 fn github_live_readme_mode() {
-    let cfg = ApiConfig { flavor: Flavor::Github, api_url: None, token: None, fallback_offline: false };
+    let cfg = ApiConfig {
+        flavor: Flavor::Github,
+        api_url: None,
+        token: None,
+        fallback_offline: false,
+    };
     let r = ApiRenderer::new(cfg).expect("renderer");
-    let out = r.render(DOC, &options(Flavor::Github, Mode::Readme)).expect("GitHub API render");
+    let out = r
+        .render(DOC, &options(Flavor::Github, Mode::Readme))
+        .expect("GitHub API render");
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
-    assert!(out.html.contains(r#"<div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">"#), "{}", out.html);
-    assert!(out.html.contains(r#"id="user-content-live-test-rocket""#), "{}", out.html);
-    assert!(out.html.contains("highlight-source-rust") && out.html.contains("data-snippet-clipboard-copy-content"), "{}", out.html);
+    assert!(
+        out.html.contains(
+            r#"<div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">"#
+        ),
+        "{}",
+        out.html
+    );
+    assert!(
+        out.html.contains(r#"id="user-content-live-test-rocket""#),
+        "{}",
+        out.html
+    );
+    assert!(
+        out.html.contains("highlight-source-rust")
+            && out.html.contains("data-snippet-clipboard-copy-content"),
+        "{}",
+        out.html
+    );
     assert!(out.html.contains("task-list-item"), "{}", out.html);
 }
 
 #[test]
 #[ignore = "network: POST https://api.github.com/markdown with context"]
 fn github_live_comment_mode() {
-    let cfg = ApiConfig { flavor: Flavor::Github, api_url: None, token: None, fallback_offline: false };
+    let cfg = ApiConfig {
+        flavor: Flavor::Github,
+        api_url: None,
+        token: None,
+        fallback_offline: false,
+    };
     let r = ApiRenderer::new(cfg).expect("renderer");
     let mut o = options(Flavor::Github, Mode::Comment);
     o.context = Some("joeyespo/grip".into());
     let out = r.render(DOC, &o).expect("GitHub API render");
     assert!(out.html.contains(r#"<h1 dir="auto">"#), "{}", out.html);
-    assert!(out.html.contains(r#"<code class="notranslate">code</code>"#), "{}", out.html);
+    assert!(
+        out.html
+            .contains(r#"<code class="notranslate">code</code>"#),
+        "{}",
+        out.html
+    );
 }
 
 #[test]
@@ -49,18 +81,40 @@ fn gitlab_live() {
         eprintln!("SKIPPED: set GITLAB_TOKEN");
         return;
     }
-    let cfg = ApiConfig { flavor: Flavor::Gitlab, api_url: None, token: None, fallback_offline: false };
+    let cfg = ApiConfig {
+        flavor: Flavor::Gitlab,
+        api_url: None,
+        token: None,
+        fallback_offline: false,
+    };
     let r = ApiRenderer::new(cfg).expect("renderer");
-    let out = r.render(DOC, &options(Flavor::Gitlab, Mode::Readme)).expect("GitLab API render");
-    assert!(out.html.contains("code-syntax-highlight-theme"), "{}", out.html);
+    let out = r
+        .render(DOC, &options(Flavor::Gitlab, Mode::Readme))
+        .expect("GitLab API render");
+    assert!(
+        out.html.contains("code-syntax-highlight-theme"),
+        "{}",
+        out.html
+    );
     assert!(!out.html.contains(r#"class="lazy"#), "{}", out.html);
 }
 
 #[test]
 #[ignore = "network: unauthenticated GitLab request must fall back offline with a warning"]
 fn gitlab_live_unauthorized_falls_back() {
-    let cfg = ApiConfig { flavor: Flavor::Gitlab, api_url: None, token: Some("invalid-token".into()), fallback_offline: true };
+    let cfg = ApiConfig {
+        flavor: Flavor::Gitlab,
+        api_url: None,
+        token: Some("invalid-token".into()),
+        fallback_offline: true,
+    };
     let r = ApiRenderer::new(cfg).expect("renderer");
-    let out = r.render(DOC, &options(Flavor::Gitlab, Mode::Readme)).expect("fallback render");
-    assert!(out.warnings.iter().any(|w| w.contains("unauthorized")), "{:?}", out.warnings);
+    let out = r
+        .render(DOC, &options(Flavor::Gitlab, Mode::Readme))
+        .expect("fallback render");
+    assert!(
+        out.warnings.iter().any(|w| w.contains("unauthorized")),
+        "{:?}",
+        out.warnings
+    );
 }

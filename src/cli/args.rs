@@ -91,7 +91,13 @@ pub enum ThemesArg {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct GlobalArgs {
     /// Site flavor to reproduce [env: MD_RENDER_FLAVOR] [default: github]
-    #[arg(short = 'f', long, value_enum, global = true, help_heading = "Rendering")]
+    #[arg(
+        short = 'f',
+        long,
+        value_enum,
+        global = true,
+        help_heading = "Rendering"
+    )]
     pub flavor: Option<FlavorArg>,
 
     /// Rendering context: repository file view or comment/issue body [default: readme]
@@ -151,7 +157,13 @@ pub struct GlobalArgs {
     pub token: Option<String>,
 
     /// Print nothing but errors
-    #[arg(short, long, global = true, conflicts_with = "verbose", help_heading = "Output")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        conflicts_with = "verbose",
+        help_heading = "Output"
+    )]
     pub quiet: bool,
 
     /// More log output (-v: debug, -vv: trace)
@@ -349,7 +361,12 @@ pub fn parse_theme(s: &str) -> Result<ThemeArg, String> {
         id if GITHUB_THEMES.contains(&id) => Ok(ThemeArg::Id(id.to_owned())),
         _ => Err(format!(
             "expected auto, light, dark, or a GitHub theme id ({})",
-            GITHUB_THEMES[1..].iter().filter(|t| **t != "dark").copied().collect::<Vec<_>>().join(", ")
+            GITHUB_THEMES[1..]
+                .iter()
+                .filter(|t| **t != "dark")
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -367,8 +384,15 @@ mod tests {
     #[test]
     fn theme_values() {
         assert_eq!(parse_theme("auto"), Ok(ThemeArg::Mode(Theme::Auto)));
-        assert_eq!(parse_theme("dark_dimmed"), Ok(ThemeArg::Id("dark_dimmed".into())));
-        assert!(parse_theme("solarized").unwrap_err().contains("light_high_contrast"));
+        assert_eq!(
+            parse_theme("dark_dimmed"),
+            Ok(ThemeArg::Id("dark_dimmed".into()))
+        );
+        assert!(
+            parse_theme("solarized")
+                .unwrap_err()
+                .contains("light_high_contrast")
+        );
         assert!(parse_theme("Dark").is_err());
     }
 }

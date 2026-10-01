@@ -105,13 +105,17 @@ mod tests {
             let h = hint(argv).unwrap_or_else(|| panic!("no hint for {argv:?}"));
             assert!(h.contains("[<HOST>:]<PORT>"), "{h}");
         }
-        for argv in [&["md-render", "-a", "x"][..], &["md-render", "--address=x"], &["md-render", "--host", "x"]] {
+        for argv in [
+            &["md-render", "-a", "x"][..],
+            &["md-render", "--address=x"],
+            &["md-render", "--host", "x"],
+        ] {
             let h = hint(argv).unwrap_or_else(|| panic!("no hint for {argv:?}"));
             assert!(h.contains("<PATH> <ADDRESS>"), "{h}");
         }
         // Other unknown options keep clap's error (with its suggestions); `--` ends options.
         assert_eq!(hint(&["md-render", "--bogus"]), None);
-        assert!(matches!(parse_args(["md-render", "--", "-p"]), Ok(_)));
+        assert!(parse_args(["md-render", "--", "-p"]).is_ok());
         let code = |argv: &[&str]| parse_args(argv).err().map(|e| e.exit_code());
         assert_eq!(code(&["md-render", "-p", "80"]), Some(2));
         assert_eq!(code(&["md-render", "--bogus"]), Some(2));
@@ -121,7 +125,9 @@ mod tests {
 
     #[test]
     fn version_string() {
-        let Err(CliError::Clap(e)) = parse_args(["md-render", "-V"]) else { panic!("expected version output") };
+        let Err(CliError::Clap(e)) = parse_args(["md-render", "-V"]) else {
+            panic!("expected version output")
+        };
         assert_eq!(e.kind(), ErrorKind::DisplayVersion);
         assert_eq!(e.to_string().trim_end(), crate::TOOL);
     }

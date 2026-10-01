@@ -21,7 +21,11 @@ pub fn markdown_extensions(flavor: Flavor) -> Vec<&'static str> {
 /// `cwd.join(path)` with `.` components removed and `..` folded lexically where possible
 /// (symlinks are **not** resolved, so the user's spelling of a symlinked file is kept).
 pub fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
     normalize(&joined)
 }
 
@@ -59,13 +63,19 @@ pub fn find_readme(dir: &Path, flavor: Flavor, is_root: bool) -> Option<PathBuf>
     let in_dir = |d: &Path| -> Option<PathBuf> {
         let mut best: Option<(usize, String)> = None;
         for entry in fs::read_dir(d).ok()?.flatten() {
-            let Ok(name) = entry.file_name().into_string() else { continue };
-            let Some((stem, ext)) = name.rsplit_once('.') else { continue };
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some((stem, ext)) = name.rsplit_once('.') else {
+                continue;
+            };
             if !stem.eq_ignore_ascii_case("readme") {
                 continue;
             }
             let ext = ext.to_ascii_lowercase();
-            let Some(rank) = exts.iter().position(|e| *e == ext) else { continue };
+            let Some(rank) = exts.iter().position(|e| *e == ext) else {
+                continue;
+            };
             if !entry.path().is_file() {
                 continue;
             }
@@ -111,7 +121,10 @@ mod tests {
     #[test]
     fn normalization() {
         let cwd = Path::new("/w/d");
-        assert_eq!(absolutize(cwd, Path::new("./a/./b.md")), Path::new("/w/d/a/b.md"));
+        assert_eq!(
+            absolutize(cwd, Path::new("./a/./b.md")),
+            Path::new("/w/d/a/b.md")
+        );
         assert_eq!(absolutize(cwd, Path::new("../x.md")), Path::new("/w/x.md"));
         assert_eq!(absolutize(cwd, Path::new("../../../x")), Path::new("/x"));
         assert_eq!(absolutize(cwd, Path::new("/abs/./y")), Path::new("/abs/y"));
@@ -128,29 +141,58 @@ mod tests {
         fs::create_dir(d.join("docs")).unwrap();
         fs::write(d.join("docs/README.md"), "d").unwrap();
         assert_eq!(find_readme(d, Flavor::Github, false), None);
-        assert_eq!(find_readme(d, Flavor::Github, true), Some(d.join("docs/README.md")));
+        assert_eq!(
+            find_readme(d, Flavor::Github, true),
+            Some(d.join("docs/README.md"))
+        );
         fs::create_dir(d.join(".github")).unwrap();
         fs::write(d.join(".github/readme.markdown"), "g").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github, true), Some(d.join(".github/readme.markdown")));
+        assert_eq!(
+            find_readme(d, Flavor::Github, true),
+            Some(d.join(".github/readme.markdown"))
+        );
         fs::write(d.join("Readme.mkd"), "x").unwrap();
         fs::write(d.join("readme.rmd"), "x").unwrap();
         fs::write(d.join("readme.txt"), "x").unwrap();
         fs::create_dir(d.join("README.mdown")).unwrap(); // a directory is never a README
-        assert_eq!(find_readme(d, Flavor::Github, true), Some(d.join("Readme.mkd")));
+        assert_eq!(
+            find_readme(d, Flavor::Github, true),
+            Some(d.join("Readme.mkd"))
+        );
         fs::write(d.join("readme.markdown"), "x").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github, true), Some(d.join("readme.markdown")));
+        assert_eq!(
+            find_readme(d, Flavor::Github, true),
+            Some(d.join("readme.markdown"))
+        );
         // GitLab also knows .rmd, but it ranks last.
-        assert_eq!(find_readme(d, Flavor::Gitlab, true), Some(d.join("readme.markdown")));
+        assert_eq!(
+            find_readme(d, Flavor::Gitlab, true),
+            Some(d.join("readme.markdown"))
+        );
         fs::write(d.join("README.md"), "x").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github, true), Some(d.join("README.md")));
+        assert_eq!(
+            find_readme(d, Flavor::Github, true),
+            Some(d.join("README.md"))
+        );
     }
 
     #[test]
     fn decoding() {
         let mut w = Vec::new();
-        assert_eq!(decode_text(b"\xEF\xBB\xBF# a".to_vec(), "stdin", &mut w), "# a");
+        assert_eq!(
+            decode_text(b"\xEF\xBB\xBF# a".to_vec(), "stdin", &mut w),
+            "# a"
+        );
         assert!(w.is_empty());
-        assert_eq!(decode_text(b"a\xFFb".to_vec(), "stdin", &mut w), "a\u{FFFD}b");
-        assert_eq!(w, ["stdin is not valid UTF-8 (first invalid byte at offset 1); invalid bytes were replaced"]);
+        assert_eq!(
+            decode_text(b"a\xFFb".to_vec(), "stdin", &mut w),
+            "a\u{FFFD}b"
+        );
+        assert_eq!(
+            w,
+            [
+                "stdin is not valid UTF-8 (first invalid byte at offset 1); invalid bytes were replaced"
+            ]
+        );
     }
 }

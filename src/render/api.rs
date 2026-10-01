@@ -90,7 +90,10 @@ pub struct ApiRequest {
 impl ApiRequest {
     /// Value of the first header called `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -125,7 +128,10 @@ pub struct ApiResponse {
 impl ApiResponse {
     /// Value of the first header called `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -152,9 +158,15 @@ impl UreqTransport {
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(30)))
             .timeout_connect(Some(Duration::from_secs(10)))
-            .tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
+            .tls_config(
+                TlsConfig::builder()
+                    .root_certs(RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build();
-        UreqTransport { agent: config.into() }
+        UreqTransport {
+            agent: config.into(),
+        }
     }
 }
 
@@ -176,8 +188,9 @@ impl HttpTransport for UreqTransport {
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let mut response =
-            builder.send_json(&request.body).map_err(|e| TransportError(e.to_string()))?;
+        let mut response = builder
+            .send_json(&request.body)
+            .map_err(|e| TransportError(e.to_string()))?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -190,7 +203,11 @@ impl HttpTransport for UreqTransport {
             .limit(MAX_RESPONSE_BYTES)
             .read_to_string()
             .map_err(|e| TransportError(format!("reading the response body: {e}")))?;
-        Ok(ApiResponse { status, headers, body })
+        Ok(ApiResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -202,11 +219,22 @@ impl HttpTransport for UreqTransport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiError {
     /// No response (DNS, connect, TLS, timeout).
-    Network { site: Flavor, url: String, message: String },
+    Network {
+        site: Flavor,
+        url: String,
+        message: String,
+    },
     /// HTTP 401: missing or invalid token.
-    Unauthorized { site: Flavor, message: Option<String>, had_token: bool },
+    Unauthorized {
+        site: Flavor,
+        message: Option<String>,
+        had_token: bool,
+    },
     /// HTTP 403 that is not a rate limit (e.g. no access to the `--context` project).
-    Forbidden { site: Flavor, message: Option<String> },
+    Forbidden {
+        site: Flavor,
+        message: Option<String>,
+    },
     /// HTTP 429, or a 403 rate-limit response.
     RateLimited {
         site: Flavor,
@@ -219,9 +247,17 @@ pub enum ApiError {
         had_token: bool,
     },
     /// The document exceeds the API's size limit.
-    TooLarge { site: Flavor, size: usize, limit: usize },
+    TooLarge {
+        site: Flavor,
+        size: usize,
+        limit: usize,
+    },
     /// Any other non-success status.
-    Status { site: Flavor, status: u16, message: Option<String> },
+    Status {
+        site: Flavor,
+        status: u16,
+        message: Option<String>,
+    },
     /// A success status with an unusable body.
     BadResponse { site: Flavor, message: String },
 }
@@ -243,23 +279,39 @@ impl ApiError {
     /// Like `Display`, with rate-limit reset times shown in `tz` relative to `now` (unix seconds).
     pub fn describe(&self, tz: &jiff::tz::TimeZone, now: i64) -> String {
         let site = site_name(self.site());
-        let detail = |m: &Option<String>| m.as_deref().map(|m| format!(" ({m})")).unwrap_or_default();
+        let detail =
+            |m: &Option<String>| m.as_deref().map(|m| format!(" ({m})")).unwrap_or_default();
         match self {
             ApiError::Network { url, message, .. } => {
                 format!("could not reach the {site} API at {url}: {message}")
             }
-            ApiError::Unauthorized { message, had_token, .. } => {
+            ApiError::Unauthorized {
+                message, had_token, ..
+            } => {
                 let hint = if *had_token {
                     "check that the token is valid and has not expired".to_owned()
                 } else {
                     format!("{} or pass --token", token_env_hint(self.site()))
                 };
-                format!("the {site} API rejected the request as unauthorized{}; {hint}", detail(message))
+                format!(
+                    "the {site} API rejected the request as unauthorized{}; {hint}",
+                    detail(message)
+                )
             }
             ApiError::Forbidden { message, .. } => {
-                format!("the {site} API refused the request (HTTP 403){}", detail(message))
+                format!(
+                    "the {site} API refused the request (HTTP 403){}",
+                    detail(message)
+                )
             }
-            ApiError::RateLimited { message, limit, reset, retry_after, had_token, .. } => {
+            ApiError::RateLimited {
+                message,
+                limit,
+                reset,
+                retry_after,
+                had_token,
+                ..
+            } => {
                 let mut s = format!("{site} API rate limit exceeded");
                 if let Some(limit) = limit {
                     s.push_str(&format!(" ({limit} requests per window)"));
@@ -284,7 +336,9 @@ impl ApiError {
                 size.div_ceil(1024),
                 limit / 1024
             ),
-            ApiError::Status { status, message, .. } => {
+            ApiError::Status {
+                status, message, ..
+            } => {
                 format!("the {site} API returned HTTP {status}{}", detail(message))
             }
             ApiError::BadResponse { message, .. } => {
@@ -329,8 +383,14 @@ fn describe_reset(reset: i64, now: i64, tz: &jiff::tz::TimeZone) -> String {
         return format!("at unix time {reset}");
     };
     let zoned = ts.to_zoned(tz.clone());
-    let today = jiff::Timestamp::from_second(now).ok().map(|n| n.to_zoned(tz.clone()).date());
-    let fmt = if today == Some(zoned.date()) { "%H:%M:%S %Z" } else { "%Y-%m-%d %H:%M:%S %Z" };
+    let today = jiff::Timestamp::from_second(now)
+        .ok()
+        .map(|n| n.to_zoned(tz.clone()).date());
+    let fmt = if today == Some(zoned.date()) {
+        "%H:%M:%S %Z"
+    } else {
+        "%Y-%m-%d %H:%M:%S %Z"
+    };
     let when = zoned.strftime(fmt).to_string();
     let delta = reset - now;
     if delta > 0 {
@@ -415,15 +475,22 @@ fn resolve_token(
         }
     }
     let (program, args, label): (&str, Vec<&str>, &'static str) = match flavor {
-        Flavor::Github => ("gh", vec!["auth", "token", "--hostname", host], "gh auth token"),
-        Flavor::Gitlab => {
-            ("glab", vec!["config", "get", "token", "--host", host], "glab config get token")
-        }
+        Flavor::Github => (
+            "gh",
+            vec!["auth", "token", "--hostname", host],
+            "gh auth token",
+        ),
+        Flavor::Gitlab => (
+            "glab",
+            vec!["config", "get", "token", "--host", host],
+            "glab config get token",
+        ),
     };
     let token = helper(program, &args).and_then(clean)?;
     // A helper that prints anything but a single token (e.g. an error text) is ignored.
-    let plausible = token.len() <= 4096 && !token.chars().any(|c| c.is_whitespace() || c.is_control());
-    plausible.then(|| (Secret(token), TokenOrigin::Helper(label)))
+    let plausible =
+        token.len() <= 4096 && !token.chars().any(|c| c.is_whitespace() || c.is_control());
+    plausible.then_some((Secret(token), TokenOrigin::Helper(label)))
 }
 
 /// Run a credential helper and return its stdout. `None` if it is not installed, fails, or
@@ -543,7 +610,10 @@ impl ApiRenderer {
 
     /// Create a renderer with an injected transport. Only `cfg.token` is used (no environment
     /// or credential-helper lookup), which keeps tests hermetic.
-    pub fn with_transport(cfg: ApiConfig, transport: Arc<dyn HttpTransport>) -> anyhow::Result<Self> {
+    pub fn with_transport(
+        cfg: ApiConfig,
+        transport: Arc<dyn HttpTransport>,
+    ) -> anyhow::Result<Self> {
         let resolved = cfg
             .token
             .as_deref()
@@ -625,7 +695,11 @@ impl ApiRenderer {
                 }
             }
         }
-        ApiRequest { url: self.endpoint.clone(), headers, body: serde_json::Value::Object(body) }
+        ApiRequest {
+            url: self.endpoint.clone(),
+            headers,
+            body: serde_json::Value::Object(body),
+        }
     }
 
     fn lock_block(&self) -> MutexGuard<'_, Option<Block>> {
@@ -653,12 +727,20 @@ impl ApiRenderer {
         }
         let site = self.cfg.flavor;
         if site == Flavor::Github && text.len() > GITHUB_MAX_TEXT_BYTES {
-            return Err(ApiError::TooLarge { site, size: text.len(), limit: GITHUB_MAX_TEXT_BYTES });
+            return Err(ApiError::TooLarge {
+                site,
+                size: text.len(),
+                limit: GITHUB_MAX_TEXT_BYTES,
+            });
         }
         let request = self.build_request(text, opts);
         tracing::debug!(url = %request.url, bytes = text.len(), "API render request");
         let result = match self.transport.post_json(&request) {
-            Err(e) => Err(ApiError::Network { site, url: request.url.clone(), message: e.0 }),
+            Err(e) => Err(ApiError::Network {
+                site,
+                url: request.url.clone(),
+                message: e.0,
+            }),
             Ok(resp) => {
                 tracing::debug!(status = resp.status, "API render response");
                 interpret_response(site, &resp, self.token.is_some())
@@ -704,7 +786,11 @@ impl ApiRenderer {
             }
             Flavor::Gitlab => {
                 let html = self.fetch(markdown, opts)?;
-                Ok(postprocess_gitlab(&html, &self.instance_origin, &self.instance_prefix))
+                Ok(postprocess_gitlab(
+                    &html,
+                    &self.instance_origin,
+                    &self.instance_prefix,
+                ))
             }
         }
     }
@@ -725,12 +811,16 @@ impl Renderer for ApiRenderer {
                 let mut rendered = super::render(markdown, opts);
                 rendered.warnings.insert(
                     0,
-                    format!("{}. Showing the offline rendering instead.", capitalize(&err.to_string())),
+                    format!(
+                        "{}. Showing the offline rendering instead.",
+                        capitalize(&err.to_string())
+                    ),
                 );
                 Ok(rendered)
             }
-            Err(err) => Err(anyhow::Error::new(err))
-                .with_context(|| format!("rendering through the {} API", site_name(self.cfg.flavor))),
+            Err(err) => Err(anyhow::Error::new(err)).with_context(|| {
+                format!("rendering through the {} API", site_name(self.cfg.flavor))
+            }),
         }
     }
 
@@ -753,7 +843,12 @@ fn parse_base_url(cfg: &ApiConfig) -> anyhow::Result<url::Url> {
         Flavor::Github => GITHUB_API_URL,
         Flavor::Gitlab => GITLAB_URL,
     };
-    let raw = cfg.api_url.as_deref().map(str::trim).filter(|u| !u.is_empty()).unwrap_or(default);
+    let raw = cfg
+        .api_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .unwrap_or(default);
     let url = url::Url::parse(raw).with_context(|| format!("invalid API URL {raw:?}"))?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
@@ -821,14 +916,20 @@ fn rid_seed(source: Option<&Path>) -> String {
 }
 
 /// Turn a response into HTML or an [`ApiError`].
-fn interpret_response(site: Flavor, resp: &ApiResponse, had_token: bool) -> Result<String, ApiError> {
+fn interpret_response(
+    site: Flavor,
+    resp: &ApiResponse,
+    had_token: bool,
+) -> Result<String, ApiError> {
     if (200..300).contains(&resp.status) {
         return match site {
             Flavor::Github => Ok(resp.body.clone()),
             Flavor::Gitlab => {
-                let value: serde_json::Value = serde_json::from_str(&resp.body).map_err(|e| {
-                    ApiError::BadResponse { site, message: format!("invalid JSON: {e}") }
-                })?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&resp.body).map_err(|e| ApiError::BadResponse {
+                        site,
+                        message: format!("invalid JSON: {e}"),
+                    })?;
                 value
                     .get("html")
                     .and_then(|h| h.as_str())
@@ -846,10 +947,17 @@ fn interpret_response(site: Flavor, resp: &ApiResponse, had_token: bool) -> Resu
 fn classify_error(site: Flavor, resp: &ApiResponse, had_token: bool) -> ApiError {
     let message = error_message(&resp.body);
     let num = |names: &[&str]| -> Option<u64> {
-        names.iter().find_map(|n| resp.header(n)).and_then(|v| v.trim().parse::<u64>().ok())
+        names
+            .iter()
+            .find_map(|n| resp.header(n))
+            .and_then(|v| v.trim().parse::<u64>().ok())
     };
     let (limit_h, remaining_h, reset_h): (&[&str], &[&str], &[&str]) = match site {
-        Flavor::Github => (&["x-ratelimit-limit"], &["x-ratelimit-remaining"], &["x-ratelimit-reset"]),
+        Flavor::Github => (
+            &["x-ratelimit-limit"],
+            &["x-ratelimit-remaining"],
+            &["x-ratelimit-reset"],
+        ),
         Flavor::Gitlab => (
             &["ratelimit-limit", "x-ratelimit-limit"],
             &["ratelimit-remaining", "x-ratelimit-remaining"],
@@ -858,9 +966,12 @@ fn classify_error(site: Flavor, resp: &ApiResponse, had_token: bool) -> ApiError
     };
     let remaining = num(remaining_h);
     let retry_after = num(&["retry-after"]);
-    let mentions_limit = message.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("rate limit"));
+    let mentions_limit = message
+        .as_deref()
+        .is_some_and(|m| m.to_ascii_lowercase().contains("rate limit"));
     let rate_limited = resp.status == 429
-        || (resp.status == 403 && (remaining == Some(0) || retry_after.is_some() || mentions_limit));
+        || (resp.status == 403
+            && (remaining == Some(0) || retry_after.is_some() || mentions_limit));
     if rate_limited {
         return ApiError::RateLimited {
             site,
@@ -872,9 +983,17 @@ fn classify_error(site: Flavor, resp: &ApiResponse, had_token: bool) -> ApiError
         };
     }
     match resp.status {
-        401 => ApiError::Unauthorized { site, message, had_token },
+        401 => ApiError::Unauthorized {
+            site,
+            message,
+            had_token,
+        },
         403 => ApiError::Forbidden { site, message },
-        status => ApiError::Status { site, status, message },
+        status => ApiError::Status {
+            site,
+            status,
+            message,
+        },
     }
 }
 
@@ -906,18 +1025,27 @@ fn block_for(err: &ApiError) -> Option<Block> {
     let now = SystemTime::now();
     let until = match err {
         ApiError::Unauthorized { .. } => None,
-        ApiError::RateLimited { reset, retry_after, .. } => {
+        ApiError::RateLimited {
+            reset, retry_after, ..
+        } => {
             let from_reset = reset
                 .and_then(|r| u64::try_from(r).ok())
                 .map(|r| UNIX_EPOCH + Duration::from_secs(r))
                 .filter(|t| *t > now);
             let from_retry = retry_after.map(|s| now + Duration::from_secs(s));
-            Some(from_reset.or(from_retry).unwrap_or(now + DEFAULT_RATE_LIMIT_BACKOFF))
+            Some(
+                from_reset
+                    .or(from_retry)
+                    .unwrap_or(now + DEFAULT_RATE_LIMIT_BACKOFF),
+            )
         }
         ApiError::Network { .. } => Some(now + NETWORK_BACKOFF),
         _ => return None,
     };
-    Some(Block { until, error: err.clone() })
+    Some(Block {
+        until,
+        error: err.clone(),
+    })
 }
 
 /// Split YAML front matter (`---` line at byte 0 … closing `---` line) from the body (GH §8.12).
@@ -1017,7 +1145,10 @@ fn heading_source_text<'a>(node: &'a comrak::nodes::AstNode<'a>, out: &mut Strin
                 out.push_str(&m.literal);
                 out.push_str(fence);
             }
-            NodeValue::Image(_) | NodeValue::HtmlInline(_) | NodeValue::SoftBreak | NodeValue::LineBreak => {}
+            NodeValue::Image(_)
+            | NodeValue::HtmlInline(_)
+            | NodeValue::SoftBreak
+            | NodeValue::LineBreak => {}
             _ => heading_source_text(child, out),
         }
     }
@@ -1027,8 +1158,13 @@ fn heading_source_text<'a>(node: &'a comrak::nodes::AstNode<'a>, out: &mut Strin
 /// shortcodes and every non-alphanumeric character (emoji, punctuation, spaces) removed.
 fn heading_key(text: &str) -> String {
     static SHORTCODE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = SHORTCODE.get_or_init(|| Regex::new(r":[a-z0-9_+-]+:").expect("valid shortcode regex"));
-    re.replace_all(text, "").chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    let re =
+        SHORTCODE.get_or_init(|| Regex::new(r":[a-z0-9_+-]+:").expect("valid shortcode regex"));
+    re.replace_all(text, "")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Hands out hints in document order to the DOM items that match them.
@@ -1046,7 +1182,11 @@ impl<'h> HintCursor<'h> {
     /// are skipped over stay unused. With `adjacent_only`, only the hint at the current position
     /// is considered.
     fn take(&mut self, adjacent_only: bool, matches: impl Fn(&str) -> bool) -> Option<&'h str> {
-        let end = if adjacent_only { (self.next + 1).min(self.hints.len()) } else { self.hints.len() };
+        let end = if adjacent_only {
+            (self.next + 1).min(self.hints.len())
+        } else {
+            self.hints.len()
+        };
         let found = (self.next..end).find(|&i| matches(&self.hints[i]))?;
         self.next = found + 1;
         Some(&self.hints[found])
@@ -1108,7 +1248,8 @@ fn escape_attr(s: &str) -> String {
 /// are marked with [`PRE_LF_ATTR`] so the clipboard text can be rebuilt exactly.
 fn parse_fragment(html: &str) -> Document {
     static PRE_START: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = PRE_START.get_or_init(|| Regex::new(r"(?i)<pre\b[^>]*>(\r?\n)?").expect("valid pre regex"));
+    let re =
+        PRE_START.get_or_init(|| Regex::new(r"(?i)<pre\b[^>]*>(\r?\n)?").expect("valid pre regex"));
     let leading_lf: Vec<bool> = re.captures_iter(html).map(|c| c.get(1).is_some()).collect();
     let doc = Document::fragment(html);
     if leading_lf.iter().any(|&lf| lf) {
@@ -1132,7 +1273,11 @@ const PRE_LF_ATTR: &str = "data-mdr-pre-lf";
 /// Text of a `pre` as the API emitted it (see [`parse_fragment`]).
 fn pre_text(pre: &NodeRef) -> String {
     let text = pre.text().to_string();
-    if pre.has_attr(PRE_LF_ATTR) { format!("\n{text}") } else { text }
+    if pre.has_attr(PRE_LF_ATTR) {
+        format!("\n{text}")
+    } else {
+        text
+    }
 }
 
 /// Serialize a fragment parsed with [`parse_fragment`] (dropping its temporary markers).
@@ -1144,13 +1289,18 @@ fn serialize_fragment(doc: &Document) -> String {
 }
 
 fn class_list(node: &NodeRef) -> Vec<String> {
-    node.class().map(|c| c.split_whitespace().map(str::to_owned).collect()).unwrap_or_default()
+    node.class()
+        .map(|c| c.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// Remove `class` from `node`, dropping the attribute when it becomes empty.
 fn remove_class(node: &NodeRef, class: &str) {
     if node.has_class(class) {
-        let rest: Vec<String> = class_list(node).into_iter().filter(|c| c != class).collect();
+        let rest: Vec<String> = class_list(node)
+            .into_iter()
+            .filter(|c| c != class)
+            .collect();
         if rest.is_empty() {
             node.remove_attr("class");
         } else {
@@ -1212,7 +1362,14 @@ fn stabilize_run_id(html: &str, seed: &str) -> String {
 /// UUID-shaped deterministic identity for enrichment sections.
 fn stable_identity(code: &str) -> String {
     let h = sha256_hex(code.as_bytes());
-    format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
+    format!(
+        "{}-{}-4{}-a{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[13..16],
+        &h[17..20],
+        &h[20..32]
+    )
 }
 
 fn mermaid_section(code: &str) -> String {
@@ -1276,7 +1433,12 @@ impl Slugger {
 
 /// Post-process `POST /markdown` HTML (D15, GH §2.5, §9). `hints` come from the Markdown that
 /// was sent ([`SourceHints::default`] when unknown).
-pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str, hints: &SourceHints) -> Rendered {
+pub(crate) fn postprocess_github(
+    html: &str,
+    mode: Mode,
+    rid_seed: &str,
+    hints: &SourceHints,
+) -> Rendered {
     let html = stabilize_run_id(html, rid_seed);
     let doc = parse_fragment(&html);
 
@@ -1291,7 +1453,10 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str, hints: 
 
     // Canonical image URLs instead of camo proxies (GH §8.8, grip C51).
     for img in doc.select("img[data-canonical-src]").nodes().iter() {
-        let canonical = img.attr("data-canonical-src").map(|v| v.to_string()).unwrap_or_default();
+        let canonical = img
+            .attr("data-canonical-src")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         let old = img.attr("src").map(|v| v.to_string());
         if !canonical.is_empty() {
             img.set_attr("src", &canonical);
@@ -1344,7 +1509,9 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str, hints: 
         }
         for pre in doc.select("pre.notranslate").nodes().iter() {
             // Kept only on plain code blocks (`pre > code`); raw HTML `<pre>`s lose it too.
-            let in_code_view = has_ancestor(pre, |a| a.has_class("highlight") || a.has_class("render-plaintext-hidden"));
+            let in_code_view = has_ancestor(pre, |a| {
+                a.has_class("highlight") || a.has_class("render-plaintext-hidden")
+            });
             if in_code_view || !has_code_child(pre) {
                 remove_class(pre, "notranslate");
             }
@@ -1372,16 +1539,27 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str, hints: 
         mermaid: doc.select(r#"section[data-type="mermaid"]"#).exists(),
     };
     let title = first_h1_title(&doc);
-    Rendered { html: serialize_fragment(&doc), title, features, warnings: Vec::new() }
+    Rendered {
+        html: serialize_fragment(&doc),
+        title,
+        features,
+        warnings: Vec::new(),
+    }
 }
 
 /// `dir="auto"` where GitHub's views put it (GH §9 `D`): every `p`, `h1`–`h6`, `div`, `ul` and
 /// `ol`, except task lists, empty headings (`<h1></h1>`) and the clipboard wrappers added later
 /// (GH §2.4); an existing `dir` is kept.
 fn set_direction(doc: &Document) {
-    for node in doc.select("p, h1, h2, h3, h4, h5, h6, div, ul, ol").nodes().iter() {
-        let empty_heading = node.is("h1, h2, h3, h4, h5, h6") && node.inner_html().trim().is_empty();
-        let excluded = node.has_class("contains-task-list") || node.has_class("snippet-clipboard-content");
+    for node in doc
+        .select("p, h1, h2, h3, h4, h5, h6, div, ul, ol")
+        .nodes()
+        .iter()
+    {
+        let empty_heading =
+            node.is("h1, h2, h3, h4, h5, h6") && node.inner_html().trim().is_empty();
+        let excluded =
+            node.has_class("contains-task-list") || node.has_class("snippet-clipboard-content");
         if !node.has_attr("dir") && !excluded && !empty_heading {
             node.set_attr("dir", "auto");
         }
@@ -1438,7 +1616,9 @@ fn readme_headings(doc: &Document, hints: &SourceHints) {
         let text = cursor.heading(&dom_text).map_or(dom_text, str::to_owned);
         let slug = slugger.slug(&text);
         // GitHub's attribute order: existing attributes, then `class`, then `dir` (GH §6.1).
-        let dir = h.attr("dir").map_or_else(|| "auto".to_owned(), |d| d.to_string());
+        let dir = h
+            .attr("dir")
+            .map_or_else(|| "auto".to_owned(), |d| d.to_string());
         h.remove_attr("dir");
         add_classes(h, &["heading-element"]);
         h.set_attr("dir", &dir);
@@ -1539,12 +1719,20 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
     for node in doc.select("a[href]").nodes().iter() {
         absolutize(node, "href");
     }
-    for node in doc.select("video[src], audio[src], source[src]").nodes().iter() {
+    for node in doc
+        .select("video[src], audio[src], source[src]")
+        .nodes()
+        .iter()
+    {
         absolutize(node, "src");
     }
 
     // The highlight theme CSS only matches this class (GL §6.8, §10.1).
-    for pre in doc.select("pre.js-syntax-highlight, pre.code.highlight").nodes().iter() {
+    for pre in doc
+        .select("pre.js-syntax-highlight, pre.code.highlight")
+        .nodes()
+        .iter()
+    {
         add_classes(pre, &["code-syntax-highlight-theme"]);
     }
 
@@ -1554,7 +1742,12 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
         mermaid: doc.select(".js-render-mermaid").exists(),
     };
     let title = first_h1_title(&doc);
-    Rendered { html: serialize_fragment(&doc), title, features, warnings: Vec::new() }
+    Rendered {
+        html: serialize_fragment(&doc),
+        title,
+        features,
+        warnings: Vec::new(),
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1574,7 +1767,10 @@ mod tests {
 
     impl Fake {
         fn with(responses: Vec<Result<ApiResponse, TransportError>>) -> Arc<Fake> {
-            Arc::new(Fake { responses: Mutex::new(responses.into()), requests: Mutex::default() })
+            Arc::new(Fake {
+                responses: Mutex::new(responses.into()),
+                requests: Mutex::default(),
+            })
         }
         fn requests(&self) -> Vec<ApiRequest> {
             self.requests.lock().unwrap().clone()
@@ -1593,19 +1789,35 @@ mod tests {
     }
 
     fn ok(body: &str) -> Result<ApiResponse, TransportError> {
-        Ok(ApiResponse { status: 200, headers: vec![], body: body.into() })
+        Ok(ApiResponse {
+            status: 200,
+            headers: vec![],
+            body: body.into(),
+        })
     }
 
-    fn status(code: u16, headers: &[(&str, &str)], body: &str) -> Result<ApiResponse, TransportError> {
+    fn status(
+        code: u16,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Result<ApiResponse, TransportError> {
         Ok(ApiResponse {
             status: code,
-            headers: headers.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
             body: body.into(),
         })
     }
 
     fn cfg(flavor: Flavor, token: Option<&str>, fallback: bool) -> ApiConfig {
-        ApiConfig { flavor, api_url: None, token: token.map(Into::into), fallback_offline: fallback }
+        ApiConfig {
+            flavor,
+            api_url: None,
+            token: token.map(Into::into),
+            fallback_offline: fallback,
+        }
     }
 
     fn opts(flavor: Flavor, mode: Mode, context: Option<&str>) -> RenderOptions {
@@ -1618,25 +1830,36 @@ mod tests {
     #[test]
     fn github_request_shape() {
         let fake = Fake::with(vec![ok("<p>x</p>")]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Github, Some(" tok "), false), fake.clone()).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Github, Some(" tok "), false), fake.clone())
+                .unwrap();
         assert_eq!(r.endpoint(), "https://api.github.com/markdown");
-        r.render("x", &opts(Flavor::Github, Mode::Comment, Some("o/r"))).unwrap();
+        r.render("x", &opts(Flavor::Github, Mode::Comment, Some("o/r")))
+            .unwrap();
         let req = &fake.requests()[0];
         assert_eq!(req.url, "https://api.github.com/markdown");
         assert_eq!(req.header("accept"), Some("application/vnd.github+json"));
         assert_eq!(req.header("X-GitHub-Api-Version"), Some("2022-11-28"));
         assert_eq!(req.header("user-agent"), Some(USER_AGENT));
         assert_eq!(req.header("authorization"), Some("Bearer tok"));
-        assert_eq!(req.body, serde_json::json!({"text": "x", "mode": "gfm", "context": "o/r"}));
-        let dbg = format!("{req:?} {r:?} {:?}", cfg(Flavor::Github, Some("tok"), false));
+        assert_eq!(
+            req.body,
+            serde_json::json!({"text": "x", "mode": "gfm", "context": "o/r"})
+        );
+        let dbg = format!(
+            "{req:?} {r:?} {:?}",
+            cfg(Flavor::Github, Some("tok"), false)
+        );
         assert!(!dbg.contains("tok\"") && !dbg.contains("Bearer"), "{dbg}");
     }
 
     #[test]
     fn github_request_without_token_or_context() {
         let fake = Fake::with(vec![ok("<p>x</p>")]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
-        r.render("x", &opts(Flavor::Github, Mode::Readme, None)).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
+        r.render("x", &opts(Flavor::Github, Mode::Readme, None))
+            .unwrap();
         let req = &fake.requests()[0];
         assert_eq!(req.header("authorization"), None);
         assert_eq!(req.body, serde_json::json!({"text": "x", "mode": "gfm"}));
@@ -1645,26 +1868,48 @@ mod tests {
     #[test]
     fn gitlab_request_shape_and_urls() {
         let fake = Fake::with(vec![ok(r#"{"html":"<p>x</p>"}"#)]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Gitlab, Some("glpat"), false), fake.clone()).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Gitlab, Some("glpat"), false), fake.clone())
+                .unwrap();
         assert_eq!(r.endpoint(), "https://gitlab.com/api/v4/markdown");
-        let out = r.render("x", &opts(Flavor::Gitlab, Mode::Readme, Some("g/p"))).unwrap();
+        let out = r
+            .render("x", &opts(Flavor::Gitlab, Mode::Readme, Some("g/p")))
+            .unwrap();
         assert_eq!(out.html, "<p>x</p>");
         let req = &fake.requests()[0];
         assert_eq!(req.header("private-token"), Some("glpat"));
         assert_eq!(req.header("authorization"), None);
-        assert_eq!(req.body, serde_json::json!({"text": "x", "gfm": true, "project": "g/p"}));
+        assert_eq!(
+            req.body,
+            serde_json::json!({"text": "x", "gfm": true, "project": "g/p"})
+        );
         assert!(!format!("{req:?}").contains("glpat"));
 
         for (url, want) in [
-            ("https://gl.example.com/", "https://gl.example.com/api/v4/markdown"),
-            ("https://gl.example.com/api/v4", "https://gl.example.com/api/v4/markdown"),
-            ("https://x.org/gitlab", "https://x.org/gitlab/api/v4/markdown"),
+            (
+                "https://gl.example.com/",
+                "https://gl.example.com/api/v4/markdown",
+            ),
+            (
+                "https://gl.example.com/api/v4",
+                "https://gl.example.com/api/v4/markdown",
+            ),
+            (
+                "https://x.org/gitlab",
+                "https://x.org/gitlab/api/v4/markdown",
+            ),
         ] {
-            let c = ApiConfig { api_url: Some(url.into()), ..cfg(Flavor::Gitlab, None, false) };
+            let c = ApiConfig {
+                api_url: Some(url.into()),
+                ..cfg(Flavor::Gitlab, None, false)
+            };
             let r = ApiRenderer::with_transport(c, Fake::with(vec![])).unwrap();
             assert_eq!(r.endpoint(), want);
         }
-        let c = ApiConfig { api_url: Some("https://ghe.example.com/api/v3/".into()), ..cfg(Flavor::Github, None, false) };
+        let c = ApiConfig {
+            api_url: Some("https://ghe.example.com/api/v3/".into()),
+            ..cfg(Flavor::Github, None, false)
+        };
         let r = ApiRenderer::with_transport(c, Fake::with(vec![])).unwrap();
         assert_eq!(r.endpoint(), "https://ghe.example.com/api/v3/markdown");
     }
@@ -1672,15 +1917,22 @@ mod tests {
     #[test]
     fn invalid_api_urls_are_rejected() {
         for bad in ["ftp://x", "not a url", "https://x/?q=1", "mailto:a@b"] {
-            let c = ApiConfig { api_url: Some(bad.into()), ..cfg(Flavor::Github, None, false) };
-            assert!(ApiRenderer::with_transport(c, Fake::with(vec![])).is_err(), "{bad}");
+            let c = ApiConfig {
+                api_url: Some(bad.into()),
+                ..cfg(Flavor::Github, None, false)
+            };
+            assert!(
+                ApiRenderer::with_transport(c, Fake::with(vec![])).is_err(),
+                "{bad}"
+            );
         }
     }
 
     #[test]
     fn responses_are_cached_by_flavor_mode_context_text() {
         let fake = Fake::with(vec![ok("<p>a</p>"), ok("<p>b</p>"), ok("<p>c</p>")]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
         let o = opts(Flavor::Github, Mode::Comment, None);
         assert_eq!(r.render("t", &o).unwrap().html, "<p dir=\"auto\">a</p>");
         assert_eq!(r.render("t", &o).unwrap().html, "<p dir=\"auto\">a</p>");
@@ -1704,7 +1956,11 @@ mod tests {
         let reset = (unix_now() + 600).to_string();
         let fake = Fake::with(vec![status(
             403,
-            &[("x-ratelimit-limit", "60"), ("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", &reset)],
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", &reset),
+            ],
             r#"{"message":"API rate limit exceeded for 1.2.3.4."}"#,
         )]);
         let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, true), fake.clone()).unwrap();
@@ -1712,9 +1968,15 @@ mod tests {
         let out = r.render("# Hi", &o).unwrap();
         assert!(out.html.contains("Hi"));
         let w = &out.warnings[0];
-        assert!(w.starts_with("GitHub API rate limit exceeded (60 requests per window); it resets at "), "{w}");
+        assert!(
+            w.starts_with("GitHub API rate limit exceeded (60 requests per window); it resets at "),
+            "{w}"
+        );
         assert!(w.contains("(in 10 min)"), "{w}");
-        assert!(w.contains("GITHUB_TOKEN") && w.ends_with("Showing the offline rendering instead."), "{w}");
+        assert!(
+            w.contains("GITHUB_TOKEN") && w.ends_with("Showing the offline rendering instead."),
+            "{w}"
+        );
         // Still blocked: no second request.
         let again = r.render("# Other", &o).unwrap();
         assert!(again.warnings[0].contains("rate limit"));
@@ -1725,20 +1987,35 @@ mod tests {
     fn errors_without_fallback() {
         let fake = Fake::with(vec![status(401, &[], r#"{"message":"401 Unauthorized"}"#)]);
         let r = ApiRenderer::with_transport(cfg(Flavor::Gitlab, None, false), fake).unwrap();
-        let err = r.render("x", &opts(Flavor::Gitlab, Mode::Readme, None)).unwrap_err();
+        let err = r
+            .render("x", &opts(Flavor::Gitlab, Mode::Readme, None))
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("rendering through the GitLab API"), "{msg}");
-        assert!(msg.contains("unauthorized (401 Unauthorized); set GITLAB_TOKEN or pass --token"), "{msg}");
-        assert!(matches!(err.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized { .. })));
+        assert!(
+            msg.contains("unauthorized (401 Unauthorized); set GITLAB_TOKEN or pass --token"),
+            "{msg}"
+        );
+        assert!(matches!(
+            err.downcast_ref::<ApiError>(),
+            Some(ApiError::Unauthorized { .. })
+        ));
     }
 
     #[test]
     fn network_errors_fall_back_and_flavor_mismatch_errors() {
         let fake = Fake::with(vec![Err(TransportError("dns error".into()))]);
         let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, true), fake).unwrap();
-        let out = r.render("x", &opts(Flavor::Github, Mode::Readme, None)).unwrap();
-        assert!(out.warnings[0].starts_with("Could not reach the GitHub API at https://api.github.com/markdown: dns error"));
-        assert!(r.render("x", &opts(Flavor::Gitlab, Mode::Readme, None)).is_err());
+        let out = r
+            .render("x", &opts(Flavor::Github, Mode::Readme, None))
+            .unwrap();
+        assert!(out.warnings[0].starts_with(
+            "Could not reach the GitHub API at https://api.github.com/markdown: dns error"
+        ));
+        assert!(
+            r.render("x", &opts(Flavor::Gitlab, Mode::Readme, None))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1746,29 +2023,95 @@ mod tests {
         let fake = Fake::with(vec![]);
         let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, true), fake.clone()).unwrap();
         let big = "a".repeat(GITHUB_MAX_TEXT_BYTES + 1);
-        let out = r.render(&big, &opts(Flavor::Github, Mode::Comment, None)).unwrap();
-        assert!(out.warnings[0].contains("exceeds the GitHub API limit of 400 KiB"), "{:?}", out.warnings);
+        let out = r
+            .render(&big, &opts(Flavor::Github, Mode::Comment, None))
+            .unwrap();
+        assert!(
+            out.warnings[0].contains("exceeds the GitHub API limit of 400 KiB"),
+            "{:?}",
+            out.warnings
+        );
         assert!(fake.requests().is_empty());
     }
 
     #[test]
     fn classification() {
-        let gh = |code, h: &[(&str, &str)], b| classify_error(Flavor::Github, &status(code, h, b).unwrap(), true);
+        let gh = |code, h: &[(&str, &str)], b| {
+            classify_error(Flavor::Github, &status(code, h, b).unwrap(), true)
+        };
         assert!(matches!(gh(429, &[], ""), ApiError::RateLimited { .. }));
-        assert!(matches!(gh(403, &[("retry-after", "30")], ""), ApiError::RateLimited { retry_after: Some(30), .. }));
-        assert!(matches!(gh(403, &[], r#"{"message":"You have exceeded a secondary rate limit"}"#), ApiError::RateLimited { .. }));
-        assert!(matches!(gh(403, &[("x-ratelimit-remaining", "12")], r#"{"message":"Resource not accessible"}"#), ApiError::Forbidden { .. }));
-        assert!(matches!(gh(401, &[], ""), ApiError::Unauthorized { had_token: true, .. }));
-        assert!(matches!(gh(500, &[], "<html>oops</html>"), ApiError::Status { status: 500, message: None, .. }));
-        assert!(matches!(gh(413, &[], "too big"), ApiError::Status { status: 413, .. }));
-        let gl = classify_error(Flavor::Gitlab, &status(429, &[("RateLimit-Reset", "100"), ("RateLimit-Limit", "5")], "").unwrap(), false);
+        assert!(matches!(
+            gh(403, &[("retry-after", "30")], ""),
+            ApiError::RateLimited {
+                retry_after: Some(30),
+                ..
+            }
+        ));
+        assert!(matches!(
+            gh(
+                403,
+                &[],
+                r#"{"message":"You have exceeded a secondary rate limit"}"#
+            ),
+            ApiError::RateLimited { .. }
+        ));
+        assert!(matches!(
+            gh(
+                403,
+                &[("x-ratelimit-remaining", "12")],
+                r#"{"message":"Resource not accessible"}"#
+            ),
+            ApiError::Forbidden { .. }
+        ));
+        assert!(matches!(
+            gh(401, &[], ""),
+            ApiError::Unauthorized {
+                had_token: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            gh(500, &[], "<html>oops</html>"),
+            ApiError::Status {
+                status: 500,
+                message: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            gh(413, &[], "too big"),
+            ApiError::Status { status: 413, .. }
+        ));
+        let gl = classify_error(
+            Flavor::Gitlab,
+            &status(
+                429,
+                &[("RateLimit-Reset", "100"), ("RateLimit-Limit", "5")],
+                "",
+            )
+            .unwrap(),
+            false,
+        );
         assert_eq!(
             gl,
-            ApiError::RateLimited { site: Flavor::Gitlab, message: None, limit: Some(5), reset: Some(100), retry_after: None, had_token: false }
+            ApiError::RateLimited {
+                site: Flavor::Gitlab,
+                message: None,
+                limit: Some(5),
+                reset: Some(100),
+                retry_after: None,
+                had_token: false
+            }
         );
         let bad = interpret_response(Flavor::Gitlab, &ok("{}").unwrap(), true).unwrap_err();
         assert!(matches!(bad, ApiError::BadResponse { .. }));
-        assert_eq!(error_message(&format!("{{\"message\":\"{}\"}}", "x".repeat(300))).unwrap().chars().count(), 201);
+        assert_eq!(
+            error_message(&format!("{{\"message\":\"{}\"}}", "x".repeat(300)))
+                .unwrap()
+                .chars()
+                .count(),
+            201
+        );
     }
 
     #[test]
@@ -1776,15 +2119,29 @@ mod tests {
         let utc = jiff::tz::TimeZone::UTC;
         // 2026-10-01T12:00:00Z
         let now = 1_790_856_000;
-        assert_eq!(describe_reset(now + 300, now, &utc), "at 12:05:00 UTC (in 5 min)");
-        assert_eq!(describe_reset(now + 86_400, now, &utc), "at 2026-10-02 12:00:00 UTC (in 24 h 0 min)");
+        assert_eq!(
+            describe_reset(now + 300, now, &utc),
+            "at 12:05:00 UTC (in 5 min)"
+        );
+        assert_eq!(
+            describe_reset(now + 86_400, now, &utc),
+            "at 2026-10-02 12:00:00 UTC (in 24 h 0 min)"
+        );
         assert_eq!(describe_reset(now - 5, now, &utc), "at 11:59:55 UTC");
         let fixed = jiff::tz::TimeZone::fixed(jiff::tz::offset(2));
         assert!(describe_reset(now + 30, now, &fixed).starts_with("at 14:00:30"));
         let e = ApiError::RateLimited {
-            site: Flavor::Github, message: None, limit: None, reset: None, retry_after: Some(90), had_token: true,
+            site: Flavor::Github,
+            message: None,
+            limit: None,
+            reset: None,
+            retry_after: Some(90),
+            had_token: true,
         };
-        assert_eq!(e.describe(&utc, now), "GitHub API rate limit exceeded; retry in 2 min");
+        assert_eq!(
+            e.describe(&utc, now),
+            "GitHub API rate limit exceeded; retry in 2 min"
+        );
     }
 
     #[test]
@@ -1798,46 +2155,156 @@ mod tests {
         let no_env = |_: &str| None;
         let helper_calls = std::cell::RefCell::new(Vec::new());
         let helper = |p: &str, a: &[&str]| {
-            helper_calls.borrow_mut().push(format!("{p} {}", a.join(" ")));
+            helper_calls
+                .borrow_mut()
+                .push(format!("{p} {}", a.join(" ")));
             Some("helpertok\n".to_owned())
         };
         let no_helper = |_: &str, _: &[&str]| None;
         let t = |r: Option<(Secret, TokenOrigin)>| r.map(|(s, o)| (s.0, o));
 
-        assert_eq!(t(resolve_token(Flavor::Github, Some("x"), "github.com", &env_all, &helper)), Some(("x".into(), TokenOrigin::Explicit)));
-        assert_eq!(t(resolve_token(Flavor::Github, Some("  "), "github.com", &env_all, &helper)), Some(("gh1".into(), TokenOrigin::Env("GITHUB_TOKEN"))));
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                Some("x"),
+                "github.com",
+                &env_all,
+                &helper
+            )),
+            Some(("x".into(), TokenOrigin::Explicit))
+        );
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                Some("  "),
+                "github.com",
+                &env_all,
+                &helper
+            )),
+            Some(("gh1".into(), TokenOrigin::Env("GITHUB_TOKEN")))
+        );
         let only_gh = |n: &str| (n == "GH_TOKEN").then(|| "gh2".to_owned());
-        assert_eq!(t(resolve_token(Flavor::Github, None, "github.com", &only_gh, &helper)), Some(("gh2".into(), TokenOrigin::Env("GH_TOKEN"))));
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "github.com",
+                &only_gh,
+                &helper
+            )),
+            Some(("gh2".into(), TokenOrigin::Env("GH_TOKEN")))
+        );
         assert!(helper_calls.borrow().is_empty());
-        assert_eq!(t(resolve_token(Flavor::Github, None, "github.com", &no_env, &helper)), Some(("helpertok".into(), TokenOrigin::Helper("gh auth token"))));
-        assert_eq!(helper_calls.borrow().last().unwrap(), "gh auth token --hostname github.com");
-        assert_eq!(t(resolve_token(Flavor::Gitlab, None, "gitlab.com", &env_all, &helper)), Some(("gl".into(), TokenOrigin::Env("GITLAB_TOKEN"))));
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "github.com",
+                &no_env,
+                &helper
+            )),
+            Some(("helpertok".into(), TokenOrigin::Helper("gh auth token")))
+        );
+        assert_eq!(
+            helper_calls.borrow().last().unwrap(),
+            "gh auth token --hostname github.com"
+        );
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Gitlab,
+                None,
+                "gitlab.com",
+                &env_all,
+                &helper
+            )),
+            Some(("gl".into(), TokenOrigin::Env("GITLAB_TOKEN")))
+        );
         resolve_token(Flavor::Gitlab, None, "gl.example.com", &no_env, &helper);
-        assert_eq!(helper_calls.borrow().last().unwrap(), "glab config get token --host gl.example.com");
-        assert_eq!(t(resolve_token(Flavor::Gitlab, None, "gitlab.com", &no_env, &no_helper)), None);
+        assert_eq!(
+            helper_calls.borrow().last().unwrap(),
+            "glab config get token --host gl.example.com"
+        );
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Gitlab,
+                None,
+                "gitlab.com",
+                &no_env,
+                &no_helper
+            )),
+            None
+        );
         let noisy = |_: &str, _: &[&str]| Some("error: not logged in to any hosts".to_owned());
-        assert_eq!(t(resolve_token(Flavor::Github, None, "github.com", &no_env, &noisy)), None);
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "github.com",
+                &no_env,
+                &noisy
+            )),
+            None
+        );
         let ent = |n: &str| (n == "GH_ENTERPRISE_TOKEN").then(|| "ent".to_owned());
-        assert_eq!(t(resolve_token(Flavor::Github, None, "ghe.corp", &ent, &no_helper)), Some(("ent".into(), TokenOrigin::Env("GH_ENTERPRISE_TOKEN"))));
-        assert_eq!(t(resolve_token(Flavor::Github, None, "github.com", &ent, &no_helper)), None);
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "ghe.corp",
+                &ent,
+                &no_helper
+            )),
+            Some(("ent".into(), TokenOrigin::Env("GH_ENTERPRISE_TOKEN")))
+        );
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "github.com",
+                &ent,
+                &no_helper
+            )),
+            None
+        );
 
-        let host = |url: Option<&str>, f| api_host(&ApiConfig { api_url: url.map(Into::into), ..cfg(f, None, true) }).unwrap();
+        let host = |url: Option<&str>, f| {
+            api_host(&ApiConfig {
+                api_url: url.map(Into::into),
+                ..cfg(f, None, true)
+            })
+            .unwrap()
+        };
         assert_eq!(host(None, Flavor::Github), "github.com");
-        assert_eq!(host(Some("https://GHE.corp/api/v3"), Flavor::Github), "ghe.corp");
+        assert_eq!(
+            host(Some("https://GHE.corp/api/v3"), Flavor::Github),
+            "ghe.corp"
+        );
         assert_eq!(host(None, Flavor::Gitlab), "gitlab.com");
     }
 
     #[test]
     fn missing_helper_is_none() {
-        assert_eq!(run_helper("md-render-definitely-not-installed-helper", &[]), None);
+        assert_eq!(
+            run_helper("md-render-definitely-not-installed-helper", &[]),
+            None
+        );
     }
 
     #[test]
     fn front_matter_split() {
-        assert_eq!(split_front_matter("---\na: 1\n---\n# x\n"), (Some("---\na: 1\n---\n"), "# x\n"));
-        assert_eq!(split_front_matter("---\r\na: 1\r\n---  \r\nrest"), (Some("---\r\na: 1\r\n---  \r\n"), "rest"));
+        assert_eq!(
+            split_front_matter("---\na: 1\n---\n# x\n"),
+            (Some("---\na: 1\n---\n"), "# x\n")
+        );
+        assert_eq!(
+            split_front_matter("---\r\na: 1\r\n---  \r\nrest"),
+            (Some("---\r\na: 1\r\n---  \r\n"), "rest")
+        );
         assert_eq!(split_front_matter("---\na: 1\n"), (None, "---\na: 1\n"));
-        assert_eq!(split_front_matter(" ---\na\n---\n"), (None, " ---\na\n---\n"));
+        assert_eq!(
+            split_front_matter(" ---\na\n---\n"),
+            (None, " ---\na\n---\n")
+        );
         assert_eq!(split_front_matter("---"), (None, "---"));
         assert_eq!(split_front_matter("---\n---\nx"), (Some("---\n---\n"), "x"));
     }
@@ -1845,36 +2312,65 @@ mod tests {
     #[test]
     fn readme_mode_strips_front_matter_before_sending() {
         let fake = Fake::with(vec![ok("<h1>Doc</h1>")]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
-        let out = r.render("---\ntitle: T\n---\n# Doc\n", &opts(Flavor::Github, Mode::Readme, None)).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
+        let out = r
+            .render(
+                "---\ntitle: T\n---\n# Doc\n",
+                &opts(Flavor::Github, Mode::Readme, None),
+            )
+            .unwrap();
         assert_eq!(fake.requests()[0].body["text"], "# Doc\n");
         assert_eq!(out.title.as_deref(), Some("Doc"));
         assert!(out.html.find("title").unwrap() < out.html.find("markdown-heading").unwrap());
         // Comment mode sends the document untouched.
         let fake = Fake::with(vec![ok("<hr>")]);
-        let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
-        r.render("---\ntitle: T\n---\n", &opts(Flavor::Github, Mode::Comment, None)).unwrap();
+        let r =
+            ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
+        r.render(
+            "---\ntitle: T\n---\n",
+            &opts(Flavor::Github, Mode::Comment, None),
+        )
+        .unwrap();
         assert_eq!(fake.requests()[0].body["text"], "---\ntitle: T\n---\n");
     }
 
     #[test]
     fn slugs_match_github() {
         let mut s = Slugger::default();
-        let got: Vec<String> = ["Duplicate", "Duplicate", "Duplicate", "Duplicate-1"].iter().map(|t| s.slug(t)).collect();
-        assert_eq!(got, ["duplicate", "duplicate-1", "duplicate-2", "duplicate-1-1"]);
+        let got: Vec<String> = ["Duplicate", "Duplicate", "Duplicate", "Duplicate-1"]
+            .iter()
+            .map(|t| s.slug(t))
+            .collect();
+        assert_eq!(
+            got,
+            ["duplicate", "duplicate-1", "duplicate-2", "duplicate-1-1"]
+        );
         let mut s = Slugger::default();
-        let got: Vec<String> = ["Foo-1", "Foo", "Foo", "Foo"].iter().map(|t| s.slug(t)).collect();
+        let got: Vec<String> = ["Foo-1", "Foo", "Foo", "Foo"]
+            .iter()
+            .map(|t| s.slug(t))
+            .collect();
         assert_eq!(got, ["foo-1", "foo", "foo-2", "foo-3"]);
         for (text, slug) in [
             ("Hello, World! What's up?", "hello-world-whats-up"),
-            ("Ünïcödé Hëädïng — Ελληνικά 日本語", "ünïcödé-hëädïng--ελληνικά-日本語"),
-            (r#"C++ & C# / Rust's "quotes" (parens) [brackets] {braces}"#, "c--c--rusts-quotes-parens-brackets-braces"),
+            (
+                "Ünïcödé Hëädïng — Ελληνικά 日本語",
+                "ünïcödé-hëädïng--ελληνικά-日本語",
+            ),
+            (
+                r#"C++ & C# / Rust's "quotes" (parens) [brackets] {braces}"#,
+                "c--c--rusts-quotes-parens-brackets-braces",
+            ),
             ("under_score-dash.dot", "under_score-dashdot"),
             ("Tab\tinside", "tabinside"),
             ("İstanbul ΣΑΣ", "i\u{307}stanbul-σασ"),
             ("x² ½ Ⅻ ① ٣ ๓", "x--ⅻ--٣-๓"),
             ("a‿b ﹏c _d", "a‿b-﹏c-_d"),
-            ("Zero\u{200C}width\u{200D}joiner\u{200B}", "zero\u{200C}width\u{200D}joiner"),
+            (
+                "Zero\u{200C}width\u{200D}joiner\u{200B}",
+                "zero\u{200C}width\u{200D}joiner",
+            ),
             ("ẞ", "ß"),
             ("e\u{301}", "e\u{301}"),
             ("???", ""),
@@ -1898,28 +2394,60 @@ mod tests {
             "<section data-footnotes=\"\" class=\"footnotes\"><h2 id=\"footnote-label\" class=\"sr-only\">Footnotes</h2>\n<ol><li id=\"user-content-fn-1-0123456789abcdef0123456789abcdef\"><p>n</p></li></ol></section>\n",
             "<p><math-renderer class=\"js-inline-math\" style=\"display: inline-block\" data-run-id=\"0123456789abcdef0123456789abcdef\">$x$</math-renderer></p>\n",
         );
-        let out = postprocess_github(api, Mode::Readme, "path:/a/README.md", &SourceHints::default());
+        let out = postprocess_github(
+            api,
+            Mode::Readme,
+            "path:/a/README.md",
+            &SourceHints::default(),
+        );
         let html = &out.html;
         assert_eq!(out.title.as_deref(), Some("Title x"));
         assert!(html.contains(r##"<div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Title <code>x</code></h1><a id="user-content-title-x" class="anchor" aria-label="Permalink: Title x" href="#title-x"><svg data-component="Octicon" class="octicon octicon-link""##), "{html}");
         assert!(html.contains(r##"<h2 class="heading-element" dir="auto">Title</h2><a id="user-content-title" class="anchor" aria-label="Permalink: Title" href="#title">"##), "{html}");
         assert!(html.contains(r##"<h2 id="user-content-raw" class="heading-element" dir="auto">Raw</h2><a id="user-content-raw" class="anchor""##), "{html}");
         assert!(html.contains("<h3></h3>"), "{html}");
-        assert!(html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##), "{html}");
-        assert!(html.contains(r#"<h2 id="footnote-label" class="sr-only" dir="auto">Footnotes</h2>"#), "{html}");
+        assert!(
+            html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<h2 id="footnote-label" class="sr-only" dir="auto">Footnotes</h2>"#),
+            "{html}"
+        );
         assert!(html.contains(r#"href="https://e.org/a.png"><img src="https://e.org/a.png" alt="A" style="max-width: 100%;">"#), "{html}");
-        assert!(!html.contains("camo") && !html.contains("data-canonical-src"), "{html}");
-        assert!(html.contains("<table><tbody><tr><td>c</td></tr></tbody></table>"), "{html}");
+        assert!(
+            !html.contains("camo") && !html.contains("data-canonical-src"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<table><tbody><tr><td>c</td></tr></tbody></table>"),
+            "{html}"
+        );
         assert!(html.contains(r#"<div class="highlight highlight-source-rust notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="fn a&lt;b&gt;()" data-mdr-key=""#), "{html}");
-        assert!(html.contains(r#"><pre><span class="pl-k">fn</span>"#), "{html}");
+        assert!(
+            html.contains(r#"><pre><span class="pl-k">fn</span>"#),
+            "{html}"
+        );
         assert!(html.contains(r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="plain &quot;q&quot;" data-mdr-key=""#), "{html}");
-        assert!(html.contains(r#"<pre class="notranslate"><code>plain "q""#), "{html}");
+        assert!(
+            html.contains(r#"<pre class="notranslate"><code>plain "q""#),
+            "{html}"
+        );
         let stable = &sha256_hex(b"path:/a/README.md")[..32];
         assert!(!html.contains("0123456789abcdef0123456789abcdef"), "{html}");
-        assert!(html.contains(&format!("user-content-fn-1-{stable}")) && html.contains(&format!("data-run-id=\"{stable}\"")), "{html}");
+        assert!(
+            html.contains(&format!("user-content-fn-1-{stable}"))
+                && html.contains(&format!("data-run-id=\"{stable}\"")),
+            "{html}"
+        );
         assert!(out.features.math && !out.features.mermaid);
         // Idempotent on its own output.
-        let again = postprocess_github(html, Mode::Readme, "path:/a/README.md", &SourceHints::default());
+        let again = postprocess_github(
+            html,
+            Mode::Readme,
+            "path:/a/README.md",
+            &SourceHints::default(),
+        );
         assert_same(&again.html, html);
     }
 
@@ -1928,10 +2456,18 @@ mod tests {
         if got == want {
             return;
         }
-        let at = got.bytes().zip(want.bytes()).take_while(|(a, b)| a == b).count();
+        let at = got
+            .bytes()
+            .zip(want.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
         let from = at.saturating_sub(80);
         let window = |s: &str| s.get(from..(at + 120).min(s.len())).unwrap_or(s).to_owned();
-        panic!("outputs differ at byte {at}:\n got: {}\nwant: {}", window(got), window(want));
+        panic!(
+            "outputs differ at byte {at}:\n got: {}\nwant: {}",
+            window(got),
+            window(want)
+        );
     }
 
     #[test]
@@ -1947,10 +2483,17 @@ mod tests {
         let hints = SourceHints::from_markdown(md);
         assert_eq!(
             hints.headings,
-            [":rocket: Launch  code $x^2$1", "\n  :black_circle: Raw :black_circle:\n", "Setext"]
+            [
+                ":rocket: Launch  code $x^2$1",
+                "\n  :black_circle: Raw :black_circle:\n",
+                "Setext"
+            ]
         );
         assert_eq!(hints.code, ["\n> quoted\n", "indented\n"]);
-        assert_eq!(heading_key(":rocket: Launch  code $x^2$1"), heading_key("🚀 Launch  code $x^2$1"));
+        assert_eq!(
+            heading_key(":rocket: Launch  code $x^2$1"),
+            heading_key("🚀 Launch  code $x^2$1")
+        );
         assert_eq!(heading_key("Ünï :x: 日本"), "ünï日本");
     }
 
@@ -1977,42 +2520,98 @@ mod tests {
         let out = postprocess_github(api, Mode::Readme, "stdin", &SourceHints::from_markdown(md));
         let html = &out.html;
         assert!(html.contains(r##"<h2 class="heading-element" dir="auto">🚀 Launch</h2><a id="user-content-rocket-launch" class="anchor" aria-label="Permalink: :rocket: Launch" href="#rocket-launch">"##), "{html}");
-        assert!(html.contains(r##"<h2 align="center" class="heading-element" dir="auto">"##), "{html}");
-        assert!(html.contains("id=\"user-content---black_circle-raw\""), "{html}");
-        assert!(html.contains("aria-label=\"Permalink: \n  :black_circle: Raw\n\""), "{html}");
+        assert!(
+            html.contains(r##"<h2 align="center" class="heading-element" dir="auto">"##),
+            "{html}"
+        );
+        assert!(
+            html.contains("id=\"user-content---black_circle-raw\""),
+            "{html}"
+        );
+        assert!(
+            html.contains("aria-label=\"Permalink: \n  :black_circle: Raw\n\""),
+            "{html}"
+        );
         assert!(html.contains("<h1></h1>"), "{html}");
-        assert!(html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##), "{html}");
-        assert!(html.contains("data-snippet-clipboard-copy-content=\"\n&gt; [!WARNING]\""), "{html}");
+        assert!(
+            html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##),
+            "{html}"
+        );
+        assert!(
+            html.contains("data-snippet-clipboard-copy-content=\"\n&gt; [!WARNING]\""),
+            "{html}"
+        );
         // The leading newline of `<pre>\n` survives HTML parsing for the clipboard text.
-        assert!(html.contains("data-snippet-clipboard-copy-content=\"\nplain\""), "{html}");
+        assert!(
+            html.contains("data-snippet-clipboard-copy-content=\"\nplain\""),
+            "{html}"
+        );
         // Raw HTML `<pre>`: no copy button, no `notranslate` in the README view.
-        assert!(html.contains("<pre>raw <b>pre</b></pre>") && !html.contains("data-mdr-pre-lf"), "{html}");
-        assert!(html.contains(r#"src="https://github.com/o/r/raw/main/a.png""#), "{html}");
+        assert!(
+            html.contains("<pre>raw <b>pre</b></pre>") && !html.contains("data-mdr-pre-lf"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"src="https://github.com/o/r/raw/main/a.png""#),
+            "{html}"
+        );
         // Without hints the DOM text is used.
         let plain = postprocess_github(api, Mode::Readme, "stdin", &SourceHints::default());
-        assert!(plain.html.contains("id=\"user-content--launch\""), "{}", plain.html);
-        assert!(plain.html.contains("aria-label=\"Permalink: 🚀 Launch\""), "{}", plain.html);
+        assert!(
+            plain.html.contains("id=\"user-content--launch\""),
+            "{}",
+            plain.html
+        );
+        assert!(
+            plain.html.contains("aria-label=\"Permalink: 🚀 Launch\""),
+            "{}",
+            plain.html
+        );
     }
 
     #[test]
     fn misaligned_hints_fall_back_to_the_dom() {
         // A hint list that does not correspond to the document must not mislabel headings.
         let hints = SourceHints::from_markdown("# Alpha\n\n# Beta\n");
-        let out = postprocess_github("<h1>Gamma</h1><h1>Beta</h1><h1>Alpha</h1>", Mode::Readme, "s", &hints);
-        assert!(out.html.contains("id=\"user-content-gamma\""), "{}", out.html);
-        assert!(out.html.contains("id=\"user-content-beta\""), "{}", out.html);
+        let out = postprocess_github(
+            "<h1>Gamma</h1><h1>Beta</h1><h1>Alpha</h1>",
+            Mode::Readme,
+            "s",
+            &hints,
+        );
+        assert!(
+            out.html.contains("id=\"user-content-gamma\""),
+            "{}",
+            out.html
+        );
+        assert!(
+            out.html.contains("id=\"user-content-beta\""),
+            "{}",
+            out.html
+        );
         // `Alpha` was skipped over when `Beta` matched; it is not reused out of order.
-        assert!(out.html.contains("id=\"user-content-alpha\""), "{}", out.html);
+        assert!(
+            out.html.contains("id=\"user-content-alpha\""),
+            "{}",
+            out.html
+        );
     }
 
     #[test]
     fn github_comment_mode_keeps_api_markup() {
         let api = "<h2 dir=\"auto\">T</h2>\n<p dir=\"auto\"><code class=\"notranslate\">x</code> <span aria-hidden=\"true\" class=\"octicon octicon-link\"></span></p>\n<table role=\"table\"><tr><td>c</td></tr></table>";
         let out = postprocess_github(api, Mode::Comment, "stdin", &SourceHints::default());
-        assert!(out.html.starts_with("<h2 dir=\"auto\">T</h2>"), "{}", out.html);
+        assert!(
+            out.html.starts_with("<h2 dir=\"auto\">T</h2>"),
+            "{}",
+            out.html
+        );
         assert!(out.html.contains("<code class=\"notranslate\">x</code>"));
         assert!(out.html.contains("role=\"table\""));
-        assert!(out.html.contains("<svg data-component=\"Octicon\" class=\"octicon octicon-link\""));
+        assert!(
+            out.html
+                .contains("<svg data-component=\"Octicon\" class=\"octicon octicon-link\"")
+        );
         assert_eq!(out.title, None);
     }
 
@@ -2023,16 +2622,29 @@ mod tests {
         let html = &out.html;
         assert!(out.features.mermaid);
         assert!(html.contains(r#"data-type="mermaid""#), "{html}");
-        assert!(html.contains(r#"data-plain="graph TD
+        assert!(
+            html.contains(
+                r#"data-plain="graph TD
   A --&gt; B
-""#), "{html}");
-        assert!(html.contains(r#"data-json="{&quot;data&quot;:&quot;graph TD\n  A --&gt; B\n&quot;}""#), "{html}");
+""#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"data-json="{&quot;data&quot;:&quot;graph TD\n  A --&gt; B\n&quot;}""#),
+            "{html}"
+        );
         assert!(html.contains("<pre lang=\"mermaid\" aria-label=\"Raw mermaid code\">graph TD\n  A --&gt; B\n</pre>"), "{html}");
         assert!(!html.contains("snippet-clipboard-content"), "{html}");
         let id = stable_identity("graph TD\n  A --> B\n");
         assert!(html.contains(&format!("data-identity=\"{id}\"")), "{html}");
         // An API section with a random identity gets the same deterministic one.
-        let again = postprocess_github(&html.replace(&id, "11111111-2222-4333-a444-555555555555"), Mode::Readme, "stdin", &SourceHints::default());
+        let again = postprocess_github(
+            &html.replace(&id, "11111111-2222-4333-a444-555555555555"),
+            Mode::Readme,
+            "stdin",
+            &SourceHints::default(),
+        );
         assert!(again.html.contains(&id));
     }
 
@@ -2048,21 +2660,55 @@ mod tests {
         let out = postprocess_gitlab(api, "https://gitlab.com", "");
         let html = &out.html;
         assert_eq!(out.title.as_deref(), Some("T"));
-        assert!(html.contains(r#"href="https://gitlab.com/-/project/1/uploads/a/i.png""#), "{html}");
+        assert!(
+            html.contains(r#"href="https://gitlab.com/-/project/1/uploads/a/i.png""#),
+            "{html}"
+        );
         assert!(html.contains(r#"<img src="https://gitlab.com/-/project/1/uploads/a/i.png" alt="i" decoding="async" class="gfm js-lazy-loaded" loading="lazy">"#), "{html}");
-        assert!(html.contains(r#"<img src="https://e.org/x.png" class="js-lazy-loaded" loading="lazy">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<img src="https://e.org/x.png" class="js-lazy-loaded" loading="lazy">"#
+            ),
+            "{html}"
+        );
         assert!(html.contains(r#"class="code highlight js-syntax-highlight language-rust code-syntax-highlight-theme""#), "{html}");
-        assert!(html.contains(r#"class="gl-relative markdown-code-block js-markdown-code" data-mdr-key=""#), "{html}");
+        assert!(
+            html.contains(
+                r#"class="gl-relative markdown-code-block js-markdown-code" data-mdr-key=""#
+            ),
+            "{html}"
+        );
         assert!(out.features.math && !out.features.mermaid);
-        assert_eq!(postprocess_gitlab(html, "https://gitlab.com", "").html, *html);
+        assert_eq!(
+            postprocess_gitlab(html, "https://gitlab.com", "").html,
+            *html
+        );
 
-        let prefixed = postprocess_gitlab("<a href=\"/gl/-/x\">x</a><a href=\"/-/y\">y</a>", "https://x.org", "/gl");
-        assert!(prefixed.html.contains("href=\"https://x.org/gl/-/x\"") && prefixed.html.contains("href=\"/-/y\""), "{}", prefixed.html);
+        let prefixed = postprocess_gitlab(
+            "<a href=\"/gl/-/x\">x</a><a href=\"/-/y\">y</a>",
+            "https://x.org",
+            "/gl",
+        );
+        assert!(
+            prefixed.html.contains("href=\"https://x.org/gl/-/x\"")
+                && prefixed.html.contains("href=\"/-/y\""),
+            "{}",
+            prefixed.html
+        );
     }
 
     #[test]
     fn postprocessing_never_panics_on_odd_input() {
-        for input in ["", "<", "<h1>", "</div></div>", "<pre>", "<img data-src>", "<svg><h1>x</h1></svg>", "\u{0}"] {
+        for input in [
+            "",
+            "<",
+            "<h1>",
+            "</div></div>",
+            "<pre>",
+            "<img data-src>",
+            "<svg><h1>x</h1></svg>",
+            "\u{0}",
+        ] {
             postprocess_github(input, Mode::Readme, "s", &SourceHints::default());
             postprocess_github(input, Mode::Comment, "s", &SourceHints::default());
             postprocess_gitlab(input, "https://gitlab.com", "");

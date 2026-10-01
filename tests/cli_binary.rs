@@ -12,7 +12,10 @@ const BIN: &str = env!("CARGO_BIN_EXE_md-render");
 
 /// Run the binary in `cwd` with an isolated environment rooted at `home`.
 fn md_render(cwd: &Path, home: &Path, args: &[&str]) -> Output {
-    command(cwd, home, args).stdin(Stdio::null()).output().expect("running md-render")
+    command(cwd, home, args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("running md-render")
 }
 
 /// The binary with an isolated environment rooted at `home`.
@@ -52,7 +55,11 @@ fn env() -> Env {
     fs::create_dir_all(&cwd).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::write(cwd.join("README.md"), "# Hello\n\nWorld.\n").unwrap();
-    Env { _tmp: tmp, cwd, home }
+    Env {
+        _tmp: tmp,
+        cwd,
+        home,
+    }
 }
 
 fn run(e: &Env, args: &[&str]) -> (i32, String, String) {
@@ -79,7 +86,10 @@ fn help_exits_zero() {
     let e = env();
     let (code, stdout, _) = run(&e, &["--help"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("Usage: md-render [OPTIONS] [PATH] [ADDRESS]"), "{stdout}");
+    assert!(
+        stdout.contains("Usage: md-render [OPTIONS] [PATH] [ADDRESS]"),
+        "{stdout}"
+    );
     let (code, stdout, _) = run(&e, &["export", "-h"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("md-render export"), "{stdout}");
@@ -102,7 +112,10 @@ fn usage_errors_exit_2() {
     ] {
         let (code, stdout, stderr) = run(&e, args);
         assert_eq!(code, 2, "{args:?}: {stderr}");
-        assert!(stdout.is_empty(), "{args:?}: usage errors go to stderr, got {stdout:?}");
+        assert!(
+            stdout.is_empty(),
+            "{args:?}: usage errors go to stderr, got {stdout:?}"
+        );
         assert!(stderr.starts_with("error: "), "{args:?}: {stderr}");
     }
     let (_, _, stderr) = run(&e, &["-p", "8080"]);
@@ -144,9 +157,16 @@ fn cache_path_and_clear_stay_in_the_cache_directory() {
     let (code, stdout, stderr) = run(&e, &["cache", "path"]);
     assert_eq!(code, 0, "{stderr}");
     let bundle = std::path::PathBuf::from(stdout.trim_end());
-    assert_eq!(bundle.file_name().and_then(|n| n.to_str()), Some("styles.tar.gz"));
+    assert_eq!(
+        bundle.file_name().and_then(|n| n.to_str()),
+        Some("styles.tar.gz")
+    );
     // Only continue when the cache really is inside the private HOME.
-    assert!(bundle.starts_with(&e.home), "cache path {} escapes the test HOME", bundle.display());
+    assert!(
+        bundle.starts_with(&e.home),
+        "cache path {} escapes the test HOME",
+        bundle.display()
+    );
 
     let cache_dir = bundle.parent().unwrap();
     fs::create_dir_all(cache_dir).unwrap();
@@ -201,10 +221,17 @@ fn export_to_stdout() {
     let e = env();
     let (code, stdout, stderr) = run(&e, &["export", "README.md", "-"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("<html") && stdout.contains("Hello"), "{stdout}");
+    assert!(
+        stdout.contains("<html") && stdout.contains("Hello"),
+        "{stdout}"
+    );
     assert!(!e.cwd.join("README.html").exists());
 
     let (code, _, stderr) = run(&e, &["--export"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(fs::read_to_string(e.cwd.join("README.html")).unwrap().contains("Hello"));
+    assert!(
+        fs::read_to_string(e.cwd.join("README.html"))
+            .unwrap()
+            .contains("Hello")
+    );
 }

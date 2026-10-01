@@ -304,7 +304,9 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
     }
 
     let quiet = g.quiet;
-    let cwd = host.cwd().map_err(|e| runtime(format!("cannot determine the current directory: {e}")))?;
+    let cwd = host
+        .cwd()
+        .map_err(|e| runtime(format!("cannot determine the current directory: {e}")))?;
     let bundle = bundle_path(g, host, &cwd);
 
     let plan = match &cli.command {
@@ -339,7 +341,14 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
                 no_inline: cli.serve.no_inline,
             };
             let inline = !cli.serve.no_inline;
-            Plan::Export(export_plan(&args, inline, render, host, &cwd, &mut warnings)?)
+            Plan::Export(export_plan(
+                &args,
+                inline,
+                render,
+                host,
+                &cwd,
+                &mut warnings,
+            )?)
         }
         None => {
             if cli.serve.no_inline {
@@ -353,7 +362,12 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
             Plan::Serve(serve_plan(&cli.serve, render, host, &cwd, &mut warnings)?)
         }
     };
-    Ok(Invocation { plan, warnings, quiet, verbose: g.verbose })
+    Ok(Invocation {
+        plan,
+        warnings,
+        quiet,
+        verbose: g.verbose,
+    })
 }
 
 /// Non-empty UTF-8 environment variable.
@@ -362,7 +376,10 @@ fn env_string(host: &dyn Host, name: &str) -> Result<Option<String>, CliError> {
         None => Ok(None),
         Some(v) if v.is_empty() => Ok(None),
         Some(v) => v.into_string().map(Some).map_err(|_| {
-            usage(ErrorKind::InvalidValue, format!("environment variable {name} is not valid UTF-8"))
+            usage(
+                ErrorKind::InvalidValue,
+                format!("environment variable {name} is not valid UTF-8"),
+            )
         }),
     }
 }
@@ -378,7 +395,9 @@ fn render_flavor(g: &GlobalArgs, host: &dyn Host) -> Result<Flavor, CliError> {
             "'--flavor all' is only valid for 'md-render vendor'; choose github or gitlab",
         )),
         None => {
-            let Some(v) = env_string(host, "MD_RENDER_FLAVOR")? else { return Ok(Flavor::Github) };
+            let Some(v) = env_string(host, "MD_RENDER_FLAVOR")? else {
+                return Ok(Flavor::Github);
+            };
             Flavor::from_str(v.trim(), true).map_err(|_| {
                 usage(
                     ErrorKind::InvalidValue,
@@ -440,7 +459,10 @@ fn reject_serve_args(s: &ServeArgs, cmd: &Command) -> Result<(), CliError> {
     if let Some(p) = s.path.as_ref().or(s.address.as_ref()) {
         return Err(usage(
             ErrorKind::ArgumentConflict,
-            format!("unexpected argument '{}' before subcommand '{name}' {hint}", p.to_string_lossy()),
+            format!(
+                "unexpected argument '{}' before subcommand '{name}' {hint}",
+                p.to_string_lossy()
+            ),
         ));
     }
     let flags: Vec<_> = serve_flags(s)
@@ -467,9 +489,10 @@ fn reject_with_export(s: &ServeArgs) -> Result<(), CliError> {
         (s.auto_vendor, "--auto-vendor"),
     ];
     match bad.iter().find(|(set, _)| *set) {
-        Some((_, flag)) => {
-            Err(usage(ErrorKind::ArgumentConflict, format!("'{flag}' cannot be used with '--export'")))
-        }
+        Some((_, flag)) => Err(usage(
+            ErrorKind::ArgumentConflict,
+            format!("'{flag}' cannot be used with '--export'"),
+        )),
         None => Ok(()),
     }
 }
@@ -528,7 +551,9 @@ fn validate_http_url(option: &str, value: &str) -> Result<(), CliError> {
         Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => Ok(()),
         _ => Err(usage(
             ErrorKind::ValueValidation,
-            format!("invalid value '{value}' for '{option} <URL>': expected an http:// or https:// URL"),
+            format!(
+                "invalid value '{value}' for '{option} <URL>': expected an http:// or https:// URL"
+            ),
         )),
     }
 }
@@ -560,8 +585,11 @@ fn theme_sel(g: &GlobalArgs, flavor: Flavor) -> Result<ThemeSel, CliError> {
         Some(ThemeArg::Mode(t)) => sel.theme = *t,
         Some(ThemeArg::Id(id)) => {
             let light = id.starts_with("light");
-            let (explicit, option) =
-                if light { (&g.light_theme, "--light-theme") } else { (&g.dark_theme, "--dark-theme") };
+            let (explicit, option) = if light {
+                (&g.light_theme, "--light-theme")
+            } else {
+                (&g.dark_theme, "--dark-theme")
+            };
             if let Some(other) = explicit.as_ref().filter(|o| *o != id) {
                 return Err(usage(
                     ErrorKind::ArgumentConflict,
@@ -588,7 +616,9 @@ fn theme_sel(g: &GlobalArgs, flavor: Flavor) -> Result<ThemeSel, CliError> {
 
 fn is_url(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    ["http://", "https://", "//", "data:"].iter().any(|p| lower.starts_with(p))
+    ["http://", "https://", "//", "data:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
 }
 
 /// `--css`: URLs are kept, local files must exist and become absolute paths.
@@ -611,9 +641,8 @@ fn extra_css(values: &[String], cwd: &Path) -> Result<Vec<String>, CliError> {
 }
 
 fn invalid_address(addr: &str) -> CliError {
-    let mut msg = format!(
-        "invalid address '{addr}': expected <host>[:<port>], <port>, or [<ipv6>][:<port>]"
-    );
+    let mut msg =
+        format!("invalid address '{addr}': expected <host>[:<port>], <port>, or [<ipv6>][:<port>]");
     if let Some(fixed) = bracketed_ipv6_suggestion(addr) {
         msg.push_str(&format!(" (put IPv6 addresses in brackets: {fixed})"));
     }
@@ -655,7 +684,9 @@ fn serve_plan(
             _ => (Some(single.clone()), None),
         },
         (p, Some(a)) => {
-            let a = a.to_str().ok_or_else(|| invalid_address(&a.to_string_lossy()))?;
+            let a = a
+                .to_str()
+                .ok_or_else(|| invalid_address(&a.to_string_lossy()))?;
             (p.clone(), Some(a.to_owned()))
         }
     };
@@ -665,7 +696,10 @@ fn serve_plan(
         Some(a) => {
             let hp = address::split_address(a).ok_or_else(|| invalid_address(a))?;
             // An empty host (`:80`) means the default host (grip passed '' to Flask, C26).
-            let h = hp.host.filter(|h| !h.is_empty()).unwrap_or_else(|| DEFAULT_HOST.to_owned());
+            let h = hp
+                .host
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| DEFAULT_HOST.to_owned());
             (h, hp.port.unwrap_or(DEFAULT_PORT))
         }
     };
@@ -679,7 +713,13 @@ fn serve_plan(
                     .map_err(|e| runtime(format!("cannot resolve {}: {e}", cwd.display())))?,
             };
             let text = read_stdin(host, render.quiet, warnings)?;
-            (root, Target::Stdin { name: STDIN_NAME.to_owned(), text })
+            (
+                root,
+                Target::Stdin {
+                    name: STDIN_NAME.to_owned(),
+                    text,
+                },
+            )
         }
         Some(p) => fs_target(cwd, Path::new(p), root_arg, s.follow_symlinks, warnings)?,
         None => fs_target(cwd, Path::new("."), root_arg, s.follow_symlinks, warnings)?,
@@ -705,7 +745,10 @@ fn canonical_root(cwd: &Path, root: &Path) -> Result<PathBuf, CliError> {
         Ok(c) if c.is_dir() => Ok(c),
         Ok(_) => Err(usage(
             ErrorKind::ValueValidation,
-            format!("invalid value '{}' for '--root <DIR>': not a directory", root.display()),
+            format!(
+                "invalid value '{}' for '--root <DIR>': not a directory",
+                root.display()
+            ),
         )),
         Err(e) => Err(usage(
             ErrorKind::ValueValidation,
@@ -787,14 +830,31 @@ fn fs_target(
             }
         }
     }
-    Ok((root, if is_dir { Target::Dir(rel) } else { Target::File(rel) }))
+    Ok((
+        root,
+        if is_dir {
+            Target::Dir(rel)
+        } else {
+            Target::File(rel)
+        },
+    ))
 }
 
 /// Read stdin eagerly, before the server binds (GRIP C4).
-fn read_stdin(host: &mut dyn Host, quiet: bool, warnings: &mut Vec<String>) -> Result<String, CliError> {
+fn read_stdin(
+    host: &mut dyn Host,
+    quiet: bool,
+    warnings: &mut Vec<String>,
+) -> Result<String, CliError> {
     if host.stdin_is_terminal() && !quiet {
-        let eof = if cfg!(windows) { "Ctrl+Z, Enter" } else { "Ctrl+D" };
-        host.notice(&format!("Reading Markdown from stdin (press {eof} when done)"));
+        let eof = if cfg!(windows) {
+            "Ctrl+Z, Enter"
+        } else {
+            "Ctrl+D"
+        };
+        host.notice(&format!(
+            "Reading Markdown from stdin (press {eof} when done)"
+        ));
     }
     let bytes = host
         .read_stdin()
@@ -815,7 +875,10 @@ fn export_plan(
     let input = match a.path.as_deref() {
         Some(p) if p == OsStr::new("-") => {
             let text = read_stdin(host, render.quiet, warnings)?;
-            ExportInput::Stdin { name: STDIN_NAME.to_owned(), text }
+            ExportInput::Stdin {
+                name: STDIN_NAME.to_owned(),
+                text,
+            }
         }
         p => {
             let given = Path::new(p.unwrap_or(OsStr::new(".")));
@@ -847,11 +910,19 @@ fn export_plan(
         if same {
             return Err(usage(
                 ErrorKind::ValueValidation,
-                format!("the export would overwrite its input {}; give an output file", i.display()),
+                format!(
+                    "the export would overwrite its input {}; give an output file",
+                    i.display()
+                ),
             ));
         }
     }
-    Ok(ExportPlan { input, output, inline, render })
+    Ok(ExportPlan {
+        input,
+        output,
+        inline,
+        render,
+    })
 }
 
 fn vendor_plan(
@@ -866,8 +937,14 @@ fn vendor_plan(
         Some(FlavorArg::Gitlab) => vec![Flavor::Gitlab],
         Some(FlavorArg::All) | None => Flavor::ALL.to_vec(),
     };
-    let github_source = a.github_source.clone().unwrap_or_else(|| GITHUB_SOURCE.to_owned());
-    let gitlab_source = a.gitlab_source.clone().unwrap_or_else(|| GITLAB_SOURCE.to_owned());
+    let github_source = a
+        .github_source
+        .clone()
+        .unwrap_or_else(|| GITHUB_SOURCE.to_owned());
+    let gitlab_source = a
+        .gitlab_source
+        .clone()
+        .unwrap_or_else(|| GITLAB_SOURCE.to_owned());
     validate_http_url("--github-source", &github_source)?;
     validate_http_url("--gitlab-source", &gitlab_source)?;
     let (output, create_parent) = match &a.output {
@@ -888,7 +965,10 @@ fn vendor_plan(
     })
 }
 
-fn cache_clear_plan(host: &dyn Host, bundle: (PathBuf, BundleSource)) -> Result<CacheClearPlan, CliError> {
+fn cache_clear_plan(
+    host: &dyn Host,
+    bundle: (PathBuf, BundleSource),
+) -> Result<CacheClearPlan, CliError> {
     let cache_dir = host
         .cache_dir()
         .ok_or_else(|| runtime("cannot determine the cache directory (is HOME set?)"))?;
@@ -898,7 +978,10 @@ fn cache_clear_plan(host: &dyn Host, bundle: (PathBuf, BundleSource)) -> Result<
             (!bundle.0.starts_with(&cache_dir)).then_some(bundle.0)
         }
     };
-    Ok(CacheClearPlan { cache_dir, kept_bundle })
+    Ok(CacheClearPlan {
+        cache_dir,
+        kept_bundle,
+    })
 }
 
 #[cfg(test)]
@@ -920,7 +1003,12 @@ mod tests {
 
     #[test]
     fn url_detection() {
-        assert!(is_url("https://x/y.css") && is_url("HTTP://x") && is_url("//cdn/x.css") && is_url("data:text/css,a"));
+        assert!(
+            is_url("https://x/y.css")
+                && is_url("HTTP://x")
+                && is_url("//cdn/x.css")
+                && is_url("data:text/css,a")
+        );
         assert!(!is_url("style.css") && !is_url("/abs/style.css") && !is_url("C:\\x.css"));
     }
 }

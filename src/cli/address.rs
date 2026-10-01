@@ -78,7 +78,10 @@ pub fn split_address(address: &str) -> Option<HostPort> {
         Some(p) if !p.is_empty() => Some(port_number(p)?),
         _ => None,
     };
-    Some(HostPort { host: host.map(str::to_owned), port })
+    Some(HostPort {
+        host: host.map(str::to_owned),
+        port,
+    })
 }
 
 /// `[addr]` or `[addr]:port` (the leading `[` already stripped).
@@ -94,7 +97,10 @@ fn split_bracketed_ipv6(rest: &str) -> Option<HostPort> {
         }
         Some(port_number(p)?)
     };
-    Some(HostPort { host: Some(inner.to_owned()), port })
+    Some(HostPort {
+        host: Some(inner.to_owned()),
+        port,
+    })
 }
 
 /// `valid_hostname()`: at most 255 characters, one trailing `.` allowed, every `.`-separated
@@ -111,7 +117,9 @@ fn valid_label(label: &str) -> bool {
     (1..=63).contains(&label.len())
         && !label.starts_with('-')
         && !label.ends_with('-')
-        && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// `valid_port()`: `0 <= int(port) <= 65535` with Python `int()` parsing.
@@ -133,7 +141,10 @@ fn python_int(s: &str) -> Option<i64> {
         b'-' => (true, &s[1..]),
         _ => (false, s),
     };
-    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__")
+    if digits.is_empty()
+        || digits.starts_with('_')
+        || digits.ends_with('_')
+        || digits.contains("__")
     {
         return None;
     }
@@ -164,7 +175,10 @@ mod tests {
     use super::*;
 
     fn hp(host: Option<&str>, port: Option<u16>) -> Option<HostPort> {
-        Some(HostPort { host: host.map(str::to_owned), port })
+        Some(HostPort {
+            host: host.map(str::to_owned),
+            port,
+        })
     }
 
     /// GRIP §2.3 resolution table (single positional).
@@ -199,7 +213,10 @@ mod tests {
 
     #[test]
     fn resolve_two_positionals_are_taken_verbatim() {
-        assert_eq!(resolve(Some("README.md"), Some("8080")), (Some("README.md"), Some("8080")));
+        assert_eq!(
+            resolve(Some("README.md"), Some("8080")),
+            (Some("README.md"), Some("8080"))
+        );
         assert_eq!(resolve(Some("80"), Some("81")), (Some("80"), Some("81")));
         assert_eq!(resolve(None, None), (None, None));
     }
@@ -276,7 +293,16 @@ mod tests {
         for ok in ["0", "65535", "+1", "\t42 ", "1_0"] {
             assert!(valid_port(ok), "{ok:?}");
         }
-        for bad in ["", "65536", "-1", "1.0", "_1", "1_", "0x10", "99999999999999999999999"] {
+        for bad in [
+            "",
+            "65536",
+            "-1",
+            "1.0",
+            "_1",
+            "1_",
+            "0x10",
+            "99999999999999999999999",
+        ] {
             assert!(!valid_port(bad), "{bad:?}");
         }
     }

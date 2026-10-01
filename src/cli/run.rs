@@ -58,9 +58,14 @@ pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
 fn init_logging(quiet: bool, verbose: u8) {
     use std::io::IsTerminal as _;
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_filter(quiet, verbose)));
-    let ansi = io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(io::stderr).with_ansi(ansi);
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(log_filter(quiet, verbose)));
+    let ansi =
+        io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .with_ansi(ansi);
     // A previously installed subscriber (tests, embedding) is kept.
     let _ = if verbose == 0 {
         builder.without_time().with_target(false).try_init()
@@ -113,7 +118,11 @@ fn vendor(plan: &VendorPlan, quiet: bool) -> anyhow::Result<()> {
     let report = crate::styles::vendor::vendor(&plan.options)?;
     for f in &report.failures {
         let status = f.status.map(|s| format!("HTTP {s}: ")).unwrap_or_default();
-        let by = f.referenced_by.as_deref().map(|r| format!(" (referenced by {r})")).unwrap_or_default();
+        let by = f
+            .referenced_by
+            .as_deref()
+            .map(|r| format!(" (referenced by {r})"))
+            .unwrap_or_default();
         tracing::warn!("could not download {}{by}: {status}{}", f.url, f.error);
     }
     if !quiet {
@@ -159,7 +168,10 @@ pub fn cache_clear(plan: &CacheClearPlan) -> anyhow::Result<String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             format!("Cache is already empty ({} does not exist).", dir.display())
         }
-        Err(e) => return Err(e).with_context(|| format!("inspecting the cache directory {}", dir.display())),
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("inspecting the cache directory {}", dir.display()));
+        }
         Ok(meta) => {
             // `symlink_metadata`: a symlinked cache directory is unlinked, its target is kept.
             if meta.is_dir() {
@@ -205,15 +217,25 @@ mod tests {
     fn clearing_the_cache() {
         let t = tempfile::tempdir().unwrap();
         let cache = t.path().join("md-render");
-        let plan = CacheClearPlan { cache_dir: cache.clone(), kept_bundle: None };
-        assert!(cache_clear(&plan).unwrap().starts_with("Cache is already empty"));
+        let plan = CacheClearPlan {
+            cache_dir: cache.clone(),
+            kept_bundle: None,
+        };
+        assert!(
+            cache_clear(&plan)
+                .unwrap()
+                .starts_with("Cache is already empty")
+        );
 
         fs::create_dir_all(cache.join("sub")).unwrap();
         fs::write(cache.join("styles.tar.gz"), b"x").unwrap();
         fs::write(cache.join("sub/other.tar.gz"), b"x").unwrap();
         let outside = t.path().join("mine.tar.gz");
         fs::write(&outside, b"keep").unwrap();
-        let plan = CacheClearPlan { cache_dir: cache.clone(), kept_bundle: Some(outside.clone()) };
+        let plan = CacheClearPlan {
+            cache_dir: cache.clone(),
+            kept_bundle: Some(outside.clone()),
+        };
         let msg = cache_clear(&plan).unwrap();
         assert!(msg.starts_with("Cache cleared"), "{msg}");
         assert!(msg.contains("Kept the style bundle"), "{msg}");
@@ -230,7 +252,11 @@ mod tests {
         fs::write(real.join("styles.tar.gz"), b"x").unwrap();
         let link = t.path().join("md-render");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        cache_clear(&CacheClearPlan { cache_dir: link.clone(), kept_bundle: None }).unwrap();
+        cache_clear(&CacheClearPlan {
+            cache_dir: link.clone(),
+            kept_bundle: None,
+        })
+        .unwrap();
         assert!(!link.exists() && real.join("styles.tar.gz").exists());
     }
 }
