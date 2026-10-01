@@ -47,7 +47,10 @@ PATH. To serve a file named like a port or a subcommand, write `./8080` or `./ve
 Environment:
   MD_RENDER_FLAVOR   default for --flavor
   MD_RENDER_STYLES   default for --styles
-  GITHUB_TOKEN, GH_TOKEN, `gh auth token`   GitHub token for --api
+  GITHUB_TOKEN, GH_TOKEN, `gh auth token`   GitHub token for --api (github.com, *.ghe.com)
+  GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN, `gh auth token --hostname HOST`
+                                            GitHub Enterprise Server token (--api-url HOST);
+                                            a github.com token is never sent there
   GITLAB_TOKEN, `glab config get token`     GitLab token for --api
   RUST_LOG           log filter (overrides -v/--quiet)";
 
@@ -159,8 +162,8 @@ pub struct GlobalArgs {
     #[arg(long, value_name = "URL", global = true, help_heading = "API")]
     pub api_url: Option<String>,
 
-    /// API token (prefer the GITHUB_TOKEN / GITLAB_TOKEN environment variables: command-line
-    /// arguments are visible to other users)
+    /// API token (prefer the GITHUB_TOKEN / GH_ENTERPRISE_TOKEN / GITLAB_TOKEN environment
+    /// variables: command-line arguments are visible to other users)
     #[arg(long, value_name = "TOKEN", global = true, help_heading = "API")]
     pub token: Option<String>,
 

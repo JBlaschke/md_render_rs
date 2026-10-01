@@ -241,6 +241,9 @@ pub enum ApiError {
         site: Flavor,
         message: Option<String>,
         had_token: bool,
+        /// Host the token is for (`github.com`, a GitHub Enterprise or a GitLab host); it
+        /// selects the variables named in the hint.
+        host: String,
     },
     /// HTTP 403 that is not a rate limit (e.g. no access to the `--context` project).
     Forbidden {
@@ -257,6 +260,8 @@ pub enum ApiError {
         /// `Retry-After` seconds.
         retry_after: Option<u64>,
         had_token: bool,
+        /// Host the token is for (see [`ApiError::Unauthorized`]).
+        host: String,
     },
     /// The document exceeds the API's size limit.
     TooLarge {
@@ -298,12 +303,15 @@ impl ApiError {
                 format!("could not reach the {site} API at {url}: {message}")
             }
             ApiError::Unauthorized {
-                message, had_token, ..
+                message,
+                had_token,
+                host,
+                ..
             } => {
                 let hint = if *had_token {
                     "check that the token is valid and has not expired".to_owned()
                 } else {
-                    format!("{} or pass --token", token_env_hint(self.site()))
+                    format!("{} or pass --token", token_env_hint(self.site(), host))
                 };
                 format!(
                     "the {site} API rejected the request as unauthorized{}; {hint}",
@@ -322,6 +330,7 @@ impl ApiError {
                 reset,
                 retry_after,
                 had_token,
+                host,
                 ..
             } => {
                 let mut s = format!("{site} API rate limit exceeded");
@@ -338,7 +347,7 @@ impl ApiError {
                 if !had_token {
                     s.push_str(&format!(
                         "; authenticated requests get a higher limit: {} or pass --token",
-                        token_env_hint(self.site())
+                        token_env_hint(self.site(), host)
                     ));
                 }
                 s
@@ -375,10 +384,28 @@ fn site_name(flavor: Flavor) -> &'static str {
     }
 }
 
-fn token_env_hint(flavor: Flavor) -> &'static str {
+/// Whether the GitHub token host `host` (see [`token_host`]) takes github.com credentials:
+/// github.com itself and GHE.com data-residency tenants (`TENANT.ghe.com`). Every other host is
+/// a GitHub Enterprise Server, which gets `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`
+/// (gh's convention), never the github.com token.
+fn takes_github_com_tokens(host: &str) -> bool {
+    host == "github.com" || host.ends_with(".ghe.com")
+}
+
+/// "set GITHUB_TOKEN (...)": how to provide a token for `host` (see [`resolve_token`]).
+fn token_env_hint(flavor: Flavor, host: &str) -> String {
     match flavor {
-        Flavor::Github => "set GITHUB_TOKEN (or GH_TOKEN, or log in with `gh auth login`)",
-        Flavor::Gitlab => "set GITLAB_TOKEN",
+        Flavor::Github if host == "github.com" => {
+            "set GITHUB_TOKEN (or GH_TOKEN, or log in with `gh auth login`)".to_owned()
+        }
+        Flavor::Github if takes_github_com_tokens(host) => format!(
+            "set GITHUB_TOKEN (or GH_TOKEN, or log in with `gh auth login --hostname {host}`)"
+        ),
+        Flavor::Github => format!(
+            "set GH_ENTERPRISE_TOKEN (or GITHUB_ENTERPRISE_TOKEN, or log in with \
+             `gh auth login --hostname {host}`)"
+        ),
+        Flavor::Gitlab => "set GITLAB_TOKEN".to_owned(),
     }
 }
 
@@ -455,11 +482,14 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Resolve the token: explicit > environment > credential helper.
+/// Resolve the token for `host` (see [`token_host`]): explicit > environment > credential helper.
 ///
-/// GitHub: `GITHUB_TOKEN` > `GH_TOKEN` (> `GH_ENTERPRISE_TOKEN` for non-github.com hosts) >
-/// `gh auth token --hostname HOST`. GitLab: `GITLAB_TOKEN` > `glab config get token --host HOST`.
-/// `env` and `helper` are injected so tests never see the developer's real credentials.
+/// GitHub, for github.com and `*.ghe.com`: `GITHUB_TOKEN` > `GH_TOKEN` >
+/// `gh auth token --hostname HOST`. GitHub Enterprise Server (any other host):
+/// `GH_ENTERPRISE_TOKEN` > `GITHUB_ENTERPRISE_TOKEN` > `gh auth token --hostname HOST`; a
+/// github.com token is never sent there (gh's convention). GitLab: `GITLAB_TOKEN` >
+/// `glab config get token --host HOST`. `env` and `helper` are injected so tests never see the
+/// developer's real credentials.
 fn resolve_token(
     flavor: Flavor,
     explicit: Option<&str>,
@@ -474,14 +504,12 @@ fn resolve_token(
     if let Some(t) = explicit.map(str::to_owned).and_then(clean) {
         return Some((Secret(t), TokenOrigin::Explicit));
     }
-    let mut vars: Vec<&'static str> = match flavor {
-        Flavor::Github => vec!["GITHUB_TOKEN", "GH_TOKEN"],
-        Flavor::Gitlab => vec!["GITLAB_TOKEN"],
+    let vars: &[&'static str] = match flavor {
+        Flavor::Github if takes_github_com_tokens(host) => &["GITHUB_TOKEN", "GH_TOKEN"],
+        Flavor::Github => &["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"],
+        Flavor::Gitlab => &["GITLAB_TOKEN"],
     };
-    if flavor == Flavor::Github && host != "github.com" {
-        vars.push("GH_ENTERPRISE_TOKEN");
-    }
-    for var in vars {
+    for &var in vars {
         if let Some(t) = env(var).and_then(clean) {
             return Some((Secret(t), TokenOrigin::Env(var)));
         }
@@ -577,6 +605,8 @@ pub struct ApiRenderer {
     /// GitLab: origin + path prefix used to absolutize `/-/…` URLs in API output.
     instance_origin: String,
     instance_prefix: String,
+    /// Host the token is for (see [`token_host`]).
+    token_host: String,
     token: Option<Secret>,
     token_origin: Option<TokenOrigin>,
     transport: Arc<dyn HttpTransport>,
@@ -602,7 +632,8 @@ impl ApiRenderer {
     /// # Errors
     /// An `api_url` that is not an `http(s)://` URL without query or fragment.
     pub fn new(cfg: ApiConfig) -> anyhow::Result<Self> {
-        let host = api_host(&cfg)?;
+        let base = parse_base_url(&cfg)?;
+        let host = token_host(cfg.flavor, &base);
         let env = |name: &str| std::env::var(name).ok();
         let resolved = resolve_token(cfg.flavor, cfg.token.as_deref(), &host, &env, &run_helper);
         let renderer = Self::build(cfg, resolved, Arc::new(UreqTransport::new()))?;
@@ -616,8 +647,15 @@ impl ApiRenderer {
                 "rendering through the {} API at {} (no token: {} for higher limits)",
                 site_name(renderer.cfg.flavor),
                 renderer.endpoint,
-                token_env_hint(renderer.cfg.flavor)
+                token_env_hint(renderer.cfg.flavor, &renderer.token_host)
             ),
+        }
+        if renderer.token.is_some() && is_cleartext_remote(&base) {
+            tracing::warn!(
+                "the {} API URL is http:// on a remote host: the token is sent unencrypted; \
+                 use https://",
+                site_name(renderer.cfg.flavor)
+            );
         }
         Ok(renderer)
     }
@@ -646,6 +684,7 @@ impl ApiRenderer {
         transport: Arc<dyn HttpTransport>,
     ) -> anyhow::Result<Self> {
         let base = parse_base_url(&cfg)?;
+        let token_host = token_host(cfg.flavor, &base);
         let trimmed = base.as_str().trim_end_matches('/').to_owned();
         let endpoint = match cfg.flavor {
             Flavor::Github => format!("{trimmed}/markdown"),
@@ -666,6 +705,7 @@ impl ApiRenderer {
             endpoint,
             instance_origin,
             instance_prefix,
+            token_host,
             token,
             token_origin,
             transport,
@@ -770,6 +810,7 @@ impl ApiRenderer {
                     site,
                     url: &request.url,
                     had_token: self.token.is_some(),
+                    token_host: &self.token_host,
                 };
                 interpret_response(&exchange, &resp)
             }
@@ -893,14 +934,33 @@ fn parse_base_url(cfg: &ApiConfig) -> anyhow::Result<url::Url> {
     Ok(url)
 }
 
-/// Host name for credential helpers: `github.com` for the public API, else the URL's host.
-fn api_host(cfg: &ApiConfig) -> anyhow::Result<String> {
-    let url = parse_base_url(cfg)?;
-    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    Ok(match (cfg.flavor, host.as_str()) {
-        (Flavor::Github, "api.github.com") => "github.com".to_owned(),
-        _ => host,
-    })
+/// The host a token for the API at `base` belongs to, as `gh` / `glab` name it: `github.com`
+/// for `api.github.com`, `TENANT.ghe.com` for a GHE.com tenant's `api.TENANT.ghe.com`, else the
+/// URL's host (a GitHub Enterprise Server or GitLab instance).
+fn token_host(flavor: Flavor, base: &url::Url) -> String {
+    let host = base.host_str().unwrap_or_default().to_ascii_lowercase();
+    match flavor {
+        Flavor::Github if host == "api.github.com" => "github.com".to_owned(),
+        Flavor::Github => match host.strip_prefix("api.") {
+            Some(tenant) if tenant.ends_with(".ghe.com") => tenant.to_owned(),
+            _ => host,
+        },
+        Flavor::Gitlab => host,
+    }
+}
+
+/// Whether requests to `base` travel unencrypted beyond this machine (`http://`, not loopback).
+fn is_cleartext_remote(base: &url::Url) -> bool {
+    let loopback = match base.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    base.scheme() == "http" && !loopback
 }
 
 /// `sha256(flavor, mode, context, text)` with length-prefixed fields.
@@ -953,6 +1013,8 @@ struct Exchange<'a> {
     /// Where the request went (a redirect's relative `Location` is resolved against it).
     url: &'a str,
     had_token: bool,
+    /// See [`token_host`].
+    token_host: &'a str,
 }
 
 /// Turn a response into HTML or an [`ApiError`].
@@ -983,7 +1045,10 @@ fn interpret_response(exchange: &Exchange<'_>, resp: &ApiResponse) -> Result<Str
 
 fn classify_error(exchange: &Exchange<'_>, resp: &ApiResponse) -> ApiError {
     let Exchange {
-        site, had_token, ..
+        site,
+        had_token,
+        token_host,
+        ..
     } = *exchange;
     if (300..400).contains(&resp.status) {
         // Redirects are never followed (see `UreqTransport::new`); say where it pointed.
@@ -1028,6 +1093,7 @@ fn classify_error(exchange: &Exchange<'_>, resp: &ApiResponse) -> ApiError {
             reset: num(reset_h).and_then(|r| i64::try_from(r).ok()),
             retry_after,
             had_token,
+            host: token_host.to_owned(),
         };
     }
     match resp.status {
@@ -1035,6 +1101,7 @@ fn classify_error(exchange: &Exchange<'_>, resp: &ApiResponse) -> ApiError {
             site,
             message,
             had_token,
+            host: token_host.to_owned(),
         },
         403 => ApiError::Forbidden { site, message },
         status => ApiError::Status {
@@ -2121,6 +2188,7 @@ mod tests {
             site,
             url: "https://api.github.com/markdown",
             had_token: true,
+            token_host: "github.com",
         };
         let gh = |code, h: &[(&str, &str)], b| {
             classify_error(&exchange(Flavor::Github), &status(code, h, b).unwrap())
@@ -2188,7 +2256,8 @@ mod tests {
                 limit: Some(5),
                 reset: Some(100),
                 retry_after: None,
-                had_token: false
+                had_token: false,
+                host: "github.com".into(),
             }
         );
         let bad = interpret_response(&exchange(Flavor::Gitlab), &ok("{}").unwrap()).unwrap_err();
@@ -2208,6 +2277,7 @@ mod tests {
             site: Flavor::Gitlab,
             url: "https://gl.example/api/v4/markdown",
             had_token: true,
+            token_host: "gl.example",
         };
         let err = classify_error(
             &gitlab,
@@ -2286,6 +2356,7 @@ mod tests {
             reset: None,
             retry_after: Some(90),
             had_token: true,
+            host: "github.com".into(),
         };
         assert_eq!(
             e.describe(&utc, now),
@@ -2417,18 +2488,151 @@ mod tests {
         );
 
         let host = |url: Option<&str>, f| {
-            api_host(&ApiConfig {
-                api_url: url.map(Into::into),
-                ..cfg(f, None, true)
-            })
-            .unwrap()
+            token_host(
+                f,
+                &parse_base_url(&ApiConfig {
+                    api_url: url.map(Into::into),
+                    ..cfg(f, None, true)
+                })
+                .unwrap(),
+            )
         };
         assert_eq!(host(None, Flavor::Github), "github.com");
         assert_eq!(
             host(Some("https://GHE.corp/api/v3"), Flavor::Github),
             "ghe.corp"
         );
+        assert_eq!(
+            host(Some("https://api.octo.ghe.com"), Flavor::Github),
+            "octo.ghe.com"
+        );
         assert_eq!(host(None, Flavor::Gitlab), "gitlab.com");
+        assert_eq!(
+            host(Some("https://api.gl.example"), Flavor::Gitlab),
+            "api.gl.example"
+        );
+    }
+
+    /// CLI-3: a GitHub Enterprise Server host never gets the github.com token (gh's convention:
+    /// `GH_TOKEN`/`GITHUB_TOKEN` for github.com and `*.ghe.com`, `GH_ENTERPRISE_TOKEN`/
+    /// `GITHUB_ENTERPRISE_TOKEN` for every other host).
+    #[test]
+    fn github_com_tokens_are_never_sent_to_an_enterprise_host() {
+        let env_of = |pairs: &'static [(&'static str, &'static str)]| {
+            move |n: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == n)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        let helper_calls = std::cell::RefCell::new(Vec::new());
+        let helper = |p: &str, a: &[&str]| {
+            helper_calls
+                .borrow_mut()
+                .push(format!("{p} {}", a.join(" ")));
+            Some("helpertok".to_owned())
+        };
+        let no_helper = |_: &str, _: &[&str]| None;
+        let t = |r: Option<(Secret, TokenOrigin)>| r.map(|(s, o)| (s.0, o));
+        let both = env_of(&[("GITHUB_TOKEN", "a"), ("GH_ENTERPRISE_TOKEN", "b")]);
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "ghe.corp",
+                &both,
+                &helper
+            )),
+            Some(("b".into(), TokenOrigin::Env("GH_ENTERPRISE_TOKEN")))
+        );
+        let long = env_of(&[("GITHUB_ENTERPRISE_TOKEN", "c")]);
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "ghe.corp",
+                &long,
+                &no_helper
+            )),
+            Some(("c".into(), TokenOrigin::Env("GITHUB_ENTERPRISE_TOKEN")))
+        );
+        let dotcom = env_of(&[("GITHUB_TOKEN", "a"), ("GH_TOKEN", "a2")]);
+        assert!(helper_calls.borrow().is_empty());
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "ghe.corp",
+                &dotcom,
+                &helper
+            )),
+            Some(("helpertok".into(), TokenOrigin::Helper("gh auth token")))
+        );
+        assert_eq!(
+            helper_calls.borrow().last().unwrap(),
+            "gh auth token --hostname ghe.corp"
+        );
+        assert_eq!(
+            t(resolve_token(
+                Flavor::Github,
+                None,
+                "ghe.corp",
+                &dotcom,
+                &no_helper
+            )),
+            None
+        );
+        for host in ["github.com", "octo.ghe.com"] {
+            assert_eq!(
+                t(resolve_token(Flavor::Github, None, host, &both, &no_helper)),
+                Some(("a".into(), TokenOrigin::Env("GITHUB_TOKEN"))),
+                "{host}"
+            );
+        }
+
+        // The hints name the variables that apply to the host.
+        assert!(token_env_hint(Flavor::Github, "github.com").starts_with("set GITHUB_TOKEN"));
+        let ghe = token_env_hint(Flavor::Github, "ghe.corp");
+        assert!(
+            ghe.starts_with("set GH_ENTERPRISE_TOKEN (or GITHUB_ENTERPRISE_TOKEN")
+                && ghe.contains("gh auth login --hostname ghe.corp")
+                && !ghe.contains("GITHUB_TOKEN"),
+            "{ghe}"
+        );
+        assert!(token_env_hint(Flavor::Github, "octo.ghe.com").contains(
+            "GITHUB_TOKEN (or GH_TOKEN, or log in with `gh auth login --hostname octo.ghe.com`)"
+        ));
+        let fake = Fake::with(vec![status(401, &[], r#"{"message":"Bad credentials"}"#)]);
+        let c = ApiConfig {
+            api_url: Some("https://ghe.corp/api/v3".into()),
+            ..cfg(Flavor::Github, None, false)
+        };
+        let r = ApiRenderer::with_transport(c, fake).unwrap();
+        let err = r
+            .render("x", &opts(Flavor::Github, Mode::Comment, None))
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unauthorized (Bad credentials); set GH_ENTERPRISE_TOKEN"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn cleartext_detection() {
+        let url = |u: &str| url::Url::parse(u).unwrap();
+        assert!(is_cleartext_remote(&url("http://ghe.corp/api/v3")));
+        assert!(!is_cleartext_remote(&url("https://ghe.corp/api/v3")));
+        for local in [
+            "http://localhost:8080",
+            "http://LOCALHOST",
+            "http://gl.localhost",
+            "http://127.0.0.1:1",
+            "http://[::1]:1",
+        ] {
+            assert!(!is_cleartext_remote(&url(local)), "{local}");
+        }
     }
 
     #[test]

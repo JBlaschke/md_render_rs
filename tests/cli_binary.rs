@@ -32,6 +32,8 @@ fn command(cwd: &Path, home: &Path, args: &[&str]) -> Command {
         "MD_RENDER_STYLES",
         "GITHUB_TOKEN",
         "GH_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
         "GITLAB_TOKEN",
         "RUST_LOG",
         "CLICOLOR_FORCE",
