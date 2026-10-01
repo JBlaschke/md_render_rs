@@ -315,7 +315,10 @@ pub struct DocEntry {
     /// Absolute path (served root joined with `key`).
     pub path: PathBuf,
     triggers: AtomicU64,
-    versions: AtomicU64,
+    /// Version counter shared by every document of the server, so versions are unique per
+    /// server process: an entry re-created after eviction never hands out a version a
+    /// client already holds (LIVE-8). Clients only compare versions; gaps are harmless.
+    versions: Arc<AtomicU64>,
     wake: Notify,
     /// Set when the entry was evicted from the registry; the worker exits.
     retired: AtomicBool,
@@ -333,12 +336,12 @@ impl std::fmt::Debug for DocEntry {
 }
 
 impl DocEntry {
-    fn new(key: &str, path: PathBuf) -> DocEntry {
+    fn new(key: &str, path: PathBuf, versions: Arc<AtomicU64>) -> DocEntry {
         DocEntry {
             key: key.to_owned(),
             path,
             triggers: AtomicU64::new(0),
-            versions: AtomicU64::new(0),
+            versions,
             wake: Notify::new(),
             retired: AtomicBool::new(false),
             state: watch::Sender::new(DocSnapshot::default()),
@@ -545,6 +548,8 @@ pub struct Hub {
     ctx: Arc<RenderCtx>,
     docs: Mutex<HashMap<String, Arc<DocEntry>>>,
     shutdown: watch::Receiver<bool>,
+    /// The server-wide version counter (see [`DocEntry`]).
+    versions: Arc<AtomicU64>,
 }
 
 impl Hub {
@@ -553,6 +558,7 @@ impl Hub {
             ctx,
             docs: Mutex::new(HashMap::new()),
             shutdown,
+            versions: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -565,7 +571,11 @@ impl Hub {
         if docs.len() >= MAX_DOCS {
             evict_idle(&mut docs);
         }
-        let entry = Arc::new(DocEntry::new(key, paths::join_rel(&self.ctx.root, key)));
+        let entry = Arc::new(DocEntry::new(
+            key,
+            paths::join_rel(&self.ctx.root, key),
+            self.versions.clone(),
+        ));
         tokio::spawn(worker(
             entry.clone(),
             self.ctx.clone(),
@@ -1239,6 +1249,32 @@ mod tests {
         );
     }
 
+    /// LIVE-8: a document re-created after eviction continues above every version handed out
+    /// before, so a client reconnecting with its old version does not skip new content.
+    #[tokio::test]
+    async fn versions_survive_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (hub, _stop) = hub(&root, Arc::new(Counting(AtomicUsize::new(0))));
+        let mut last = 0;
+        for i in 0..5 {
+            std::fs::write(root.join("a.md"), format!("edit {i}")).unwrap();
+            last = hub.current("a.md").await.unwrap().version;
+        }
+        assert!(last >= 5);
+        for i in 0..MAX_DOCS {
+            hub.current(&format!("x{i}.md")).await.unwrap();
+        }
+        assert!(hub.get("a.md").is_none(), "a.md was evicted");
+        std::fs::write(root.join("a.md"), "edit after eviction").unwrap();
+        let s = hub.current("a.md").await.unwrap();
+        assert!(s.version > last, "{} <= {last}", s.version);
+        assert_eq!(
+            s.content.unwrap().rendered.html,
+            "<p>edit after eviction</p>"
+        );
+    }
+
     #[tokio::test]
     async fn events_reach_subscribers() {
         let dir = tempfile::tempdir().unwrap();
@@ -1416,7 +1452,7 @@ mod tests {
 
     #[test]
     fn source_dependencies_trigger_the_document() {
-        let entry = DocEntry::new("doc.md", PathBuf::from("/r/doc.md"));
+        let entry = DocEntry::new("doc.md", PathBuf::from("/r/doc.md"), Arc::default());
         entry.lock().subscribers = 1;
         entry.set_deps(
             vec![
