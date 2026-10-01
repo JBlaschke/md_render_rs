@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -39,6 +39,11 @@ const MAX_STALE_DROPS: u32 = 3;
 
 /// Capacity of each document's event channel (subscribers that lag get a state resync).
 const EVENT_CAPACITY: usize = 64;
+
+/// When the registry holds this many documents, idle ones (no subscriber, nobody waiting for
+/// a render) are evicted before a new one is added, so requests for many distinct paths
+/// (e.g. a crawler probing `/x1.md`, `/x2.md`, ...) cannot grow it without bound.
+const MAX_DOCS: usize = 256;
 
 /// Shared rendering context of all documents.
 pub struct RenderCtx {
@@ -168,6 +173,8 @@ pub struct DocEntry {
     triggers: AtomicU64,
     versions: AtomicU64,
     wake: Notify,
+    /// Set when the entry was evicted from the registry; the worker exits.
+    retired: AtomicBool,
     state: watch::Sender<DocSnapshot>,
     events: broadcast::Sender<Arc<WireEvent>>,
     tracking: Mutex<Tracking>,
@@ -187,6 +194,7 @@ impl DocEntry {
             triggers: AtomicU64::new(0),
             versions: AtomicU64::new(0),
             wake: Notify::new(),
+            retired: AtomicBool::new(false),
             state: watch::Sender::new(DocSnapshot::default()),
             events: broadcast::Sender::new(EVENT_CAPACITY),
             tracking: Mutex::new(Tracking::default()),
@@ -205,11 +213,6 @@ impl DocEntry {
         self.state.borrow().clone()
     }
 
-    /// Version of the current published state.
-    pub fn version(&self) -> u64 {
-        self.state.borrow().version
-    }
-
     /// Receive this document's events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<WireEvent>> {
         self.events.subscribe()
@@ -218,6 +221,12 @@ impl DocEntry {
     /// Number of live subscribers.
     pub fn subscribers(&self) -> usize {
         self.lock().subscribers
+    }
+
+    /// Stop the worker (the entry was evicted).
+    fn retire(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Tracking> {
@@ -317,7 +326,8 @@ impl DocEntry {
         (doc, urls)
     }
 
-    /// Dependencies currently tracked (for tests and diagnostics).
+    /// Dependencies currently tracked.
+    #[cfg(test)]
     pub fn deps(&self) -> Vec<Dep> {
         self.lock().deps.clone()
     }
@@ -352,6 +362,9 @@ impl Hub {
         let mut docs = self.docs.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = docs.get(key) {
             return e.clone();
+        }
+        if docs.len() >= MAX_DOCS {
+            evict_idle(&mut docs);
         }
         let entry = Arc::new(DocEntry::new(key, paths::join_rel(&self.ctx.root, key)));
         tokio::spawn(worker(entry.clone(), self.ctx.clone(), self.shutdown.clone()));
@@ -405,10 +418,33 @@ impl Hub {
         }
     }
 
-    /// Entry for `key` if it exists (tests and diagnostics).
+    /// Entry for `key` if it exists.
+    #[cfg(test)]
     pub fn get(&self, key: &str) -> Option<Arc<DocEntry>> {
         self.docs.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned()
     }
+
+    /// Number of documents in the registry.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.docs.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+/// Drop idle entries from the registry (called with the registry lock held).
+///
+/// The registry and the entry's worker hold one reference each; every other holder (a
+/// [`Subscription`], a page load waiting in [`Hub::current`], a re-check timer, a watcher
+/// dispatch in progress) owns another, and new references are only handed out under the
+/// registry lock, so `strong_count <= 2` means nobody can be using the entry.
+fn evict_idle(docs: &mut HashMap<String, Arc<DocEntry>>) {
+    docs.retain(|_, e| {
+        let idle = Arc::strong_count(e) <= 2 && e.subscribers() == 0;
+        if idle {
+            e.retire();
+        }
+        !idle
+    });
 }
 
 /// Cache-busting token for `assets` events (milliseconds since the Unix epoch).
@@ -457,6 +493,9 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
             biased;
             _ = shutdown.wait_for(|stop| *stop) => break,
             _ = entry.wake.notified() => {}
+        }
+        if entry.retired.load(Ordering::SeqCst) {
+            break;
         }
         match process(&entry, &ctx, stale_drops >= MAX_STALE_DROPS).await {
             Outcome::Done => stale_drops = 0,
@@ -720,6 +759,26 @@ mod tests {
         assert!(matches!(&s.status, DocStatus::Failed { kind: ErrorKind::Render, message } if message.contains("cannot render")));
         assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>hello</p>");
         assert_eq!(s.version, 5);
+    }
+
+    #[tokio::test]
+    async fn idle_documents_are_evicted_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (hub, _stop) = hub(&root, Arc::new(Counting(AtomicUsize::new(0))));
+        for i in 0..MAX_DOCS {
+            hub.current(&format!("d{i}.md")).await.unwrap();
+        }
+        assert_eq!(hub.len(), MAX_DOCS);
+        let sub = hub.subscribe("d0.md");
+        let s = hub.current("new.md").await.unwrap();
+        assert_eq!(s.status, DocStatus::Missing);
+        // Everything idle went; the subscribed document and the new one stay.
+        assert_eq!(hub.len(), 2);
+        assert!(hub.get("d0.md").is_some());
+        drop(sub);
+        // An evicted document is simply re-created on its next use.
+        assert_eq!(hub.current("d1.md").await.unwrap().status, DocStatus::Missing);
     }
 
     #[tokio::test]

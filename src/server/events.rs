@@ -35,6 +35,9 @@ pub const KEEPALIVE: Duration = Duration::from_secs(15);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     Read,
+    /// Part of the wire protocol (DESIGN §7). This server decodes lossily and reports
+    /// invalid UTF-8 as a content warning instead (GRIP C38), so it never sends it.
+    #[allow(dead_code)]
     Decode,
     Render,
     Api,
@@ -58,11 +61,14 @@ impl ErrorKind {
 pub struct WireEvent {
     /// SSE event name (`hello`, `content`, ...).
     pub name: &'static str,
-    /// Document version this event belongs to; `None` for global events (their `id` uses the
-    /// subscriber's current document version).
+    /// Published document version this event carries; `None` for events that do not publish
+    /// a new document state (`hello`, `rendering`, `assets`, `styles`, `shutdown`): their
+    /// `id` repeats the last version delivered to that subscriber, so a `Last-Event-ID` sent
+    /// on reconnect never claims a state the client has not received (e.g. `rendering`
+    /// announces version N before `content` N exists).
     pub version: Option<u64>,
-    /// State events (`rendering`, `content`, `error`, `deleted`) are skipped by a subscriber
-    /// that was already brought up to date past their version.
+    /// State events (`content`, `error`, `deleted`) are skipped by a subscriber that was
+    /// already brought up to date past their version.
     pub state: bool,
     /// JSON payload.
     pub data: String,
@@ -76,12 +82,12 @@ impl WireEvent {
     /// `hello {server_id, version, styles_version}`.
     pub fn hello(server_id: &str, version: u64, styles_version: u64) -> WireEvent {
         let data = json!({ "server_id": server_id, "version": version, "styles_version": styles_version });
-        WireEvent::new("hello", Some(version), false, data)
+        WireEvent::new("hello", None, false, data)
     }
 
     /// `rendering {version}`.
     pub fn rendering(version: u64) -> WireEvent {
-        WireEvent::new("rendering", Some(version), true, json!({ "version": version }))
+        WireEvent::new("rendering", None, false, json!({ "version": version }))
     }
 
     /// `content {version, html, title, warnings}`.
@@ -122,9 +128,10 @@ impl WireEvent {
         WireEvent::new("shutdown", None, false, json!({}))
     }
 
-    /// The axum SSE event, with `id: <server_id>:<version>`.
-    pub fn to_sse(&self, server_id: &str, current_version: u64) -> Event {
-        let version = self.version.unwrap_or(current_version);
+    /// The axum SSE event, with `id: <server_id>:<version>`; `delivered` is the last document
+    /// version this subscriber has received (used for events without their own version).
+    pub fn to_sse(&self, server_id: &str, delivered: u64) -> Event {
+        let version = self.version.unwrap_or(delivered);
         // JSON never contains raw newlines or CRs, so `data` cannot panic here.
         Event::default().event(self.name).id(format!("{server_id}:{version}")).data(&self.data)
     }
@@ -142,18 +149,23 @@ pub struct DocQuery {
     pub path: Option<String>,
     /// Version the client already has (alternative to `Last-Event-ID`).
     pub v: Option<u64>,
+    /// Server id the `v` was issued by; `v` is ignored when it names another process
+    /// (versions restart at 1 with every server start).
+    pub sid: Option<String>,
 }
 
-/// The version a reconnecting client already has: from `Last-Event-ID` (`<server_id>:<v>`,
-/// only when it was issued by this process) or the `v` query parameter; the larger wins.
-pub fn client_version(headers: &HeaderMap, query_v: Option<u64>, server_id: &str) -> u64 {
+/// The version a (re)connecting client already has: from `Last-Event-ID`
+/// (`<server_id>:<v>`) or the `v` query parameter, each only when issued by this process;
+/// the larger wins.
+pub fn client_version(headers: &HeaderMap, q: &DocQuery, server_id: &str) -> u64 {
     let from_header = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.rsplit_once(':'))
         .filter(|(sid, _)| *sid == server_id)
         .and_then(|(_, v)| v.parse::<u64>().ok());
-    from_header.unwrap_or(0).max(query_v.unwrap_or(0))
+    let from_query = q.v.filter(|_| q.sid.as_deref().is_none_or(|sid| sid == server_id));
+    from_header.unwrap_or(0).max(from_query.unwrap_or(0))
 }
 
 /// `GET /__/md-render/events?path=<doc>[&v=<version>]`.
@@ -165,7 +177,7 @@ pub async fn events(State(app): State<Arc<App>>, Query(q): Query<DocQuery>, head
         Ok(k) => k,
         Err((status, msg)) => return (status, msg).into_response(),
     };
-    let since = client_version(&headers, q.v, &app.server_id);
+    let since = client_version(&headers, &q, &app.server_id);
     let sub = app.hub.subscribe(&key);
     let (tx, rx) = mpsc::channel::<Event>(32);
     tokio::spawn(client_task(app.clone(), sub, since, tx));
@@ -194,23 +206,24 @@ async fn client_task(app: Arc<App>, sub: super::hub::Subscription, since: u64, t
     if !send(Event::default().retry(RETRY)).await {
         return;
     }
+    // `hello` goes first with the version the client is at *before* the catch-up, so a
+    // client that reconnects mid-catch-up asks for it again.
     let hello = WireEvent::hello(&server_id, snap.version, app.styles.version());
-    if !send(hello.to_sse(&server_id, snap.version)).await {
+    if !send(hello.to_sse(&server_id, since.min(snap.version))).await {
         return;
     }
     for ev in snap.catch_up(&sub.entry.key, since) {
-        if !send(ev.to_sse(&server_id, snap.version)).await {
+        if !send(ev.to_sse(&server_id, covered)).await {
             return;
         }
     }
 
     loop {
-        let current = sub.entry.version();
         tokio::select! {
             biased;
             // The `wait_for` guard must not live across the `send` below (it is not `Send`).
             _ = async { drop(shutdown.wait_for(|stop| *stop).await) } => {
-                let _ = send(WireEvent::shutdown().to_sse(&server_id, current)).await;
+                let _ = send(WireEvent::shutdown().to_sse(&server_id, covered)).await;
                 break;
             }
             _ = tx.closed() => break,
@@ -222,31 +235,34 @@ async fn client_task(app: Arc<App>, sub: super::hub::Subscription, since: u64, t
                     if let Some(v) = ev.version {
                         covered = covered.max(v);
                     }
-                    if !send(ev.to_sse(&server_id, current)).await {
+                    if !send(ev.to_sse(&server_id, covered)).await {
                         break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     // Too slow to keep up: resend the current state instead of the backlog.
                     let snap: DocSnapshot = sub.entry.snapshot();
-                    for ev in snap.catch_up(&sub.entry.key, covered) {
-                        if !send(ev.to_sse(&server_id, snap.version)).await {
+                    let since = covered;
+                    covered = covered.max(snap.version);
+                    for ev in snap.catch_up(&sub.entry.key, since) {
+                        if !send(ev.to_sse(&server_id, covered)).await {
                             return;
                         }
                     }
-                    covered = covered.max(snap.version);
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             msg = global_rx.recv() => match msg {
                 Ok(ev) => {
-                    if !send(ev.to_sse(&server_id, current)).await {
+                    if !send(ev.to_sse(&server_id, covered)).await {
                         break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // Only `styles` and bundle errors are global; the latest styles state
+                    // supersedes whatever was missed.
                     let ev = WireEvent::styles(app.styles.version(), &app.styles.hrefs());
-                    if !send(ev.to_sse(&server_id, current)).await {
+                    if !send(ev.to_sse(&server_id, covered)).await {
                         break;
                     }
                 }
@@ -295,17 +311,33 @@ mod tests {
         assert_eq!(ErrorKind::Read.as_str(), "read");
     }
 
+    fn q(v: Option<u64>, sid: Option<&str>) -> DocQuery {
+        DocQuery { path: None, v, sid: sid.map(str::to_owned) }
+    }
+
     #[test]
     fn last_event_id_parsing() {
         let mut h = HeaderMap::new();
-        assert_eq!(client_version(&h, None, "sid"), 0);
-        assert_eq!(client_version(&h, Some(4), "sid"), 4);
+        assert_eq!(client_version(&h, &q(None, None), "sid"), 0);
+        assert_eq!(client_version(&h, &q(Some(4), None), "sid"), 4);
+        assert_eq!(client_version(&h, &q(Some(4), Some("sid")), "sid"), 4);
+        // A `v` issued by another server process is meaningless here.
+        assert_eq!(client_version(&h, &q(Some(4), Some("old")), "sid"), 0);
         h.insert("last-event-id", "sid:7".parse().unwrap());
-        assert_eq!(client_version(&h, None, "sid"), 7);
-        assert_eq!(client_version(&h, Some(9), "sid"), 9);
+        assert_eq!(client_version(&h, &q(None, None), "sid"), 7);
+        assert_eq!(client_version(&h, &q(Some(9), None), "sid"), 9);
         // Ids from another server process are ignored.
-        assert_eq!(client_version(&h, None, "other"), 0);
+        assert_eq!(client_version(&h, &q(None, None), "other"), 0);
         h.insert("last-event-id", "garbage".parse().unwrap());
-        assert_eq!(client_version(&h, None, "sid"), 0);
+        assert_eq!(client_version(&h, &q(None, None), "sid"), 0);
+    }
+
+    #[test]
+    fn ids_of_unversioned_events_use_the_delivered_version() {
+        assert_eq!(WireEvent::rendering(9).version, None);
+        assert_eq!(WireEvent::hello("s", 3, 0).version, None);
+        assert_eq!(WireEvent::content(4, &Rendered::default()).version, Some(4));
+        assert!(!WireEvent::rendering(9).state);
+        assert!(WireEvent::deleted(2, "a.md").state);
     }
 }

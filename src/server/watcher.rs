@@ -127,12 +127,14 @@ impl FsWatcher {
     }
 
     /// Current reference count of `dir` (0 when not watched).
+    #[cfg(test)]
     pub fn refs(&self, dir: &Path) -> usize {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner.dirs.get(dir).copied().unwrap_or(0)
     }
 
     /// Is `dir` currently watched?
+    #[cfg(test)]
     pub fn is_watched(&self, dir: &Path) -> bool {
         self.refs(dir) > 0
     }

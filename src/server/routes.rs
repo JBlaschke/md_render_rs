@@ -158,7 +158,7 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
     let query = uri.query();
     let rp = match RequestPath::from_uri_path(raw) {
         Ok(p) => p,
-        Err(e) => return app.error_page(status(e.status()), &e.to_string(), None, None).await,
+        Err(e) => return app.error_page(status(e.status()), &e.to_string()).await,
     };
     if rp.is_root() {
         if rp.collapsed {
@@ -169,10 +169,10 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
     let rel = rp.rel();
     let raw_requested = wants_raw(query);
     match paths::resolve(&app.root, &rel, app.follow_symlinks) {
-        Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m, None, None).await,
+        Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m).await,
         Err(ResolveError::Io(e)) => {
             let msg = format!("cannot access /{rel}: {e}");
-            app.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, None, None).await
+            app.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await
         }
         Ok(Resolved::Dir(abs)) => {
             if !rp.trailing_slash || rp.collapsed {
@@ -202,7 +202,7 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
                 app.doc_page(&rel).await
             } else {
                 let msg = format!("/{rel} does not exist");
-                app.error_page(StatusCode::NOT_FOUND, &msg, None, None).await
+                app.error_page(StatusCode::NOT_FOUND, &msg).await
             }
         }
     }
@@ -249,11 +249,11 @@ impl App {
             Ok(Ok(e)) => e,
             Ok(Err(e)) => {
                 let msg = format!("cannot list /{rel}: {e}");
-                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, None, None).await;
+                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await;
             }
             Err(e) => {
                 let msg = format!("cannot list /{rel}: {e}");
-                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, None, None).await;
+                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await;
             }
         };
         let shown = if rel.is_empty() { "/".to_owned() } else { format!("/{rel}/") };
@@ -267,7 +267,7 @@ impl App {
     async fn doc_page(&self, rel: &str) -> Response {
         let Some(snap) = self.hub.current(rel).await else {
             let msg = format!("timed out rendering {rel}");
-            return self.error_page(StatusCode::SERVICE_UNAVAILABLE, &msg, None, None).await;
+            return self.error_page(StatusCode::SERVICE_UNAVAILABLE, &msg).await;
         };
         let file_title = rel.rsplit('/').next().unwrap_or(rel).to_owned();
         let title = self.title.clone().unwrap_or(file_title);
@@ -282,18 +282,35 @@ impl App {
                 let status = StatusCode::INTERNAL_SERVER_ERROR;
                 self.page(status, c.rendered.clone(), title, Some(rel.to_owned()), live, vec![banner]).await
             }
-            (DocStatus::Failed { message, .. }, None) => {
-                self.error_page(StatusCode::INTERNAL_SERVER_ERROR, message, live, Some(title)).await
+            (DocStatus::Failed { kind, message }, None) => {
+                let msg = format!("{} error: {message}", kind.as_str());
+                self.doc_error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, rel, title, live).await
             }
             (DocStatus::Missing, _) => {
                 let msg = format!("/{rel} does not exist (yet); this page updates as soon as it is created");
-                self.error_page(StatusCode::NOT_FOUND, &msg, live, Some(title)).await
+                self.doc_error_page(StatusCode::NOT_FOUND, &msg, rel, title, live).await
             }
             (DocStatus::Ready | DocStatus::Pending, _) => {
                 let msg = format!("{rel} has not been rendered yet");
-                self.error_page(StatusCode::SERVICE_UNAVAILABLE, &msg, live, Some(title)).await
+                self.doc_error_page(StatusCode::SERVICE_UNAVAILABLE, &msg, rel, title, live).await
             }
         }
+    }
+
+    /// The error page of a document: keeps the document's title and file-name header and
+    /// includes the live client, so it turns into the document once the problem is fixed
+    /// (GRIP C58).
+    async fn doc_error_page(
+        &self,
+        status: StatusCode,
+        message: &str,
+        rel: &str,
+        title: String,
+        live: Option<LiveInfo>,
+    ) -> Response {
+        let html = page::error_html(self.flavor, status.as_u16(), message);
+        let content = Arc::new(Rendered { html, ..Default::default() });
+        self.page(status, content, title, Some(rel.to_owned()), live, Vec::new()).await
     }
 
     fn live_info(&self, rel: &str, version: u64) -> LiveInfo {
@@ -307,19 +324,13 @@ impl App {
         }
     }
 
-    /// A styled error page (GRIP C58); with `live` it recovers when the document appears.
-    pub(crate) async fn error_page(
-        &self,
-        status: StatusCode,
-        message: &str,
-        live: Option<LiveInfo>,
-        title: Option<String>,
-    ) -> Response {
+    /// A styled error page for a request that is not a (live) document.
+    pub(crate) async fn error_page(&self, status: StatusCode, message: &str) -> Response {
         let html = page::error_html(self.flavor, status.as_u16(), message);
         let content = Arc::new(Rendered { html, ..Default::default() });
         let reason = format!("{} {}", status.as_u16(), status.canonical_reason().unwrap_or("Error"));
-        let title = title.or_else(|| self.title.clone()).unwrap_or(reason);
-        self.page(status, content, title, None, live, Vec::new()).await
+        let title = self.title.clone().unwrap_or(reason);
+        self.page(status, content, title, None, None, Vec::new()).await
     }
 
     /// Wrap content in the full page (crate::page) off the reactor.
