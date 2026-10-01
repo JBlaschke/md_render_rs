@@ -35,19 +35,35 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
         let tex = raw.replace("\\\n", "\\\\\n");
         let mut html = math_html(ctx, &tex, "$$", true);
         insert_attrs(&mut html, "<math-renderer", sp);
-        return Block { html, math: true, ..Block::default() };
+        return Block {
+            html,
+            math: true,
+            ..Block::default()
+        };
     }
     if ENRICHMENTS.contains(&lang) {
         let html = enrichment_html(ctx, lang, literal, sp, index);
-        return Block { html, mermaid: lang == "mermaid", enrichment: true, ..Block::default() };
+        return Block {
+            html,
+            mermaid: lang == "mermaid",
+            enrichment: true,
+            ..Block::default()
+        };
     }
     // The highlighter takes the block content as written (it drops the final newline, and
     // for GitHub's tree-sitter languages every trailing blank line, itself).
-    let hl = if lang.is_empty() { None } else { Some(highlight::github(literal, lang)) };
+    let hl = if lang.is_empty() {
+        None
+    } else {
+        Some(highlight::github(literal, lang))
+    };
     let key = mdr_key(&["code", lang, raw]);
     let mut html = String::with_capacity(literal.len() * 2 + 200);
     match hl {
-        Some(highlight::GithubCode { scope: Some(scope), html: tokens }) => {
+        Some(highlight::GithubCode {
+            scope: Some(scope),
+            html: tokens,
+        }) => {
             html.push_str("<div");
             html.push_str(&ctx.mark_tree);
             html.push_str(r#" class="highlight highlight-"#);
@@ -58,7 +74,11 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
             html.push_str(&key);
             html.push('"');
             html.push_str(sp);
-            html.push_str(if ctx.comment { r#"><pre class="notranslate">"# } else { "><pre>" });
+            html.push_str(if ctx.comment {
+                r#"><pre class="notranslate">"#
+            } else {
+                "><pre>"
+            });
             match tokens {
                 Some(t) => html.push_str(&t),
                 None => push_text(&mut html, raw),
@@ -89,7 +109,10 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
             html.push_str("</code></pre></div>");
         }
     }
-    Block { html, ..Block::default() }
+    Block {
+        html,
+        ..Block::default()
+    }
 }
 
 /// Inserts `attrs` (` name="value"…`) right after `tag_start` (`<name`) at the start of `html`.
@@ -143,7 +166,12 @@ fn enrichment_html(ctx: &Ctx, kind: &str, code: &str, sp: &str, index: usize) ->
 /// Raw HTML `<pre>` elements (after sanitizing): `<pre lang>` is highlighted / turned into
 /// math or enrichment like a fence, `<pre><code>` gets the plain clipboard wrapper; a bare
 /// `<pre>` stays as is (GH §7.1; `S/ctx/rhysd_*`, `S/pages/lifeparticle_*`).
-pub(super) fn raw_pre(doc: &Document, ctx: &Ctx, enrichments: &mut usize, feats: &mut (bool, bool)) {
+pub(super) fn raw_pre(
+    doc: &Document,
+    ctx: &Ctx,
+    enrichments: &mut usize,
+    feats: &mut (bool, bool),
+) {
     let plain_ctx = ctx.without_marks();
     for pre in dom::elements_named(doc, "pre") {
         let generated = pre.parent().is_some_and(|p| {
@@ -155,14 +183,15 @@ pub(super) fn raw_pre(doc: &Document, ctx: &Ctx, enrichments: &mut usize, feats:
             continue;
         }
         if let Some(lang) = pre.attr("lang").map(|l| l.to_string()) {
-            let lang = lang.split_ascii_whitespace().next().unwrap_or("").to_owned();
+            let lang = lang
+                .split_ascii_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_owned();
             let code = pre.text().to_string();
             let is_special = lang == "math" || ENRICHMENTS.contains(&lang.as_str());
-            let highlighted = !lang.is_empty()
-                && !is_special
-                && highlight::github(&code, &lang)
-                    .scope
-                    .is_some();
+            let highlighted =
+                !lang.is_empty() && !is_special && highlight::github(&code, &lang).scope.is_some();
             if is_special || highlighted {
                 let block = block_html(&plain_ctx, &lang, &code, "", *enrichments);
                 if block.enrichment {
@@ -181,7 +210,10 @@ pub(super) fn raw_pre(doc: &Document, ctx: &Ctx, enrichments: &mut usize, feats:
             let raw = code.strip_suffix('\n').unwrap_or(&code);
             let lang = pre.attr("lang").map(|l| l.to_string()).unwrap_or_default();
             let div = doc.tree.new_element("div");
-            div.set_attr("class", "snippet-clipboard-content notranslate position-relative overflow-auto");
+            div.set_attr(
+                "class",
+                "snippet-clipboard-content notranslate position-relative overflow-auto",
+            );
             div.set_attr("data-snippet-clipboard-copy-content", raw);
             div.set_attr("data-mdr-key", &mdr_key(&["code", &lang, raw]));
             pre.add_class("notranslate");
@@ -204,25 +236,43 @@ mod tests {
         // The highlight stub returns no scope: plain form with `lang` kept (GH §7.1).
         let b = block_html(&ctx(false), "rust", "fn main() {}\n", "", 0);
         assert!(b.html.starts_with(r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="fn main() {}" data-mdr-key=""#));
-        assert!(b.html.ends_with(r#"><pre lang="rust" class="notranslate"><code>fn main() {}
-</code></pre></div>"#));
+        assert!(b.html.ends_with(
+            r#"><pre lang="rust" class="notranslate"><code>fn main() {}
+</code></pre></div>"#
+        ));
         let b = block_html(&ctx(true), "", "a < b\n", "", 0);
-        assert!(b.html.contains(r#"<pre class="notranslate"><code class="notranslate">a &lt; b
-</code></pre>"#));
+        assert!(b.html.contains(
+            r#"<pre class="notranslate"><code class="notranslate">a &lt; b
+</code></pre>"#
+        ));
     }
 
     #[test]
     fn math_and_enrichment() {
-        let b = block_html(&ctx(false), "math", "x^2\n", r#" data-sourcepos="1:1-3:3""#, 0);
+        let b = block_html(
+            &ctx(false),
+            "math",
+            "x^2\n",
+            r#" data-sourcepos="1:1-3:3""#,
+            0,
+        );
         assert!(b.math);
         assert!(b.html.starts_with(r#"<math-renderer data-sourcepos="1:1-3:3" class="js-display-math" style="display: block" data-run-id=""#));
         assert!(b.html.ends_with(">$$x^2$$</math-renderer>"));
 
         let b = block_html(&ctx(false), "mermaid", "graph TD\n  A --> B\n", "", 0);
         assert!(b.mermaid && b.enrichment);
-        assert!(b.html.contains(r#"data-json="{&quot;data&quot;:&quot;graph TD\n  A --&gt; B\n&quot;}""#));
-        assert!(b.html.contains("data-plain=\"graph TD\n  A --&gt; B\n\" dir=\"auto\""));
-        assert!(b.html.contains("<pre lang=\"mermaid\" aria-label=\"Raw mermaid code\">graph TD\n  A --&gt; B\n</pre>"));
+        assert!(
+            b.html
+                .contains(r#"data-json="{&quot;data&quot;:&quot;graph TD\n  A --&gt; B\n&quot;}""#)
+        );
+        assert!(
+            b.html
+                .contains("data-plain=\"graph TD\n  A --&gt; B\n\" dir=\"auto\"")
+        );
+        assert!(b.html.contains(
+            "<pre lang=\"mermaid\" aria-label=\"Raw mermaid code\">graph TD\n  A --&gt; B\n</pre>"
+        ));
         let other = block_html(&ctx(false), "mermaid", "graph TD\n  A --> B\n", "", 1);
         assert_ne!(b.html, other.html, "distinct data-identity per occurrence");
     }

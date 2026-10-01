@@ -19,23 +19,128 @@ const HTML_NS: &str = "http://www.w3.org/1999/xhtml";
 
 /// Elements kept from raw HTML (GH §8.11, `S/probes/tags.gfm.html`).
 const KEPT: &[&str] = &[
-    "a", "b", "blockquote", "br", "code", "dd", "del", "details", "div", "dl", "dt", "em", "h1",
-    "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p",
-    "picture", "pre", "q", "rp", "rt", "ruby", "s", "samp", "section", "source", "span",
-    "strike", "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
-    "tr", "tt", "ul", "var", "video",
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "dd",
+    "del",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "picture",
+    "pre",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "section",
+    "source",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "tt",
+    "ul",
+    "var",
+    "video",
 ];
 
 /// Attributes allowed on every kept element (GH §8.11, `S/probes/attrs.gfm.html`).
 const GENERIC: &[&str] = &[
-    "abbr", "accept", "accept-charset", "accesskey", "action", "align", "alt", "axis",
-    "cellpadding", "cellspacing", "char", "charoff", "charset", "checked", "clear", "color",
-    "cols", "colspan", "compact", "coords", "datetime", "dir", "disabled", "enctype", "for",
-    "frame", "headers", "height", "hreflang", "hspace", "id", "ismap", "itemprop", "label",
-    "lang", "maxlength", "media", "method", "multiple", "name", "nohref", "noshade", "nowrap",
-    "open", "prompt", "readonly", "rev", "rows", "rowspan", "rules", "scope", "selected",
-    "shape", "size", "span", "start", "summary", "tabindex", "title", "type", "usemap",
-    "valign", "value", "width",
+    "abbr",
+    "accept",
+    "accept-charset",
+    "accesskey",
+    "action",
+    "align",
+    "alt",
+    "axis",
+    "cellpadding",
+    "cellspacing",
+    "char",
+    "charoff",
+    "charset",
+    "checked",
+    "clear",
+    "color",
+    "cols",
+    "colspan",
+    "compact",
+    "coords",
+    "datetime",
+    "dir",
+    "disabled",
+    "enctype",
+    "for",
+    "frame",
+    "headers",
+    "height",
+    "hreflang",
+    "hspace",
+    "id",
+    "ismap",
+    "itemprop",
+    "label",
+    "lang",
+    "maxlength",
+    "media",
+    "method",
+    "multiple",
+    "name",
+    "nohref",
+    "noshade",
+    "nowrap",
+    "open",
+    "prompt",
+    "readonly",
+    "rev",
+    "rows",
+    "rowspan",
+    "rules",
+    "scope",
+    "selected",
+    "shape",
+    "size",
+    "span",
+    "start",
+    "summary",
+    "tabindex",
+    "title",
+    "type",
+    "usemap",
+    "valign",
+    "value",
+    "width",
 ];
 
 const ARIA: &[&str] = &["aria-describedby", "aria-label", "aria-labelledby"];
@@ -61,11 +166,11 @@ const SRC_SCHEMES: &[&str] = &["http", "https"];
 /// The URL scheme of `url` (lowercase), `None` for relative URLs. Tabs and newlines inside
 /// the scheme are ignored, as browsers do.
 pub(super) fn url_scheme(url: &str) -> Option<String> {
-    let cleaned: String =
-        url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control())
-            .chars()
-            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-            .collect();
+    let cleaned: String = url
+        .trim_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control())
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
     let end = cleaned.find([':', '/', '?', '#'])?;
     if cleaned.as_bytes()[end] != b':' {
         return None;
@@ -80,7 +185,11 @@ pub(super) fn url_allowed(url: &str, schemes: &[&str]) -> bool {
 
 fn prefixed(value: &str) -> String {
     let lower = value.to_lowercase();
-    if lower.starts_with("user-content-") { lower } else { format!("user-content-{lower}") }
+    if lower.starts_with("user-content-") {
+        lower
+    } else {
+        format!("user-content-{lower}")
+    }
 }
 
 /// Runs the sanitizer over the whole fragment. Returns the raw HTML elements that were kept
@@ -226,9 +335,15 @@ mod tests {
 
     #[test]
     fn unknown_elements_are_unwrapped() {
-        assert_eq!(clean("<p>T3 <abbr>inner</abbr> end</p>"), "<p>T3 inner end</p>");
+        assert_eq!(
+            clean("<p>T3 <abbr>inner</abbr> end</p>"),
+            "<p>T3 inner end</p>"
+        );
         assert_eq!(clean("<form><button>Go</button></form>"), "Go");
-        assert_eq!(clean("<p><svg><path d=\"x\"></path>inner</svg> end</p>"), "<p>inner end</p>");
+        assert_eq!(
+            clean("<p><svg><path d=\"x\"></path>inner</svg> end</p>"),
+            "<p>inner end</p>"
+        );
         assert_eq!(clean("<template>t<b>u</b></template>"), "t<b>u</b>");
         assert_eq!(clean("<input type=\"checkbox\" checked> plain"), " plain");
         assert_eq!(clean("<p>a<!-- c -->b</p>"), "<p>ab</p>");
@@ -237,27 +352,55 @@ mod tests {
     #[test]
     fn attributes_follow_the_allowlist() {
         assert_eq!(
-            clean(r#"<div id="Main" name="n1" border="1" role="note" class="x" data-x="1" itemscope itemtype="http://schema.org/Thing" hidden>d</div>"#),
+            clean(
+                r#"<div id="Main" name="n1" border="1" role="note" class="x" data-x="1" itemscope itemtype="http://schema.org/Thing" hidden>d</div>"#
+            ),
             r#"<div id="user-content-main" name="user-content-n1" itemscope="" itemtype="http://schema.org/Thing">d</div>"#
         );
         assert_eq!(
-            clean(r#"<a href="https://e.com" target="_blank" rel="x" aria-label="l" aria-hidden="true" onclick="y">a</a>"#),
+            clean(
+                r#"<a href="https://e.com" target="_blank" rel="x" aria-label="l" aria-hidden="true" onclick="y">a</a>"#
+            ),
             r#"<a href="https://e.com" aria-label="l">a</a>"#
         );
-        assert_eq!(clean(r#"<span aria-label="l" style="c">x</span>"#), "<span>x</span>");
-        assert_eq!(clean(r#"<blockquote cite="https://c">q</blockquote>"#), r#"<blockquote cite="https://c">q</blockquote>"#);
-        assert_eq!(clean(r#"<h3 id="user-content-x">h</h3>"#), r#"<h3 id="user-content-x">h</h3>"#);
+        assert_eq!(
+            clean(r#"<span aria-label="l" style="c">x</span>"#),
+            "<span>x</span>"
+        );
+        assert_eq!(
+            clean(r#"<blockquote cite="https://c">q</blockquote>"#),
+            r#"<blockquote cite="https://c">q</blockquote>"#
+        );
+        assert_eq!(
+            clean(r#"<h3 id="user-content-x">h</h3>"#),
+            r#"<h3 id="user-content-x">h</h3>"#
+        );
     }
 
     #[test]
     fn dangerous_urls_are_dropped() {
-        assert_eq!(clean(r#"<a href="javascript:alert(1)">js</a>"#), "<a>js</a>");
-        assert_eq!(clean(r#"<a href="java&#9;script:alert(1)">js</a>"#), "<a>js</a>");
+        assert_eq!(
+            clean(r#"<a href="javascript:alert(1)">js</a>"#),
+            "<a>js</a>"
+        );
+        assert_eq!(
+            clean(r#"<a href="java&#9;script:alert(1)">js</a>"#),
+            "<a>js</a>"
+        );
         assert_eq!(clean(r#"<a href=" JAVASCRIPT:x">js</a>"#), "<a>js</a>");
-        assert_eq!(clean(r#"<a href="mailto:a@b.c">m</a>"#), r#"<a href="mailto:a@b.c">m</a>"#);
+        assert_eq!(
+            clean(r#"<a href="mailto:a@b.c">m</a>"#),
+            r#"<a href="mailto:a@b.c">m</a>"#
+        );
         assert_eq!(clean(r#"<img src="data:image/png;base64,x">"#), "<img>");
-        assert_eq!(clean(r#"<img src="/abs.png" onerror="x">"#), r#"<img src="/abs.png">"#);
-        assert_eq!(clean(r#"<video src="javascript:x" controls autoplay></video>"#), r#"<video controls=""></video>"#);
+        assert_eq!(
+            clean(r#"<img src="/abs.png" onerror="x">"#),
+            r#"<img src="/abs.png">"#
+        );
+        assert_eq!(
+            clean(r#"<video src="javascript:x" controls autoplay></video>"#),
+            r#"<video controls=""></video>"#
+        );
     }
 
     #[test]

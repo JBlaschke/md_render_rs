@@ -68,7 +68,10 @@ pub(super) fn db() -> &'static EmojiDb {
 pub(super) enum Seg {
     Text(String),
     /// `<g-emoji class="g-emoji" alias="ALIAS">CHARS</g-emoji>`
-    GEmoji { alias: String, chars: String },
+    GEmoji {
+        alias: String,
+        chars: String,
+    },
     /// `<img class="emoji" ...>` for a GitHub custom emoji.
     Custom(String),
 }
@@ -111,7 +114,11 @@ pub(super) fn convert(s: &str) -> Option<Vec<Seg>> {
     let mut segs: Vec<Seg> = Vec::new();
     let mut changed = false;
 
-    let matches = if s.contains(':') { shortcode_matches(s) } else { Vec::new() };
+    let matches = if s.contains(':') {
+        shortcode_matches(s)
+    } else {
+        Vec::new()
+    };
     let first_ok = matches.first().is_some_and(|&(start, _)| {
         start == 0 || s[..start].chars().next_back().is_some_and(is_ruby_space)
     });
@@ -123,7 +130,10 @@ pub(super) fn convert(s: &str) -> Option<Vec<Seg>> {
                 Seg::Custom(name.to_owned())
             } else if let Some(e) = db.emoji.get(name) {
                 if db.wrapped.contains(name) {
-                    Seg::GEmoji { alias: name.to_owned(), chars: e.clone() }
+                    Seg::GEmoji {
+                        alias: name.to_owned(),
+                        chars: e.clone(),
+                    }
                 } else {
                     Seg::Text(e.clone())
                 }
@@ -186,11 +196,16 @@ fn wrap_unicode(t: &str, out: &mut Vec<Seg>, db: &EmojiDb) -> bool {
     let mut i = 0;
     while i < t.len() {
         let rest = &t[i..];
-        if let Some((chars, alias)) =
-            db.wrapped_chars.iter().find(|(c, _)| rest.starts_with(c.as_str()))
+        if let Some((chars, alias)) = db
+            .wrapped_chars
+            .iter()
+            .find(|(c, _)| rest.starts_with(c.as_str()))
         {
             push_text(out, &t[last..i]);
-            out.push(Seg::GEmoji { alias: alias.clone(), chars: chars.clone() });
+            out.push(Seg::GEmoji {
+                alias: alias.clone(),
+                chars: chars.clone(),
+            });
             i += chars.len();
             last = i;
             found = true;

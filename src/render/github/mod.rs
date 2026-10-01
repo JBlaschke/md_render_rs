@@ -61,7 +61,9 @@ impl Ctx {
         // stable across live reloads, so they derive from the file path when there is one
         // (GH §8.4 "emulate with a deterministic value"); stdin input uses its content.
         let run_id = match &opts.source_path {
-            Some(p) => util::hex(&util::digest(&["md-render/github/run-id", &p.to_string_lossy()])[..16]),
+            Some(p) => {
+                util::hex(&util::digest(&["md-render/github/run-id", &p.to_string_lossy()])[..16])
+            }
             None => util::hex(&util::digest(&["md-render/github/run-id", src])[..16]),
         };
         let token = util::hex(&util::digest(&["md-render/github/marker", src])[..8]);
@@ -78,7 +80,11 @@ impl Ctx {
 
     /// The same settings for markup inserted after sanitizing (no markers).
     fn without_marks(&self) -> Ctx {
-        Ctx { mark: String::new(), mark_tree: String::new(), ..self.clone() }
+        Ctx {
+            mark: String::new(),
+            mark_tree: String::new(),
+            ..self.clone()
+        }
     }
 
     #[cfg(test)]
@@ -142,7 +148,10 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let info = ast::transform(&arena, root, &ctx);
     let state = formatter::FmtState::new(&ctx, info.alert_inline);
     let (html, state) = formatter::format(root, &options, state);
-    let mut features = Features { math: info.math || state.math, mermaid: state.mermaid };
+    let mut features = Features {
+        math: info.math || state.math,
+        mermaid: state.mermaid,
+    };
 
     // 4.–5. DOM stage.
     let doc = Document::fragment(html);
@@ -188,7 +197,12 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let inner = dom::root(&doc).inner_html();
     out.push_str(&inner.replace(octicons::LINK_PLACEHOLDER_HTML, &octicons::link_svg()));
 
-    Rendered { html: out, title, features, warnings }
+    Rendered {
+        html: out,
+        title,
+        features,
+        warnings,
+    }
 }
 
 /// Top-level blocks keep (or, for raw HTML blocks, receive) `data-sourcepos`; nested elements

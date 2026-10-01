@@ -95,7 +95,8 @@ pub(super) fn format<'a>(
 }
 
 fn is_top_level(node: &AstNode<'_>) -> bool {
-    node.parent().is_some_and(|p| matches!(p.data().value, NodeValue::Document))
+    node.parent()
+        .is_some_and(|p| matches!(p.data().value, NodeValue::Document))
 }
 
 /// ` data-sourcepos="…"` for top-level blocks when enabled (DESIGN §5).
@@ -110,10 +111,12 @@ pub(super) fn sourcepos_attr(state: &FmtState, node: &AstNode<'_>) -> String {
 }
 
 fn tight_paragraph(node: &AstNode<'_>) -> bool {
-    node.parent().and_then(|p| p.parent()).is_some_and(|gp| match gp.data().value {
-        NodeValue::List(ref l) => l.tight,
-        _ => false,
-    })
+    node.parent()
+        .and_then(|p| p.parent())
+        .is_some_and(|gp| match gp.data().value {
+            NodeValue::List(ref l) => l.tight,
+            _ => false,
+        })
 }
 
 const CHECKBOX_OPEN: &str = r#"type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> "#;
@@ -156,7 +159,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 context.cr()?;
                 let sp = sourcepos_attr(&context.user, node);
-                write!(context, "<blockquote{mark}{sp}>\n")?;
+                writeln!(context, "<blockquote{mark}{sp}>")?;
             } else {
                 context.cr()?;
                 context.write_str("</blockquote>\n")?;
@@ -184,14 +187,18 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 context.cr()?;
                 let sp = sourcepos_attr(&context.user, node);
-                let class = if l.is_task_list { r#" class="contains-task-list""# } else { "" };
+                let class = if l.is_task_list {
+                    r#" class="contains-task-list""#
+                } else {
+                    ""
+                };
                 match l.list_type {
-                    ListType::Bullet => write!(context, "<ul{mark}{class}{sp}>\n")?,
+                    ListType::Bullet => writeln!(context, "<ul{mark}{class}{sp}>")?,
                     ListType::Ordered => {
                         if l.start == 1 {
-                            write!(context, "<ol{mark}{class}{sp}>\n")?;
+                            writeln!(context, "<ol{mark}{class}{sp}>")?;
                         } else {
-                            write!(context, "<ol{mark}{class} start=\"{}\"{sp}>\n", l.start)?;
+                            writeln!(context, "<ol{mark}{class} start=\"{}\"{sp}>", l.start)?;
                         }
                     }
                 }
@@ -213,7 +220,11 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 context.cr()?;
                 write!(context, "<li{mark} class=\"task-list-item\">")?;
-                let body = if t.symbol.is_some() { CHECKBOX_DONE } else { CHECKBOX_OPEN };
+                let body = if t.symbol.is_some() {
+                    CHECKBOX_DONE
+                } else {
+                    CHECKBOX_OPEN
+                };
                 let tight = node.parent().is_some_and(|p| match p.data().value {
                     NodeValue::List(ref l) => l.tight,
                     _ => false,
@@ -261,14 +272,14 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 let sp = sourcepos_attr(&context.user, node);
                 write!(context, "<h{}{mark}{sp}>", h.level)?;
             } else {
-                write!(context, "</h{}>\n", h.level)?;
+                writeln!(context, "</h{}>", h.level)?;
             }
         }
         NodeValue::ThematicBreak => {
             if entering {
                 context.cr()?;
                 let sp = sourcepos_attr(&context.user, node);
-                write!(context, "<hr{mark}{sp}>\n")?;
+                writeln!(context, "<hr{mark}{sp}>")?;
             }
         }
         NodeValue::CodeBlock(cb) => {
@@ -314,7 +325,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 if context.user.comment {
                     // GH §9.B: every newline in a comment is a hard break.
-                    write!(context, "<br{mark}>\n")?;
+                    writeln!(context, "<br{mark}>")?;
                 } else {
                     context.write_str("\n")?;
                 }
@@ -322,7 +333,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
         }
         NodeValue::LineBreak => {
             if entering {
-                write!(context, "<br{mark}>\n")?;
+                writeln!(context, "<br{mark}>")?;
             }
         }
         NodeValue::Code(c) => {
@@ -367,7 +378,11 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 let label = footnote_label(&r.name);
                 let rid = context.user.run_id.clone();
-                let sfx = if r.ref_num > 1 { format!("-{}", r.ref_num) } else { String::new() };
+                let sfx = if r.ref_num > 1 {
+                    format!("-{}", r.ref_num)
+                } else {
+                    String::new()
+                };
                 write!(
                     context,
                     r##"<sup{mark}><a{mark} href="#user-content-fn-{label}-{rid}" id="user-content-fnref-{label}{sfx}-{rid}" data-footnote-ref="" aria-describedby="footnote-label">{}</a></sup>"##,
@@ -388,7 +403,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 context.user.footnote_ix += 1;
                 let label = footnote_label(&d.name);
                 let rid = context.user.run_id.clone();
-                write!(context, "<li{mark} id=\"user-content-fn-{label}-{rid}\">\n")?;
+                writeln!(context, "<li{mark} id=\"user-content-fn-{label}-{rid}\">")?;
             } else {
                 // A definition not ending in a paragraph gets its backrefs on their own
                 // line (cmark-gfm; `S/ctx/joseph_*` `[^rich]`).
@@ -416,7 +431,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 context.cr()?;
                 let sp = sourcepos_attr(&context.user, node);
-                write!(context, "<table{mark}{sp}>\n")?;
+                writeln!(context, "<table{mark}{sp}>")?;
             } else {
                 let has_body = match (node.first_child(), node.last_child()) {
                     (Some(f), Some(l)) => !f.same_node(l),
@@ -434,12 +449,12 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             if entering {
                 context.cr()?;
                 if header {
-                    write!(context, "<thead{mark}>\n")?;
+                    writeln!(context, "<thead{mark}>")?;
                 } else if node
                     .previous_sibling()
                     .is_some_and(|p| matches!(p.data().value, NodeValue::TableRow(true)))
                 {
-                    write!(context, "<tbody{mark}>\n")?;
+                    writeln!(context, "<tbody{mark}>")?;
                 }
                 write!(context, "<tr{mark}>")?;
             } else {
@@ -475,7 +490,11 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
 }
 
 fn tag(context: &mut Ctxt<'_, '_>, name: &str, mark: &str, entering: bool) -> fmt::Result {
-    if entering { write!(context, "<{name}{mark}>") } else { write!(context, "</{name}>") }
+    if entering {
+        write!(context, "<{name}{mark}>")
+    } else {
+        write!(context, "</{name}>")
+    }
 }
 
 fn cell_alignment(cell: &AstNode<'_>) -> &'static str {
@@ -539,5 +558,8 @@ fn footnotes_sourcepos(state: &FmtState, first: &AstNode<'_>) -> String {
         }
         cur = n.next_sibling();
     }
-    format!(" data-sourcepos=\"{}:{}-{}:{}\"", start.line, start.column, end.line, end.column)
+    format!(
+        " data-sourcepos=\"{}:{}-{}:{}\"",
+        start.line, start.column, end.line, end.column
+    )
 }

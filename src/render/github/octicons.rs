@@ -60,7 +60,9 @@ mod tests {
     #[test]
     fn icons_are_well_formed() {
         let s = link_svg();
-        assert!(s.starts_with(r#"<svg data-component="Octicon" class="octicon octicon-link" viewBox"#));
+        assert!(
+            s.starts_with(r#"<svg data-component="Octicon" class="octicon octicon-link" viewBox"#)
+        );
         assert!(s.ends_with("</path></svg>"));
         for n in ["info", "light-bulb", "report", "alert", "stop"] {
             let s = alert_svg(n, "");

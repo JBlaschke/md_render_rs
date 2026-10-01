@@ -42,21 +42,26 @@ pub(super) enum Extracted {
 /// blanks allowed on the delimiter lines, like Jekyll).
 pub(super) fn extract(src: &str) -> Extracted {
     let mut lines = src.split_inclusive('\n');
-    let Some(first) = lines.next() else { return Extracted::None };
+    let Some(first) = lines.next() else {
+        return Extracted::None;
+    };
     if !first.ends_with('\n') || first.trim_end_matches(['\n', ' ', '\t']) != "---" {
         return Extracted::None;
     }
     let body_start = first.len();
     let mut offset = body_start;
-    let mut count = 1;
-    for line in lines {
-        count += 1;
+    for (index, line) in lines.enumerate() {
+        let count = index + 2; // 1-based line number of `line`
         let bare = line.trim_end_matches(['\n', ' ', '\t']);
         if bare == "---" || bare == "..." {
             let yaml = &src[body_start..offset];
             let last_line_len = line.trim_end_matches('\n').len();
             return match parse_yaml(yaml) {
-                Ok(None) => Extracted::Table(FrontMatter { lines: count, last_line_len, table: None }),
+                Ok(None) => Extracted::Table(FrontMatter {
+                    lines: count,
+                    last_line_len,
+                    table: None,
+                }),
                 Ok(Some(v @ (Value::Map(_) | Value::Seq(_)))) => Extracted::Table(FrontMatter {
                     lines: count,
                     last_line_len,
@@ -111,7 +116,11 @@ impl Builder {
             }
         }
         self.nodes += size(v);
-        if self.nodes > MAX_NODES { Err("front matter too large".to_owned()) } else { Ok(()) }
+        if self.nodes > MAX_NODES {
+            Err("front matter too large".to_owned())
+        } else {
+            Ok(())
+        }
     }
 
     fn value(&mut self, v: Value, anchor: usize) {
@@ -148,8 +157,10 @@ fn key_text(v: &Value) -> String {
             format!("[{}]", parts.join(", "))
         }
         Value::Map(items) => {
-            let parts: Vec<String> =
-                items.iter().map(|(k, v)| format!("{k} => {}", key_text(v))).collect();
+            let parts: Vec<String> = items
+                .iter()
+                .map(|(k, v)| format!("{k} => {}", key_text(v)))
+                .collect();
             format!("{{{}}}", parts.join(", "))
         }
     }
@@ -158,14 +169,23 @@ fn key_text(v: &Value) -> String {
 /// Parses the first YAML document; `Ok(None)` for an empty document.
 fn parse_yaml(src: &str) -> Result<Option<Value>, String> {
     let mut parser = Parser::new_from_str(src);
-    let mut b = Builder { stack: Vec::new(), anchors: HashMap::new(), root: None, nodes: 0 };
+    let mut b = Builder {
+        stack: Vec::new(),
+        anchors: HashMap::new(),
+        root: None,
+        nodes: 0,
+    };
     loop {
         let (ev, _) = parser.next_token().map_err(|e| e.to_string())?;
         match ev {
             Event::StreamEnd | Event::DocumentEnd => break,
             Event::Nothing | Event::StreamStart | Event::DocumentStart => {}
             Event::Alias(id) => {
-                let v = b.anchors.get(&id).cloned().unwrap_or(Value::Scalar(String::new()));
+                let v = b
+                    .anchors
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or(Value::Scalar(String::new()));
                 b.count(&v)?;
                 b.value(v, 0);
             }
@@ -278,7 +298,10 @@ fn resolve_plain(s: &str) -> String {
     if int.is_match(s) {
         return ruby_integer(s).unwrap_or_else(|| s.to_owned());
     }
-    let float = re(&FLOAT, r"^[-+]?(?:[0-9][0-9_,]*)?\.[0-9]*(?:[eE][-+]?[0-9]+)?$");
+    let float = re(
+        &FLOAT,
+        r"^[-+]?(?:[0-9][0-9_,]*)?\.[0-9]*(?:[eE][-+]?[0-9]+)?$",
+    );
     if float.is_match(s) && s.bytes().any(|b| b.is_ascii_digit()) {
         let clean: String = s.chars().filter(|&c| c != '_' && c != ',').collect();
         if let Ok(f) = clean.parse::<f64>() {
@@ -309,7 +332,10 @@ fn ruby_offset(z: &str) -> String {
         let mut it = rest.splitn(2, ':');
         (num(it.next().unwrap_or("0")), num(it.next().unwrap_or("0")))
     } else if digits.len() > 2 {
-        (num(&digits[..digits.len() - 2]), num(&digits[digits.len() - 2..]))
+        (
+            num(&digits[..digits.len() - 2]),
+            num(&digits[digits.len() - 2..]),
+        )
     } else {
         (num(&digits), 0)
     };
@@ -342,10 +368,18 @@ fn ruby_float(f: f64) -> String {
         return "NaN".to_owned();
     }
     if f.is_infinite() {
-        return if f > 0.0 { "Infinity".to_owned() } else { "-Infinity".to_owned() };
+        return if f > 0.0 {
+            "Infinity".to_owned()
+        } else {
+            "-Infinity".to_owned()
+        };
     }
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".to_owned() } else { "0.0".to_owned() };
+        return if f.is_sign_negative() {
+            "-0.0".to_owned()
+        } else {
+            "0.0".to_owned()
+        };
     }
     let sci = format!("{f:e}"); // e.g. "-1.5e-7", "1e20"
     let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
@@ -360,13 +394,21 @@ fn ruby_float(f: f64) -> String {
         } else if (point as usize) >= digits.len() {
             format!("{}{}.0", digits, "0".repeat(point as usize - digits.len()))
         } else {
-            format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+            format!(
+                "{}.{}",
+                &digits[..point as usize],
+                &digits[point as usize..]
+            )
         };
         format!("{sign}{s}")
     } else {
         let frac = if digits.len() > 1 { &digits[1..] } else { "0" };
         let esign = if exp < 0 { '-' } else { '+' };
-        format!("{sign}{}.{frac}e{esign}{:02}", &digits[..1], exp.unsigned_abs())
+        format!(
+            "{sign}{}.{frac}e{esign}{:02}",
+            &digits[..1],
+            exp.unsigned_abs()
+        )
     }
 }
 
@@ -459,7 +501,10 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(extract("---\na: [\n---\n"), Extracted::Invalid(_)));
-        assert!(matches!(extract("---\njust text\n---\n"), Extracted::Invalid(_)));
+        assert!(matches!(
+            extract("---\njust text\n---\n"),
+            Extracted::Invalid(_)
+        ));
         assert!(matches!(extract("---\na: 1\n...\n"), Extracted::Table(_)));
     }
 
@@ -470,7 +515,10 @@ mod tests {
             t,
             "<table>\n  <tbody>\n  <tr>\n    <th>title</th>\n    <td>Usage</td>\n  </tr>\n  <tr>\n    <th>tags</th>\n    <td><table>\n  <tbody>\n  <tr>\n  <td><div dir=\"auto\">Kubeconform</div></td>\n  <td><div dir=\"auto\">Usage</div></td>\n  </tr>\n  </tbody>\n</table>\n</td>\n  </tr>\n  <tr>\n    <th>v</th>\n    <td><table>\n  <thead>\n  <tr>\n  <th>fpt</th>\n  </tr>\n  </thead>\n  <tbody>\n  <tr>\n  <td><div dir=\"auto\">*</div></td>\n  </tr>\n  </tbody>\n</table>\n</td>\n  </tr>\n  </tbody>\n</table>"
         );
-        assert!(table("---\ne: []\n---\n").contains("<td><table>\n  <tbody>\n  </tbody>\n</table>\n</td>"));
+        assert!(
+            table("---\ne: []\n---\n")
+                .contains("<td><table>\n  <tbody>\n  </tbody>\n</table>\n</td>")
+        );
         assert!(table("---\nd: >\n  folded\n  text\n---\n").contains("<td>folded text\n</td>"));
         assert!(table("---\nh: a<b>&c\n---\n").contains("<td>a&lt;b&gt;&amp;c</td>"));
     }
@@ -506,7 +554,10 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(resolve_plain(input), want, "input {input:?}");
         }
-        assert_eq!(resolve_scalar("yes", TScalarStyle::SingleQuoted, None), "yes");
+        assert_eq!(
+            resolve_scalar("yes", TScalarStyle::SingleQuoted, None),
+            "yes"
+        );
         assert_eq!(resolve_scalar("42", TScalarStyle::Plain, Some("str")), "42");
     }
 

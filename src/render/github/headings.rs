@@ -19,7 +19,8 @@ fn is_heading(n: &NodeRef<'_>) -> bool {
 
 /// The footnotes' `h2#footnote-label` is not a document heading.
 fn is_footnote_label(n: &NodeRef<'_>) -> bool {
-    n.parent().is_some_and(|p| p.has_name("section") && p.has_attr("data-footnotes"))
+    n.parent()
+        .is_some_and(|p| p.has_name("section") && p.has_attr("data-footnotes"))
 }
 
 /// Text for `aria-label`: the slug source text without footnote reference numbers (GH §6.3).
@@ -62,7 +63,11 @@ pub(super) fn run(doc: &Document, ctx: &Ctx) {
             h.remove_attr("data-sourcepos");
         }
         let anchor = doc.tree.new_element("a");
-        let id = if slug.is_empty() { String::new() } else { format!("user-content-{slug}") };
+        let id = if slug.is_empty() {
+            String::new()
+        } else {
+            format!("user-content-{slug}")
+        };
         anchor.set_attr("id", &id);
         anchor.set_attr("class", "anchor");
         anchor.set_attr("aria-label", &format!("Permalink: {label}"));
@@ -99,15 +104,21 @@ mod tests {
         let out = run_on("<h1>???</h1><h1>!!!</h1>", false);
         assert!(out.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##));
         assert!(out.contains(r##"id="user-content--1""##) && out.contains(r##"href="#-1""##));
-        let out = run_on(r#"<h2 id="user-content-raw" data-sourcepos="3:1-3:9">Raw <img alt="x"> heading</h2>"#, false);
+        let out = run_on(
+            r#"<h2 id="user-content-raw" data-sourcepos="3:1-3:9">Raw <img alt="x"> heading</h2>"#,
+            false,
+        );
         assert!(out.starts_with(r#"<div class="markdown-heading" data-sourcepos="3:1-3:9"><h2 id="user-content-raw" class="heading-element">"#));
         assert!(out.contains(r##"href="#raw--heading""##));
         let out = run_on(
             r##"<h2>Note<sup><a data-footnote-ref="" href="#x">1</a></sup></h2>"##,
             false,
         );
-        assert!(out.contains(r#"aria-label="Permalink: Note""#) && out.contains(r##"href="#note1""##));
-        let footnotes = r#"<section data-footnotes=""><h2 id="footnote-label">Footnotes</h2></section>"#;
+        assert!(
+            out.contains(r#"aria-label="Permalink: Note""#) && out.contains(r##"href="#note1""##)
+        );
+        let footnotes =
+            r#"<section data-footnotes=""><h2 id="footnote-label">Footnotes</h2></section>"#;
         assert_eq!(run_on(footnotes, false), footnotes);
         assert_eq!(run_on("<h3>Comment</h3>", true), "<h3>Comment</h3>");
     }

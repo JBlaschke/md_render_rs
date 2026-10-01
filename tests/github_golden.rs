@@ -42,7 +42,11 @@ fn strict_highlight() -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 enum C {
-    E { name: String, attrs: BTreeMap<String, String>, kids: Vec<C> },
+    E {
+        name: String,
+        attrs: BTreeMap<String, String>,
+        kids: Vec<C>,
+    },
     T(String),
 }
 
@@ -58,10 +62,42 @@ struct Norm {
 }
 
 const BLOCKS: &[&str] = &[
-    "article", "blockquote", "dd", "details", "div", "dl", "dt", "h1", "h2", "h3", "h4", "h5",
-    "h6", "hr", "li", "markdown-accessiblity-table", "mdr-attachment", "mdr-code", "ol", "p", "pre", "section",
-    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul", "themed-picture",
-    "picture", "source", "video", "math-renderer",
+    "article",
+    "blockquote",
+    "dd",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "li",
+    "markdown-accessiblity-table",
+    "mdr-attachment",
+    "mdr-code",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "ul",
+    "themed-picture",
+    "picture",
+    "source",
+    "video",
+    "math-renderer",
 ];
 
 fn re(cell: &'static OnceLock<Regex>, p: &str) -> &'static Regex {
@@ -87,23 +123,39 @@ fn user_attachment(v: &str) -> Option<String> {
     static RE_PUI: OnceLock<Regex> = OnceLock::new();
     static RE_ASSETS: OnceLock<Regex> = OnceLock::new();
     let uuid = r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
-    if let Some(c) = re(&RE_ASSETS, &format!(r"^https://github\.com/[^/]+/[^/]+/assets/\d+/{uuid}$")).captures(v) {
-        return Some(format!("https://github.com/user-attachments/assets/{}", &c[1]));
+    if let Some(c) = re(
+        &RE_ASSETS,
+        &format!(r"^https://github\.com/[^/]+/[^/]+/assets/\d+/{uuid}$"),
+    )
+    .captures(v)
+    {
+        return Some(format!(
+            "https://github.com/user-attachments/assets/{}",
+            &c[1]
+        ));
     }
     let c = re(&RE_PUI, r"^https://private-user-images\.githubusercontent\.com/\d+/\d+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[A-Za-z0-9]+\?jwt=").captures(v)?;
-    Some(format!("https://github.com/user-attachments/assets/{}", &c[1]))
+    Some(format!(
+        "https://github.com/user-attachments/assets/{}",
+        &c[1]
+    ))
 }
 
 fn norm_value(name: &str, v: &str) -> String {
     static RID: OnceLock<Regex> = OnceLock::new();
     static EMOJI: OnceLock<Regex> = OnceLock::new();
-    let mut v = decode_camo(v).or_else(|| user_attachment(v)).unwrap_or_else(|| v.to_owned());
+    let mut v = decode_camo(v)
+        .or_else(|| user_attachment(v))
+        .unwrap_or_else(|| v.to_owned());
     // GitHub lowercases footnote *reference* ids (a bug we do not copy, GH §8.4).
     if name == "id" && v.starts_with("user-content-fnref-") {
         v = v.to_lowercase();
     }
     if name == "src" {
-        let e = re(&EMOJI, r"^(?:https://github\.githubassets\.com/images/icons/emoji/|/__/md-render/bundle/github/emoji/)([a-z0-9_+-]+)\.png$");
+        let e = re(
+            &EMOJI,
+            r"^(?:https://github\.githubassets\.com/images/icons/emoji/|/__/md-render/bundle/github/emoji/)([a-z0-9_+-]+)\.png$",
+        );
         if let Some(c) = e.captures(&v) {
             v = format!("emoji:{}", &c[1]);
         }
@@ -145,11 +197,16 @@ fn attrs_of(n: &NodeRef<'_>, norm: Norm) -> BTreeMap<String, String> {
 fn code_text(n: &NodeRef<'_>, highlighted: bool) -> String {
     let t = n.text().to_string();
     let t = t.strip_prefix('\n').unwrap_or(&t);
-    if highlighted { t.to_owned() } else { t.strip_suffix('\n').unwrap_or(t).to_owned() }
+    if highlighted {
+        t.to_owned()
+    } else {
+        t.strip_suffix('\n').unwrap_or(t).to_owned()
+    }
 }
 
 fn attachment_uuid(href: &str) -> Option<String> {
-    href.strip_prefix("https://github.com/user-attachments/assets/").map(str::to_owned)
+    href.strip_prefix("https://github.com/user-attachments/assets/")
+        .map(str::to_owned)
 }
 
 fn canon_children(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
@@ -202,7 +259,9 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
     }) {
         return vec![C::T(t)];
     }
-    let Some(name) = local(n) else { return Vec::new() };
+    let Some(name) = local(n) else {
+        return Vec::new();
+    };
     let class = n.attr("class").map(|c| c.to_string()).unwrap_or_default();
     let has = |c: &str| class.split_ascii_whitespace().any(|x| x == c);
     match name.as_str() {
@@ -215,7 +274,11 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
         "section" if norm.probe && !norm.strict_code && has("js-render-needs-enrichment") => {
             let pre = n.descendants().into_iter().find(|d| d.has_name("pre"));
             let text = pre.map(|p| code_text(&p, false)).unwrap_or_default();
-            return vec![C::E { name: "mdr-code".into(), attrs: BTreeMap::new(), kids: vec![C::T(text)] }];
+            return vec![C::E {
+                name: "mdr-code".into(),
+                attrs: BTreeMap::new(),
+                kids: vec![C::T(text)],
+            }];
         }
         "svg" if norm.probe => {
             let texts = n.children().into_iter().filter_map(|c| {
@@ -225,7 +288,11 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
                 })
                 .flatten()
             });
-            let mut out = vec![C::E { name, attrs: BTreeMap::new(), kids: Vec::new() }];
+            let mut out = vec![C::E {
+                name,
+                attrs: BTreeMap::new(),
+                kids: Vec::new(),
+            }];
             out.extend(texts);
             return out;
         }
@@ -240,17 +307,29 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
             if let Some(url) = user_attachment(&src) {
                 let mut attrs = BTreeMap::new();
                 attrs.insert("uuid".to_owned(), attachment_uuid(&url).unwrap_or_default());
-                return vec![C::E { name: "mdr-attachment".into(), attrs, kids: Vec::new() }];
+                return vec![C::E {
+                    name: "mdr-attachment".into(),
+                    attrs,
+                    kids: Vec::new(),
+                }];
             }
         }
         "p" => {
             let els = n.element_children();
             if els.len() == 1 && els[0].has_name("a") && n.text().trim() == els[0].text().trim() {
-                let href = els[0].attr("href").map(|s| s.to_string()).unwrap_or_default();
-                if let Some(uuid) = attachment_uuid(&href).filter(|_| els[0].text().trim() == href) {
+                let href = els[0]
+                    .attr("href")
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                if let Some(uuid) = attachment_uuid(&href).filter(|_| els[0].text().trim() == href)
+                {
                     let mut attrs = BTreeMap::new();
                     attrs.insert("uuid".to_owned(), uuid);
-                    return vec![C::E { name: "mdr-attachment".into(), attrs, kids: Vec::new() }];
+                    return vec![C::E {
+                        name: "mdr-attachment".into(),
+                        attrs,
+                        kids: Vec::new(),
+                    }];
                 }
             }
         }
@@ -258,7 +337,10 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
         "a" if norm.refs_as_text && !has("issue-link") => {
             static ISSUE: OnceLock<Regex> = OnceLock::new();
             let href = n.attr("href").map(|h| h.to_string()).unwrap_or_default();
-            let r = re(&ISSUE, r"^https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/(\d+)$");
+            let r = re(
+                &ISSUE,
+                r"^https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/(\d+)$",
+            );
             if let Some(c) = r.captures(&href).filter(|_| n.text().trim() == href) {
                 return vec![C::T(format!("#{}", &c[1]))];
             }
@@ -271,11 +353,19 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
             let href = n.attr("href").map(|h| h.to_string()).unwrap_or_default();
             let mut attrs = BTreeMap::new();
             attrs.insert("href".to_owned(), href.clone());
-            return vec![C::E { name: "a".into(), attrs, kids: vec![C::T(href)] }];
+            return vec![C::E {
+                name: "a".into(),
+                attrs,
+                kids: vec![C::T(href)],
+            }];
         }
         "div" if !norm.strict_code && (has("highlight") || has("snippet-clipboard-content")) => {
             let text = code_text(n, has("highlight"));
-            return vec![C::E { name: "mdr-code".into(), attrs: BTreeMap::new(), kids: vec![C::T(text)] }];
+            return vec![C::E {
+                name: "mdr-code".into(),
+                attrs: BTreeMap::new(),
+                kids: vec![C::T(text)],
+            }];
         }
         "pre" if !norm.strict_code => {
             let els = n.element_children();
@@ -284,7 +374,11 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
             });
             let code_like = (els.len() == 1 && els[0].has_name("code")) || n.has_attr("lang");
             if !parent_wrapped && code_like {
-                return vec![C::E { name: "mdr-code".into(), attrs: BTreeMap::new(), kids: vec![C::T(code_text(n, false))] }];
+                return vec![C::E {
+                    name: "mdr-code".into(),
+                    attrs: BTreeMap::new(),
+                    kids: vec![C::T(code_text(n, false))],
+                }];
             }
         }
         _ => {}
@@ -300,7 +394,11 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
         }
         kids.retain(|k| !matches!(k, C::T(t) if t.is_empty()));
     }
-    vec![C::E { name, attrs: attrs_of(n, norm), kids }]
+    vec![C::E {
+        name,
+        attrs: attrs_of(n, norm),
+        kids,
+    }]
 }
 
 fn canon_html(html: &str, norm: Norm) -> Vec<C> {
@@ -334,7 +432,11 @@ fn show(c: &C) -> String {
 }
 
 fn trunc(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_owned() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
+    if s.chars().count() <= n {
+        s.to_owned()
+    } else {
+        format!("{}…", s.chars().take(n).collect::<String>())
+    }
 }
 
 /// First difference between two node lists, as a human-readable path + description.
@@ -350,19 +452,42 @@ fn diff(ours: &[C], theirs: &[C], path: &str) -> Option<String> {
                     let p = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
                     let ctx_a: String = a.chars().skip(p.saturating_sub(20)).take(60).collect();
                     let ctx_b: String = b.chars().skip(p.saturating_sub(20)).take(60).collect();
-                    return Some(format!("{here}: text differs at char {p}\n      ours:   {ctx_a:?}\n      theirs: {ctx_b:?}"));
+                    return Some(format!(
+                        "{here}: text differs at char {p}\n      ours:   {ctx_a:?}\n      theirs: {ctx_b:?}"
+                    ));
                 }
             }
-            (C::E { name: na, attrs: aa, kids: ka }, C::E { name: nb, attrs: ab, kids: kb }) => {
+            (
+                C::E {
+                    name: na,
+                    attrs: aa,
+                    kids: ka,
+                },
+                C::E {
+                    name: nb,
+                    attrs: ab,
+                    kids: kb,
+                },
+            ) => {
                 if na != nb || aa != ab {
-                    return Some(format!("{here}:\n      ours:   {}\n      theirs: {}", show(pair.0), show(pair.1)));
+                    return Some(format!(
+                        "{here}:\n      ours:   {}\n      theirs: {}",
+                        show(pair.0),
+                        show(pair.1)
+                    ));
                 }
                 if let Some(d) = diff(ka, kb, &here) {
                     return Some(d);
                 }
             }
             (a, b) => {
-                let prev = |v: &[C]| if i == 0 { "(start)".to_owned() } else { show(&v[i - 1]) };
+                let prev = |v: &[C]| {
+                    if i == 0 {
+                        "(start)".to_owned()
+                    } else {
+                        show(&v[i - 1])
+                    }
+                };
                 return Some(format!(
                     "{here}:\n      ours:   {}\n      theirs: {}\n      after:  {}",
                     show(a),
@@ -398,7 +523,9 @@ struct Case {
 }
 
 fn article(html: &str) -> &str {
-    let start = html.find("<article").and_then(|i| html[i..].find('>').map(|j| i + j + 1));
+    let start = html
+        .find("<article")
+        .and_then(|i| html[i..].find('>').map(|j| i + j + 1));
     let end = html.rfind("</article>");
     match (start, end) {
         (Some(s), Some(e)) if s <= e => &html[s..e],
@@ -409,11 +536,22 @@ fn article(html: &str) -> &str {
 fn cases(dir: &Path) -> Vec<Case> {
     let gh = dir.join("github");
     let strict = strict_highlight();
-    let readme = Norm { drop_dir_auto: false, strict_code: strict, refs_as_text: false, probe: false };
+    let readme = Norm {
+        drop_dir_auto: false,
+        strict_code: strict,
+        refs_as_text: false,
+        probe: false,
+    };
     let mut out = Vec::new();
     let mut add = |name: String, input: PathBuf, oracle: PathBuf, mode: Mode, norm: Norm| {
         if input.is_file() && oracle.is_file() {
-            out.push(Case { name, input, oracle, mode, norm });
+            out.push(Case {
+                name,
+                input,
+                oracle,
+                mode,
+                norm,
+            });
         }
     };
     let list = |sub: &str| -> Vec<PathBuf> {
@@ -426,37 +564,98 @@ fn cases(dir: &Path) -> Vec<Case> {
     for p in list("ctx") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".md.md") {
-            add(format!("ctx/{base}"), p.clone(), gh.join(format!("ctx/{base}.md.ctx.html")), Mode::Readme, readme);
+            add(
+                format!("ctx/{base}"),
+                p.clone(),
+                gh.join(format!("ctx/{base}.md.ctx.html")),
+                Mode::Readme,
+                readme,
+            );
         }
     }
-    add("ctx/frontmatter".into(), gh.join("ctx/frontmatter_src.md"), gh.join("ctx/frontmatter.ctx.html"), Mode::Readme, readme);
+    add(
+        "ctx/frontmatter".into(),
+        gh.join("ctx/frontmatter_src.md"),
+        gh.join("ctx/frontmatter.ctx.html"),
+        Mode::Readme,
+        readme,
+    );
     for p in list("pages") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".README.md") {
-            add(format!("pages/{base}"), p.clone(), gh.join(format!("pages/{base}.README.api_html.html")), Mode::Readme, readme);
+            add(
+                format!("pages/{base}"),
+                p.clone(),
+                gh.join(format!("pages/{base}.README.api_html.html")),
+                Mode::Readme,
+                readme,
+            );
         }
     }
     // Strict code comparison only makes sense against outputs that carry github.com's code
     // wrappers (README/file view, stored comment `bodyHTML`); API outputs lack them.
-    let body_html = Norm { drop_dir_auto: false, strict_code: strict, refs_as_text: true, probe: false };
-    let with_ctx = Norm { strict_code: false, ..body_html };
+    let body_html = Norm {
+        drop_dir_auto: false,
+        strict_code: strict,
+        refs_as_text: true,
+        probe: false,
+    };
+    let with_ctx = Norm {
+        strict_code: false,
+        ..body_html
+    };
     for p in list("comments") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".md") {
-            add(format!("comments/{base} (api_gfm)"), p.clone(), gh.join(format!("comments/{base}.api_gfm.html")), Mode::Comment, with_ctx);
-            add(format!("comments/{base} (bodyHTML)"), p.clone(), gh.join(format!("comments/{base}.bodyHTML.html")), Mode::Comment, body_html);
+            add(
+                format!("comments/{base} (api_gfm)"),
+                p.clone(),
+                gh.join(format!("comments/{base}.api_gfm.html")),
+                Mode::Comment,
+                with_ctx,
+            );
+            add(
+                format!("comments/{base} (bodyHTML)"),
+                p.clone(),
+                gh.join(format!("comments/{base}.bodyHTML.html")),
+                Mode::Comment,
+                body_html,
+            );
         }
     }
-    let no_ctx = Norm { drop_dir_auto: true, strict_code: false, refs_as_text: true, probe: true };
+    let no_ctx = Norm {
+        drop_dir_auto: true,
+        strict_code: false,
+        refs_as_text: true,
+        probe: true,
+    };
     for p in list("probes") {
         let f = p.file_name().unwrap().to_string_lossy().to_string();
         if let Some(base) = f.strip_suffix(".md") {
-            add(format!("probes/{base}"), p.clone(), gh.join(format!("probes/{base}.gfm.html")), Mode::Comment, no_ctx);
+            add(
+                format!("probes/{base}"),
+                p.clone(),
+                gh.join(format!("probes/{base}.gfm.html")),
+                Mode::Comment,
+                no_ctx,
+            );
         }
     }
     // The research kitchen-sink document in comment context (API `mode=gfm` + context).
-    add("test.md (api_gfm_ctx)".into(), gh.join("test.md"), gh.join("api_gfm_ctx.html"), Mode::Comment, with_ctx);
-    add("test.md (api_gfm)".into(), gh.join("test.md"), gh.join("api_gfm.html"), Mode::Comment, no_ctx);
+    add(
+        "test.md (api_gfm_ctx)".into(),
+        gh.join("test.md"),
+        gh.join("api_gfm_ctx.html"),
+        Mode::Comment,
+        with_ctx,
+    );
+    add(
+        "test.md (api_gfm)".into(),
+        gh.join("test.md"),
+        gh.join("api_gfm.html"),
+        Mode::Comment,
+        no_ctx,
+    );
     out
 }
 
@@ -486,7 +685,10 @@ fn github_golden() {
         opts.sourcepos = true;
         let ours = github::render(&src, &opts);
         let oracle = if DOUBLE_ESCAPED.contains(&case.name.as_str()) {
-            oracle.replace("&amp;amp;", "&amp;").replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
+            oracle
+                .replace("&amp;amp;", "&amp;")
+                .replace("&amp;lt;", "&lt;")
+                .replace("&amp;gt;", "&gt;")
         } else {
             oracle
         };
@@ -500,22 +702,35 @@ fn github_golden() {
             }
             Some(d) => {
                 let known = KNOWN_PROBE_RESIDUALS.contains(&case.name.as_str());
-                let _ = writeln!(table, "  {}  {}\n    first difference {d}", if known { "KNOWN" } else { "FAIL" }, case.name);
+                let _ = writeln!(
+                    table,
+                    "  {}  {}\n    first difference {d}",
+                    if known { "KNOWN" } else { "FAIL" },
+                    case.name
+                );
                 if !known {
                     failed_required.push(case.name.clone());
                 }
             }
         }
     }
-    println!("github_golden: {pass}/{total} passed (strict highlight: {})\n{table}", strict_highlight());
-    assert!(failed_required.is_empty(), "golden mismatches: {failed_required:?}");
+    println!(
+        "github_golden: {pass}/{total} passed (strict highlight: {})\n{table}",
+        strict_highlight()
+    );
+    assert!(
+        failed_required.is_empty(),
+        "golden mismatches: {failed_required:?}"
+    );
 }
 
 /// Prints our rendering of `$MD_RENDER_DUMP` (debugging aid; `--ignored --nocapture`).
 #[test]
 #[ignore = "debugging aid"]
 fn github_dump() {
-    let Some(path) = std::env::var_os("MD_RENDER_DUMP") else { return };
+    let Some(path) = std::env::var_os("MD_RENDER_DUMP") else {
+        return;
+    };
     let src = std::fs::read_to_string(path).unwrap();
     let mut opts = RenderOptions::new(Flavor::Github);
     if std::env::var("MD_RENDER_MODE").is_ok_and(|m| m == "comment") {

@@ -14,21 +14,36 @@ use super::{Ctx, dom};
 // emoji (GH §8.5)
 
 /// Elements whose text is never emoji-processed.
-const NO_EMOJI: &[&str] =
-    &["code", "pre", "math-renderer", "svg", "g-emoji", "script", "style", "textarea"];
+const NO_EMOJI: &[&str] = &[
+    "code",
+    "pre",
+    "math-renderer",
+    "svg",
+    "g-emoji",
+    "script",
+    "style",
+    "textarea",
+];
 
 pub(super) fn emoji(doc: &Document, ctx: &Ctx) {
-    let texts: Vec<NodeRef<'_>> =
-        dom::root(doc).descendants().into_iter().filter(NodeRef::is_text).collect();
+    let texts: Vec<NodeRef<'_>> = dom::root(doc)
+        .descendants()
+        .into_iter()
+        .filter(NodeRef::is_text)
+        .collect();
     for t in texts {
         let Some(s) = dom::text_of(&t) else { continue };
         if !s.contains(':') && !s.contains('\u{fe0f}') {
             continue;
         }
-        if dom::has_ancestor(&t, |a| dom::name(a).is_some_and(|n| NO_EMOJI.contains(&&*n))) {
+        if dom::has_ancestor(&t, |a| {
+            dom::name(a).is_some_and(|n| NO_EMOJI.contains(&&*n))
+        }) {
             continue;
         }
-        let Some(segs) = emoji::convert(&s) else { continue };
+        let Some(segs) = emoji::convert(&s) else {
+            continue;
+        };
         if let [Seg::Text(only)] = segs.as_slice() {
             t.set_text(only.as_str());
             continue;
@@ -49,7 +64,10 @@ pub(super) fn emoji(doc: &Document, ctx: &Ctx) {
                     img.set_attr("class", "emoji");
                     img.set_attr("title", &code);
                     img.set_attr("alt", &code);
-                    img.set_attr("src", &format!("{}/github/emoji/{name}.png", ctx.bundle_url));
+                    img.set_attr(
+                        "src",
+                        &format!("{}/github/emoji/{name}.png", ctx.bundle_url),
+                    );
                     img.set_attr("height", "20");
                     img.set_attr("width", "20");
                     img.set_attr("align", "absmiddle");
@@ -71,7 +89,9 @@ pub(super) fn tables(doc: &Document, ctx: &Ctx) {
             table.set_attr("role", "table");
         }
         // Only outermost tables are wrapped (`S/pages/lifeparticle_*`: nested raw tables).
-        if table.parent().is_some_and(|p| p.has_name("markdown-accessiblity-table"))
+        if table
+            .parent()
+            .is_some_and(|p| p.has_name("markdown-accessiblity-table"))
             || dom::has_ancestor(&table, |a| a.has_name("table"))
         {
             continue;
@@ -180,7 +200,8 @@ pub(super) fn images(doc: &Document) {
         let w = img.attr("width").map(|s| s.to_string());
         let h = img.attr("height").map(|s| s.to_string());
         let numeric = |v: &Option<String>| {
-            v.as_ref().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            v.as_ref()
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         };
         if numeric(&w) && numeric(&h) {
             let (w, h) = (w.unwrap_or_default(), h.unwrap_or_default());
@@ -197,11 +218,20 @@ pub(super) fn images(doc: &Document) {
         if dom::has_ancestor(&img, |a| a.has_name("a")) {
             continue;
         }
-        let src = href.or_else(|| img.attr("src").map(|s| s.to_string())).unwrap_or_default();
+        let src = href
+            .or_else(|| img.attr("src").map(|s| s.to_string()))
+            .unwrap_or_default();
         let a = doc.tree.new_element("a");
         a.set_attr("target", "_blank");
         let nofollow = would_camo(&src) || is_external(&src);
-        a.set_attr("rel", if nofollow { "noopener noreferrer nofollow" } else { "noopener noreferrer" });
+        a.set_attr(
+            "rel",
+            if nofollow {
+                "noopener noreferrer nofollow"
+            } else {
+                "noopener noreferrer"
+            },
+        );
         a.set_attr("href", &src);
         let top_level = img.parent().is_some_and(|p| p.id == root.id);
         dom::wrap(&img, &a);
@@ -214,7 +244,10 @@ pub(super) fn images(doc: &Document) {
         }
     }
     for picture in dom::elements_named(doc, "picture") {
-        if picture.parent().is_some_and(|p| p.has_name("themed-picture")) {
+        if picture
+            .parent()
+            .is_some_and(|p| p.has_name("themed-picture"))
+        {
             continue;
         }
         let tp = doc.tree.new_element("themed-picture");
@@ -234,10 +267,11 @@ pub(super) fn links(doc: &Document) {
                         a.set_attr("href", &format!("https://github.com{rest}"));
                     }
                 }
-                if !a.has_attr("rel") && url_scheme(&href).is_none_or(|s| s != "mailto") {
-                    if is_external(&href) {
-                        a.set_attr("rel", "nofollow");
-                    }
+                if !a.has_attr("rel")
+                    && url_scheme(&href).is_none_or(|s| s != "mailto")
+                    && is_external(&href)
+                {
+                    a.set_attr("rel", "nofollow");
                 }
             }
         }
@@ -291,7 +325,10 @@ pub(super) fn comment_code(doc: &Document) {
         let text = n.text().to_string();
         if n.element_children().is_empty() && color_regex().is_match(&text) {
             let chip = doc.tree.new_element("span");
-            chip.set_attr("class", "ml-1 d-inline-block border circle color-border-subtle");
+            chip.set_attr(
+                "class",
+                "ml-1 d-inline-block border circle color-border-subtle",
+            );
             chip.set_attr(
                 "style",
                 &format!("background-color: {text}; height: 8px; width: 8px;"),
@@ -307,7 +344,9 @@ pub(super) fn dir_auto(doc: &Document) {
     for n in dom::elements(doc) {
         let Some(name) = dom::name(&n) else { continue };
         let wanted = match &*name {
-            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => true,
+            "p" => true,
+            // An empty heading stays a bare `<hN></hN>` (GH §6.1).
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => n.first_child().is_some(),
             "ul" | "ol" => !n.has_class("contains-task-list"),
             "div" => !n.has_class("snippet-clipboard-content"),
             _ => false,
@@ -330,16 +369,32 @@ mod tests {
 
     #[test]
     fn nofollow_rule() {
-        for url in ["https://example.com/x", "//example.com/x", "https://github.com.evil.com/x", "https://raw.githubusercontent.com/a", "https://user.github.io/x"] {
+        for url in [
+            "https://example.com/x",
+            "//example.com/x",
+            "https://github.com.evil.com/x",
+            "https://raw.githubusercontent.com/a",
+            "https://user.github.io/x",
+        ] {
             assert!(is_external(url), "{url}");
         }
-        for url in ["https://github.com/a/b", "https://GITHUB.COM/x", "https://docs.github.com/x", "rel/x", "#frag", "mailto:a@b.c", "/abs"] {
+        for url in [
+            "https://github.com/a/b",
+            "https://GITHUB.COM/x",
+            "https://docs.github.com/x",
+            "rel/x",
+            "#frag",
+            "mailto:a@b.c",
+            "/abs",
+        ] {
             assert!(!is_external(url), "{url}");
         }
         assert!(would_camo("https://www.github.com/x/img.png"));
         assert!(would_camo("https://GITHUB.COM/x/img.png"));
         assert!(!would_camo("https://github.com/a/b/img.png"));
-        assert!(!would_camo("https://raw.githubusercontent.com/a/b/c/img.png"));
+        assert!(!would_camo(
+            "https://raw.githubusercontent.com/a/b/c/img.png"
+        ));
         assert!(!would_camo("rel.png"));
     }
 
@@ -358,16 +413,65 @@ mod tests {
     #[test]
     fn images_filter() {
         let out = apply(r#"<p><img src="x.png" alt="a"></p>"#, images);
-        assert_eq!(out, r#"<p><a target="_blank" rel="noopener noreferrer" href="x.png"><img src="x.png" alt="a" style="max-width: 100%;"></a></p>"#);
-        let out = apply(r#"<a href="u"><img src="https://img.shields.io/x"></a>"#, images);
-        assert_eq!(out, r#"<a href="u"><img src="https://img.shields.io/x" style="max-width: 100%;"></a>"#);
-        let out = apply(r#"<img src="https://e.com/a.png" width="100" height="50">"#, images);
+        assert_eq!(
+            out,
+            r#"<p><a target="_blank" rel="noopener noreferrer" href="x.png"><img src="x.png" alt="a" style="max-width: 100%;"></a></p>"#
+        );
+        let out = apply(
+            r#"<a href="u"><img src="https://img.shields.io/x"></a>"#,
+            images,
+        );
+        assert_eq!(
+            out,
+            r#"<a href="u"><img src="https://img.shields.io/x" style="max-width: 100%;"></a>"#
+        );
+        let out = apply(
+            r#"<div><img src="https://e.com/a.png" width="100" height="50"></div>"#,
+            images,
+        );
         assert!(out.contains(r#"style="max-width: 100%; height: auto; max-height: 50px;; aspect-ratio: 100 / 50; background-color: var(--bgColor-muted); border-radius: 6px" class="js-gh-image-fallback""#));
-        assert!(out.starts_with(r#"<a target="_blank" rel="noopener noreferrer nofollow" href="https://e.com/a.png">"#));
-        let out = apply(r#"<img src="//x.com/p.png"><img src="data:x">"#, images);
-        assert_eq!(out, r#"<a target="_blank" rel="noopener noreferrer" href=""><img src="" style="max-width: 100%;"></a><a target="_blank" rel="noopener noreferrer" href=""><img style="max-width: 100%;"></a>"#);
-        let out = apply(r#"<picture><source srcset="a.png"><img src="b.png"></picture>"#, images);
-        assert_eq!(out, r#"<themed-picture data-catalyst-inline="true"><picture><source srcset="a.png"><img src="b.png"></picture></themed-picture>"#);
+        assert!(out.starts_with(r#"<div><a target="_blank" rel="noopener noreferrer nofollow" href="https://e.com/a.png">"#));
+        let out = apply(
+            r#"<p><img src="//x.com/p.png"><img src="data:x"></p>"#,
+            images,
+        );
+        assert_eq!(
+            out,
+            r#"<p><a target="_blank" rel="noopener noreferrer" href=""><img src="" style="max-width: 100%;"></a><a target="_blank" rel="noopener noreferrer" href=""><img style="max-width: 100%;"></a></p>"#
+        );
+        // A top-level raw image becomes a paragraph, except user attachments.
+        let out = apply(
+            r#"<img src="a.png"><img src="https://github.com/user-attachments/assets/x">"#,
+            images,
+        );
+        assert_eq!(
+            out,
+            r#"<p><a target="_blank" rel="noopener noreferrer" href="a.png"><img src="a.png" style="max-width: 100%;"></a></p><a target="_blank" rel="noopener noreferrer" href="https://github.com/user-attachments/assets/x"><img src="https://github.com/user-attachments/assets/x" style="max-width: 100%;"></a>"#
+        );
+        // `/blob/` image URLs load from `/raw/`; the link keeps the blob URL.
+        let out = apply(
+            r#"<p><img src="https://github.com/o/r/blob/main/i.png"></p>"#,
+            images,
+        );
+        assert_eq!(
+            out,
+            r#"<p><a target="_blank" rel="noopener noreferrer" href="https://github.com/o/r/blob/main/i.png"><img src="https://github.com/o/r/raw/main/i.png" style="max-width: 100%;"></a></p>"#
+        );
+        assert_eq!(
+            apply(
+                r#"<p><video src="https://e.com/v.mp4"></video></p>"#,
+                images
+            ),
+            "<p></p>"
+        );
+        let out = apply(
+            r#"<picture><source srcset="a.png"><img src="b.png"></picture>"#,
+            images,
+        );
+        assert_eq!(
+            out,
+            r#"<themed-picture data-catalyst-inline="true"><picture><source srcset="a.png"><img src="b.png"></picture></themed-picture>"#
+        );
     }
 
     #[test]
@@ -378,16 +482,25 @@ mod tests {
             dom::root(&doc).inner_html().to_string(),
             r#"<markdown-accessiblity-table><table role="table"><tbody><tr><td>x</td></tr></tbody></table></markdown-accessiblity-table>"#
         );
-        assert_eq!(apply("<details>x</details>", details), "<details><summary>Details</summary>x</details>");
         assert_eq!(
-            apply(r#"<p>a</p><ul class="contains-task-list"></ul><div class="snippet-clipboard-content"></div><div dir="rtl"></div><blockquote></blockquote>"#, dir_auto),
+            apply("<details>x</details>", details),
+            "<details><summary>Details</summary>x</details>"
+        );
+        assert_eq!(
+            apply(
+                r#"<p>a</p><ul class="contains-task-list"></ul><div class="snippet-clipboard-content"></div><div dir="rtl"></div><blockquote></blockquote>"#,
+                dir_auto
+            ),
             r#"<p dir="auto">a</p><ul class="contains-task-list"></ul><div class="snippet-clipboard-content"></div><div dir="rtl"></div><blockquote></blockquote>"#
         );
     }
 
     #[test]
     fn colors() {
-        let out = apply("<p><code>#00ff00</code> <code>#fff</code> <code>rgba(0, 255, 0, 1)</code> <code>hsl(120, 100%, 50%)</code></p>", comment_code);
+        let out = apply(
+            "<p><code>#00ff00</code> <code>#fff</code> <code>rgba(0, 255, 0, 1)</code> <code>hsl(120, 100%, 50%)</code></p>",
+            comment_code,
+        );
         assert_eq!(out.matches("color-border-subtle").count(), 3);
         assert!(out.contains(r#"<code class="notranslate">#fff</code>"#));
         assert!(out.contains(r#"style="background-color: #00ff00; height: 8px; width: 8px;""#));
@@ -396,7 +509,10 @@ mod tests {
     #[test]
     fn emoji_dom() {
         let ctx = Ctx::for_tests(false);
-        let out = apply("<p>:smile: <code>:smile:</code> <em>:warning:</em> :octocat:</p>", |d| emoji(d, &ctx));
+        let out = apply(
+            "<p>:smile: <code>:smile:</code> <em>:warning:</em> :octocat:</p>",
+            |d| emoji(d, &ctx),
+        );
         assert_eq!(
             out,
             r#"<p>😄 <code>:smile:</code> <em><g-emoji class="g-emoji" alias="warning">⚠️</g-emoji></em> <img class="emoji" title=":octocat:" alt=":octocat:" src="/b/github/emoji/octocat.png" height="20" width="20" align="absmiddle"></p>"#

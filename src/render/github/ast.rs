@@ -72,8 +72,9 @@ pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>, ctx: &C
     for &node in &nodes {
         let is_list = matches!(node.data().value, NodeValue::List(_));
         if is_list {
-            let any_task =
-                node.children().any(|c| matches!(c.data().value, NodeValue::TaskItem(_)));
+            let any_task = node
+                .children()
+                .any(|c| matches!(c.data().value, NodeValue::TaskItem(_)));
             if let NodeValue::List(l) = &mut node.data_mut().value {
                 l.is_task_list = any_task;
             }
@@ -112,8 +113,17 @@ pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>, ctx: &C
 /// an unknown name reproduces GitHub's tree (`S/probes/tags.gfm.html` T30, T101).
 const LEGACY_INLINE: [&str; 2] = ["dialog", "search"];
 
-const TAGFILTER: [&str; 9] =
-    ["title", "textarea", "style", "xmp", "iframe", "noembed", "noframes", "script", "plaintext"];
+const TAGFILTER: [&str; 9] = [
+    "title",
+    "textarea",
+    "style",
+    "xmp",
+    "iframe",
+    "noembed",
+    "noframes",
+    "script",
+    "plaintext",
+];
 
 fn tag_at(b: &[u8], j: usize, names: &[&str]) -> bool {
     names.iter().any(|t| {
@@ -123,7 +133,9 @@ fn tag_at(b: &[u8], j: usize, names: &[&str]) -> bool {
             && match b.get(end) {
                 None => false,
                 Some(&c) => {
-                    c.is_ascii_whitespace() || c == b'>' || (c == b'/' && b.get(end + 1) == Some(&b'>'))
+                    c.is_ascii_whitespace()
+                        || c == b'>'
+                        || (c == b'/' && b.get(end + 1) == Some(&b'>'))
                 }
             }
     })
@@ -143,7 +155,11 @@ fn tagfilter(literal: &str) -> Option<String> {
         let replacement = if tag_at(b, j, &TAGFILTER) {
             "&lt;"
         } else if tag_at(b, j, &LEGACY_INLINE) {
-            if j == i + 1 { "<mdr-legacy-" } else { "</mdr-legacy-" }
+            if j == i + 1 {
+                "<mdr-legacy-"
+            } else {
+                "</mdr-legacy-"
+            }
         } else {
             continue;
         };
@@ -166,8 +182,9 @@ fn tagfilter(literal: &str) -> Option<String> {
 
 /// A `TaskItem` without text (`- [ ]` alone) is a plain item showing the brackets.
 fn fix_task_item<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
-    let first_is_para =
-        node.first_child().is_some_and(|c| matches!(c.data().value, NodeValue::Paragraph));
+    let first_is_para = node
+        .first_child()
+        .is_some_and(|c| matches!(c.data().value, NodeValue::Paragraph));
     if first_is_para {
         return;
     }
@@ -225,7 +242,9 @@ fn detect_alert(bq: &AstNode<'_>, info: &mut AstInfo) {
             _ => return,
         }
     }
-    let Some(kind) = alert_type(&marker) else { return };
+    let Some(kind) = alert_type(&marker) else {
+        return;
+    };
     let more_in_para = brk.is_some_and(|b| b.next_sibling().is_some());
     if !more_in_para && para.next_sibling().is_none() {
         return; // `> [!NOTE]` alone stays a blockquote
@@ -255,8 +274,11 @@ fn detect_alert(bq: &AstNode<'_>, info: &mut AstInfo) {
 
 /// `<math-renderer>` markup; `delim` is `$` or `$$`, `display` picks the class.
 pub(super) fn math_html(ctx: &Ctx, tex: &str, delim: &str, display: bool) -> String {
-    let (class, style) =
-        if display { ("js-display-math", "block") } else { ("js-inline-math", "inline-block") };
+    let (class, style) = if display {
+        ("js-display-math", "block")
+    } else {
+        ("js-inline-math", "inline-block")
+    };
     let key = mdr_key(&["math", class, tex]);
     let mut s = format!(
         r#"<math-renderer{} class="{class}" style="display: {style}" data-run-id="{}" data-mdr-key="{key}">"#,
@@ -320,7 +342,11 @@ fn find_math(s: &str, boundary: bool) -> Vec<(usize, usize, usize)> {
         while i + run < b.len() && b[i + run] == b'$' {
             run += 1;
         }
-        let prev_ok = if i == 0 { boundary } else { matches!(b[i - 1], b' ' | b'\t' | b'\n' | b'(') };
+        let prev_ok = if i == 0 {
+            boundary
+        } else {
+            matches!(b[i - 1], b' ' | b'\t' | b'\n' | b'(')
+        };
         if !prev_ok || run > 2 {
             i += run;
             continue;
@@ -354,7 +380,10 @@ fn find_math(s: &str, boundary: bool) -> Vec<(usize, usize, usize)> {
 
 fn inline_math<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, ctx: &Ctx, info: &mut AstInfo) {
     // Never inside image alt text (rendered as plain text) .
-    if node.ancestors().any(|a| matches!(a.data().value, NodeValue::Image(_))) {
+    if node
+        .ancestors()
+        .any(|a| matches!(a.data().value, NodeValue::Image(_)))
+    {
         return;
     }
     let boundary = match node.previous_sibling() {
@@ -364,7 +393,10 @@ fn inline_math<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, ctx: &Ctx, info:
                 NodeValue::Paragraph | NodeValue::TableCell | NodeValue::Heading(_)
             )
         }),
-        Some(prev) => matches!(prev.data().value, NodeValue::SoftBreak | NodeValue::LineBreak),
+        Some(prev) => matches!(
+            prev.data().value,
+            NodeValue::SoftBreak | NodeValue::LineBreak
+        ),
     };
     let text = match node.data().value {
         NodeValue::Text(ref t) => t.to_string(),
@@ -383,7 +415,9 @@ fn inline_math<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, ctx: &Ctx, info:
             node.data_mut().value = NodeValue::Text(Cow::Owned(before.to_owned()));
             first = false;
         } else if !before.is_empty() {
-            let t = arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(before.to_owned()))));
+            let t = arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(
+                before.to_owned(),
+            ))));
             anchor.insert_after(t);
             anchor = t;
         }
@@ -395,7 +429,9 @@ fn inline_math<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, ctx: &Ctx, info:
         last = end;
     }
     if last < text.len() {
-        let t = arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(text[last..].to_owned()))));
+        let t = arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(
+            text[last..].to_owned(),
+        ))));
         anchor.insert_after(t);
     }
     info.math = true;
@@ -407,13 +443,22 @@ mod tests {
 
     #[test]
     fn tagfilter_cases() {
-        assert_eq!(tagfilter("<script>x</script>").as_deref(), Some("&lt;script>x&lt;/script>"));
-        assert_eq!(tagfilter("<IFRAME src=x>").as_deref(), Some("&lt;IFRAME src=x>"));
+        assert_eq!(
+            tagfilter("<script>x</script>").as_deref(),
+            Some("&lt;script>x&lt;/script>")
+        );
+        assert_eq!(
+            tagfilter("<IFRAME src=x>").as_deref(),
+            Some("&lt;IFRAME src=x>")
+        );
         assert_eq!(tagfilter("<style/>").as_deref(), Some("&lt;style/>"));
         assert_eq!(tagfilter("<scripts>"), None);
         assert_eq!(tagfilter("<div>ok</div>"), None);
         assert_eq!(tagfilter("<title"), None);
-        assert_eq!(tagfilter("a <dialog>b</DIALOG>").as_deref(), Some("a <mdr-legacy-dialog>b</mdr-legacy-DIALOG>"));
+        assert_eq!(
+            tagfilter("a <dialog>b</DIALOG>").as_deref(),
+            Some("a <mdr-legacy-dialog>b</mdr-legacy-DIALOG>")
+        );
     }
 
     #[test]
@@ -426,7 +471,10 @@ mod tests {
     }
 
     fn spans(s: &str, boundary: bool) -> Vec<&str> {
-        find_math(s, boundary).into_iter().map(|(a, b, _)| &s[a..b]).collect()
+        find_math(s, boundary)
+            .into_iter()
+            .map(|(a, b, _)| &s[a..b])
+            .collect()
     }
 
     /// GH §8.6 and `S/probes/math{,2,3,4}.gfm.html`.
@@ -446,7 +494,10 @@ mod tests {
         assert_eq!(spans("c1 $x$$y$", true), ["$x$"]);
         assert_eq!(spans("c4 $x$y$", true), Vec::<&str>::new());
         assert_eq!(spans("C: inline $$x^2$$ in", true), ["$$x^2$$"]);
-        assert_eq!(spans("B: costs $5 and $10, $ x $ spaced, $x$y, a$x$ b", true), Vec::<&str>::new());
+        assert_eq!(
+            spans("B: costs $5 and $10, $ x $ spaced, $x$y, a$x$ b", true),
+            Vec::<&str>::new()
+        );
         assert_eq!(spans("x $x$é y", true), ["$x$"]);
         assert_eq!(spans("x ((\"$x$ y", true), Vec::<&str>::new());
         assert_eq!(spans("x\t$y$ tab", true), ["$y$"]);

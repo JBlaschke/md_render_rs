@@ -9,12 +9,20 @@ pub(super) fn root(doc: &Document) -> NodeRef<'_> {
 
 /// All element descendants of the content root, in document order.
 pub(super) fn elements(doc: &Document) -> Vec<NodeRef<'_>> {
-    root(doc).descendants().into_iter().filter(NodeRef::is_element).collect()
+    root(doc)
+        .descendants()
+        .into_iter()
+        .filter(NodeRef::is_element)
+        .collect()
 }
 
 /// All descendants named `name` (HTML local name), in document order.
 pub(super) fn elements_named<'a>(doc: &'a Document, name: &str) -> Vec<NodeRef<'a>> {
-    root(doc).descendants().into_iter().filter(|n| n.has_name(name)).collect()
+    root(doc)
+        .descendants()
+        .into_iter()
+        .filter(|n| n.has_name(name))
+        .collect()
 }
 
 /// Local name of an element (`None` for other nodes).
@@ -75,14 +83,18 @@ mod tests {
 
     #[test]
     fn unwrap_keeps_children_and_template_contents() {
-        let doc = Document::fragment("<p>a<span>b<i>c</i></span>d</p><template>t<b>u</b></template>");
+        let doc =
+            Document::fragment("<p>a<span>b<i>c</i></span>d</p><template>t<b>u</b></template>");
         for n in elements_named(&doc, "span") {
             unwrap(&n);
         }
         for n in elements_named(&doc, "template") {
             unwrap(&n);
         }
-        assert_eq!(root(&doc).inner_html().to_string(), "<p>ab<i>c</i>d</p>t<b>u</b>");
+        assert_eq!(
+            root(&doc).inner_html().to_string(),
+            "<p>ab<i>c</i>d</p>t<b>u</b>"
+        );
     }
 
     #[test]

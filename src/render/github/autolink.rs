@@ -66,7 +66,11 @@ fn link_end(s: &str, start: usize, from: usize) -> usize {
             while k > start && b[k - 1].is_ascii_alphabetic() {
                 k -= 1;
             }
-            if k < end - 1 && k > start && b[k - 1] == b'&' { end = k - 1 } else { end -= 1 }
+            if k < end - 1 && k > start && b[k - 1] == b'&' {
+                end = k - 1
+            } else {
+                end -= 1
+            }
         } else if last == b')' {
             let open = s[start..end].matches('(').count();
             let close = s[start..end].matches(')').count();
@@ -87,7 +91,10 @@ pub(super) fn find(s: &str) -> Vec<(usize, usize, String)> {
     while i < b.len() {
         if b[i] == b'w' && s[i..].starts_with("www.") {
             let boundary = i == 0
-                || s[..i].chars().next_back().is_some_and(|c| c.is_whitespace() || "*_~(".contains(c));
+                || s[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_whitespace() || "*_~(".contains(c));
             if boundary {
                 if let Some(d) = check_domain(s, i, false) {
                     let end = link_end(s, i, d);
@@ -126,7 +133,11 @@ pub(super) fn find(s: &str) -> Vec<(usize, usize, String)> {
 /// raw element (`raw`, from the sanitizer).
 pub(super) fn run(doc: &Document, raw: &HashSet<NodeId>) {
     let root = dom::root(doc);
-    let texts: Vec<NodeRef<'_>> = root.descendants().into_iter().filter(NodeRef::is_text).collect();
+    let texts: Vec<NodeRef<'_>> = root
+        .descendants()
+        .into_iter()
+        .filter(NodeRef::is_text)
+        .collect();
     for t in texts {
         let Some(parent) = t.parent() else { continue };
         if parent.id != root.id && !raw.contains(&parent.id) {
@@ -184,15 +195,22 @@ mod tests {
         assert_eq!(links("https://e.com/&amp;"), ["https://e.com/"]);
         assert_eq!(links("xwww.example.com"), Vec::<&str>::new());
         assert_eq!(links("javascript://x.com"), Vec::<&str>::new());
-        assert_eq!(links("http://localhost:8080/x"), ["http://localhost:8080/x"]);
+        assert_eq!(
+            links("http://localhost:8080/x"),
+            ["http://localhost:8080/x"]
+        );
         assert_eq!(links("https://a_b.c_d/x"), Vec::<&str>::new());
         assert_eq!(links("no links here"), Vec::<&str>::new());
     }
 
     #[test]
     fn only_raw_text_is_linked() {
-        let doc = Document::fragment("x https://e.com/a y<p>https://m.com</p><span>https://r.com</span>");
-        let raw: HashSet<NodeId> = dom::elements_named(&doc, "span").iter().map(|n| n.id).collect();
+        let doc =
+            Document::fragment("x https://e.com/a y<p>https://m.com</p><span>https://r.com</span>");
+        let raw: HashSet<NodeId> = dom::elements_named(&doc, "span")
+            .iter()
+            .map(|n| n.id)
+            .collect();
         run(&doc, &raw);
         assert_eq!(
             dom::root(&doc).inner_html().to_string(),

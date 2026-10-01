@@ -70,7 +70,10 @@ mod tests {
     fn base_examples() {
         let cases = [
             ("Hello, World! What's up?", "hello-world-whats-up"),
-            ("Ünïcödé Hëädïng — Ελληνικά 日本語", "ünïcödé-hëädïng--ελληνικά-日本語"),
+            (
+                "Ünïcödé Hëädïng — Ελληνικά 日本語",
+                "ünïcödé-hëädïng--ελληνικά-日本語",
+            ),
             (
                 r#"C++ & C# / Rust's "quotes" (parens) [brackets] {braces}"#,
                 "c--c--rusts-quotes-parens-brackets-braces",
@@ -90,7 +93,10 @@ mod tests {
             ("x² ½ Ⅻ ① ٣ ๓", "x--ⅻ--٣-๓"),
             ("a‿b ﹏c _d", "a‿b-﹏c-_d"),
             ("e\u{301}", "e\u{301}"),
-            ("Zero\u{200c}width\u{200d}joiner", "zero\u{200c}width\u{200d}joiner"),
+            (
+                "Zero\u{200c}width\u{200d}joiner",
+                "zero\u{200c}width\u{200d}joiner",
+            ),
             ("a\u{200b}b\u{ad}c\u{a0}d\u{2003}e", "abcde"),
             ("Emoji :rocket: heading 🎉", "emoji-rocket-heading-"),
             ("Emoji 😀 :smile: :octocat: end", "emoji--smile-octocat-end"),
