@@ -160,7 +160,9 @@ impl InMemoryFileSystem {
     ///
     /// The file is read once and not kept open. Multi-member gzip is supported.
     /// Directories, links and other non-regular members are skipped, as are macOS
-    /// AppleDouble `._*` companions; a leading `./` is stripped from member paths.
+    /// AppleDouble companions (`._*` members whose data starts with the AppleDouble
+    /// magic number; other `._*` files are kept); a leading `./` is stripped from
+    /// member paths.
     ///
     /// # Errors
     ///

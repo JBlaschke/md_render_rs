@@ -36,9 +36,10 @@ pub(crate) fn gunzip(source: impl Read) -> Result<Vec<u8>> {
 /// Every key maps to a byte range of `tarball`; nothing is copied. Rules (spec
 /// "Reader"): regular and contiguous files only (old-style `'\0'` included); PAX
 /// `path`/`size` records and GNU long names are honoured by the `tar` crate;
-/// directories, links, devices, FIFOs, PAX globals and unknown types are skipped;
-/// GNU sparse members (old `'S'` or PAX `GNU.sparse.*`) are rejected; later
-/// duplicates override earlier ones (tar semantics).
+/// directories, links, devices, FIFOs, PAX globals, unknown types and macOS
+/// AppleDouble companions ([`is_apple_double`]) are skipped; GNU sparse members
+/// (old `'S'` or PAX `GNU.sparse.*`) are rejected; later duplicates override
+/// earlier ones (tar semantics).
 pub(crate) fn index(tarball: &Bytes) -> Result<BTreeMap<String, Entry>> {
     let corrupt = |what: &str, err: io::Error| Error::Corrupt(format!("tar: {what}: {err}"));
     let mut entries = BTreeMap::new();
@@ -77,9 +78,24 @@ pub(crate) fn index(tarball: &Bytes) -> Result<BTreeMap<String, Entry>> {
                 tarball.len()
             )));
         };
+        if is_apple_double(&path, &tarball[offset..offset + size]) {
+            continue;
+        }
         entries.insert(path, Entry::Source { offset, size });
     }
     Ok(entries)
+}
+
+/// Magic number that starts every AppleDouble file (`0x00051607`, RFC 1740).
+const APPLE_DOUBLE_MAGIC: [u8; 4] = [0x00, 0x05, 0x16, 0x07];
+
+/// Whether a member is a macOS AppleDouble companion: bsdtar on macOS stores a
+/// file's extended attributes and resource fork as `._<name>` next to it (CR §6).
+/// Both the name and the magic number must match, so an ordinary file that merely
+/// has a `._` name is kept (it would otherwise vanish on a read-modify-write).
+fn is_apple_double(path: &str, data: &[u8]) -> bool {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    basename.starts_with("._") && data.starts_with(&APPLE_DOUBLE_MAGIC)
 }
 
 /// GNU tar `--sparse --format=pax` keeps the regular type flag and describes the

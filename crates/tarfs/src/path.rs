@@ -59,11 +59,13 @@ pub fn check_path(path: &str) -> Result<()> {
 
 /// Turn the raw path of a regular-file member of a foreign archive into a key.
 ///
-/// * `Ok(None)`: skip the member: the bare `.` (or empty) entry, an old-style
-///   directory (regular type flag but a trailing `/`), or a macOS AppleDouble
-///   `._*` companion (bsdtar adds these when packing on macOS; CR §6).
+/// * `Ok(None)`: skip the member: the bare `.` (or empty) entry, or an old-style
+///   directory (regular type flag but a trailing `/`).
 /// * `Err(Corrupt)`: non-UTF-8, or still invalid after stripping leading `./`
 ///   (absolute, `..`, `//`, ...): we never want such paths as keys.
+///
+/// macOS AppleDouble companions (`._*`) are recognised by their contents, so the
+/// reader skips them, not this function (see `read::is_apple_double`).
 pub(crate) fn normalize_member(raw: &[u8]) -> Result<Option<String>> {
     let Ok(text) = std::str::from_utf8(raw) else {
         return Err(Error::Corrupt(format!(
@@ -85,10 +87,6 @@ pub(crate) fn normalize_member(raw: &[u8]) -> Result<Option<String>> {
         }
         other => other,
     })?;
-    let basename = path.rsplit('/').next().unwrap_or(path);
-    if basename.starts_with("._") {
-        return Ok(None);
-    }
     Ok(Some(path.to_owned()))
 }
 
@@ -153,10 +151,9 @@ mod tests {
         assert_eq!(n(""), None);
         assert_eq!(n("dir/"), None);
         assert_eq!(n("./dir/"), None);
-        assert_eq!(n("._a.txt"), None);
-        assert_eq!(n("./d/._a.txt"), None);
-        assert_eq!(n("d/.__x").as_deref(), None);
-        assert_eq!(n("d/._").as_deref(), None);
+        // `._*` names are ordinary paths here; AppleDouble sniffing needs the data.
+        assert_eq!(n("._a.txt").as_deref(), Some("._a.txt"));
+        assert_eq!(n("./d/._a.txt").as_deref(), Some("d/._a.txt"));
         assert_eq!(n("d/.a").as_deref(), Some("d/.a"));
     }
 

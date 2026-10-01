@@ -99,15 +99,24 @@ fn only_regular_files_are_indexed() {
     assert_eq!(fs.read_to_string("contig.bin").unwrap(), "contiguous");
 }
 
+/// The body of an AppleDouble file: magic `0x00051607`, version 2, 16 filler bytes,
+/// no entries (what bsdtar on macOS stores as `._<name>`).
+fn apple_double(rest: &[u8]) -> Vec<u8> {
+    let mut body = vec![0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00];
+    body.extend_from_slice(&[0u8; 18]);
+    body.extend_from_slice(rest);
+    body
+}
+
 #[test]
 fn dot_slash_prefixes_and_apple_double_files() {
     let tar = archive(&[
         member(b"./", b'5', b""),
         member(b".", b'0', b""),
-        member(b"._.", b'0', b"appledouble of ."),
+        member(b"._.", b'0', &apple_double(b"of .")),
         member(b"./a.txt", b'0', b"a"),
-        member(b"./._a.txt", b'0', b"appledouble"),
-        member(b"./sub/._b.txt", b'0', b"appledouble"),
+        member(b"./._a.txt", b'0', &apple_double(b"")),
+        member(b"./sub/._b.txt", b'0', &apple_double(b"xattrs")),
         member(b"././sub/b.txt", b'0', b"b"),
         member(b"./.hidden", b'0', b"dotfile"),
     ]);
@@ -116,6 +125,65 @@ fn dot_slash_prefixes_and_apple_double_files() {
         fs.paths().collect::<Vec<_>>(),
         [".hidden", "a.txt", "sub/b.txt"]
     );
+}
+
+#[test]
+fn files_named_like_apple_double_but_without_its_magic_are_kept() {
+    let tar = archive(&[
+        member(b"._notes.txt", b'0', b"not an AppleDouble file"),
+        member(b"dir/._config", b'0', b""),
+        member(b"dir/._", b'0', &[0x00, 0x05, 0x16]), // shorter than the magic
+        member(b"._magic", b'0', &apple_double(b"")),
+    ]);
+    let fs = InMemoryFileSystem::from_tar_bytes(tar).unwrap();
+    assert_eq!(
+        fs.paths().collect::<Vec<_>>(),
+        ["._notes.txt", "dir/._", "dir/._config"]
+    );
+    assert_eq!(
+        fs.read_to_string("._notes.txt").unwrap(),
+        "not an AppleDouble file"
+    );
+    // The magic alone does not make a file AppleDouble: the name must match too.
+    let tar = archive(&[member(b"a.bin", b'0', &apple_double(b""))]);
+    assert!(
+        InMemoryFileSystem::from_tar_bytes(tar)
+            .unwrap()
+            .contains("a.bin")
+    );
+}
+
+#[test]
+fn files_named_like_apple_double_survive_a_round_trip_and_read_modify_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.tar.gz");
+    let mut fs = InMemoryFileSystem::new();
+    fs.write_file("._notes.txt", "important").unwrap();
+    fs.write_file("dir/._config", "also important").unwrap();
+    fs.write_file("keep.txt", "k").unwrap();
+    fs.write_tarball_gz(&path).unwrap();
+    let back = InMemoryFileSystem::open(&path).unwrap();
+    assert_eq!(
+        back.paths().collect::<Vec<_>>(),
+        ["._notes.txt", "dir/._config", "keep.txt"]
+    );
+
+    // A foreign archive with a real file named `._data`, updated in place.
+    std::fs::write(
+        &path,
+        gzip(&archive(&[
+            member(b"._data", b'0', b"precious"),
+            member(b"other.txt", b'0', b"x"),
+        ])),
+    )
+    .unwrap();
+    tarfs::open_tarball_gz(&path, Some(&path), |fs| fs.write_file("new.txt", "n")).unwrap();
+    let back = InMemoryFileSystem::open(&path).unwrap();
+    assert_eq!(
+        back.paths().collect::<Vec<_>>(),
+        ["._data", "new.txt", "other.txt"]
+    );
+    assert_eq!(back.read_to_string("._data").unwrap(), "precious");
 }
 
 #[test]

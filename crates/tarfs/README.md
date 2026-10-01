@@ -123,7 +123,11 @@ rules. Directories are implicit: they exist only as prefixes of file paths.
 * Directories, links, devices, FIFOs and PAX global headers are skipped. GNU
   sparse files are rejected as `Corrupt`.
 * A leading `./` is stripped, so `tar -C dir .` output works. The bare `.` entry
-  and macOS AppleDouble `._*` files are skipped.
+  is skipped.
+* macOS AppleDouble companions are skipped: `._*` members whose data starts with
+  the AppleDouble magic number `00 05 16 07`, which bsdtar on macOS adds for
+  extended attributes. Any other file named `._*` is an ordinary file, so it
+  survives a round trip and a read-modify-write.
 * Member paths that are not UTF-8 are `Corrupt`. Paths that are still unsafe after
   normalization (absolute, `..`, ...) are also `Corrupt`.
 * When a path appears twice, the later member wins, as in tar.
@@ -202,7 +206,7 @@ back, the two writers are interchangeable.
 * **Paths.** `check_path` also rejects backslashes, which Windows tools treat as
   separators.
 * **Reader rules.** tarfs accepts multi-member gzip, strips `./` and skips
-  AppleDouble files. It rejects unsafe or non-UTF-8 member paths and sparse files.
+  AppleDouble companions (recognised by name and magic number). It rejects unsafe or non-UTF-8 member paths and sparse files.
 * **Gzip output.** The `.tar.gz` bytes are reproducible across platforms. TarFS.jl's
   gzip OS byte varies by platform.
 * **Extended writer.** It needs no temporary directory and writes PAX headers
