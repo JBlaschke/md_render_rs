@@ -7,6 +7,7 @@
 //! ends right at a line end is not re-opened as an empty span). The final newline is dropped.
 
 mod classes;
+mod diff;
 pub(crate) mod linguist;
 mod session;
 
@@ -14,7 +15,6 @@ use syntect::parsing::{Scope, SyntaxReference};
 
 use super::GithubCode;
 use super::engine::{self, Event, Limits};
-
 
 pub(crate) use classes::{DEFAULT_VARIANT, Variant};
 use classes::{Class, Overlay, Scheme, TextIs};
@@ -27,6 +27,8 @@ pub(crate) enum Grammar {
     /// `text.shell-session`: a port of Linguist's tiny shell-session grammar with the shell
     /// syntax for commands (GH §7.2 `console`, CQ §1.7).
     ShellSession,
+    /// `source.diff`: a port of Linguist's line-based diff grammar.
+    Diff,
 }
 
 /// Linguist `tm_scope` → two-face syntax scope, for grammars two-face has under another name
@@ -93,8 +95,10 @@ const SCOPE_OVERRIDES: &[(&str, &str)] = &[];
 /// two-face → alias table → `find_syntax_by_token` on the language name. `None`: no grammar
 /// (the block is still wrapped as `highlight-<scope>`, without token spans).
 pub(crate) fn grammar(tm_scope: &str, language_name: &str) -> Option<Grammar> {
-    if tm_scope == "text.shell-session" {
-        return Some(Grammar::ShellSession);
+    match tm_scope {
+        "text.shell-session" => return Some(Grammar::ShellSession),
+        "source.diff" => return Some(Grammar::Diff),
+        _ => {}
     }
     let lookup = |table: &[(&str, &'static str)]| {
         table.iter().find(|(from, _)| *from == tm_scope).and_then(|(_, to)| engine::syntax_by_scope(to))
@@ -147,13 +151,50 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
     let html = match grammar {
         Grammar::Syntect(syntax) => render(code, syntax, scheme, overlay),
         Grammar::ShellSession => session::render(code, scheme, overlay),
+        Grammar::Diff if Limits::DEFAULT.admits(code) => {
+            let mut w = SpanWriter::new(scheme, overlay, code.len() * 2);
+            diff::render(code, &mut w);
+            Ok(w.finish())
+        }
+        Grammar::Diff => Err(engine::Error),
     };
     // Tokenizer failure (limits, parse error, internal panic): same wrapper, no token spans.
     let mut html = html.unwrap_or_else(|_| escape_text(code));
-    if html.ends_with('\n') {
+    trim_trailing_newlines(&mut html, tm_scope);
+    GithubCode { scope, html: Some(html) }
+}
+
+/// Linguist scopes github.com highlights with tree-sitter (GH §7.7, confirmed by output shape:
+/// `pl-kos` punctuation, no `pl-pds`/nested comment markers, trailing blank lines dropped).
+const TREE_SITTER_SCOPES: &[&str] = &[
+    "source.rust",
+    "source.python",
+    "source.js",
+    "source.ts",
+    "source.tsx",
+    "source.c",
+    "source.go",
+    "source.css",
+    "text.html.basic",
+    "source.ruby",
+    "source.java",
+    "text.html.php",
+    "source.cs",
+    "source.swift",
+    "source.elixir",
+    "source.nix",
+    "source.regexp",
+];
+
+/// GitHub removes the final newline of the code; its tree-sitter highlighter also drops a
+/// trailing blank line (every trailing newline), its TextMate path keeps it. Spans are closed
+/// at each newline, so trailing newlines are bare text.
+fn trim_trailing_newlines(html: &mut String, tm_scope: &str) {
+    if TREE_SITTER_SCOPES.contains(&tm_scope) {
+        html.truncate(html.trim_end_matches('\n').len());
+    } else if html.ends_with('\n') {
         html.pop();
     }
-    GithubCode { scope, html: Some(html) }
 }
 
 /// Escape code text like GitHub (GH §7.1): `&`, `<`, `>` only.
@@ -411,6 +452,7 @@ mod tests {
         let name = |scope: &str, lang: &str| match grammar(scope, lang) {
             Some(Grammar::Syntect(s)) => Some(s.name.clone()),
             Some(Grammar::ShellSession) => Some("<session>".into()),
+            Some(Grammar::Diff) => Some("<diff>".into()),
             None => None,
         };
         assert_eq!(name("source.rust", "Rust").as_deref(), Some("Rust"));

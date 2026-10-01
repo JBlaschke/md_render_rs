@@ -97,10 +97,35 @@ pub(crate) const PRETTYLIGHTS_MAP: &[(&str, &str)] = &[
     ("string.other.link", "pl-corl"),
 ];
 
-/// Rules layered on top of the map for every language ([`Variant::Extended`] and
-/// [`Variant::Hybrid`]): they translate Sublime-syntax scope names into the classes the
-/// corresponding Linguist TextMate grammar scopes get on github.com (GH §7.6).
-const EXTENDED: &[(&str, Class)] = &[];
+/// The language-independent extra rules proposed in GH §7.6, layered on top of the map for
+/// every language ([`Variant::Extended`]). Measured against github.com they lose to the
+/// per-language overlays (they apply tree-sitter conventions to TextMate languages and vice
+/// versa), so the default variant does not use them.
+const EXTENDED: &[(&str, Class)] = &[
+    ("entity.name.function", Some("pl-en")),
+    ("support.function", Some("pl-en")),
+    ("variable.function", Some("pl-en")),
+    ("meta.function-call entity", Some("pl-en")),
+    ("entity.name.type", Some("pl-smi")),
+    ("entity.name.class", Some("pl-smi")),
+    ("entity.name.struct", Some("pl-smi")),
+    ("entity.name.enum", Some("pl-smi")),
+    ("support.type", Some("pl-smi")),
+    ("entity.other.attribute-name", Some("pl-e")),
+    ("variable.parameter", Some("pl-v")),
+    ("variable.other.member", Some("pl-c1")),
+    ("meta.property", Some("pl-c1")),
+    ("keyword.operator", Some("pl-k")),
+    ("punctuation.separator", Some("pl-kos")),
+    ("punctuation.terminator", Some("pl-kos")),
+    ("punctuation.section", Some("pl-kos")),
+    ("punctuation.section.embedded", Some("pl-pse")),
+    ("constant.numeric", Some("pl-c1")),
+    ("constant.language", Some("pl-c1")),
+    ("constant.character.escape", Some("pl-cce")),
+    ("meta.embedded", Some("pl-s1")),
+    ("invalid.deprecated", Some("pl-bu")),
+];
 
 /// GitHub's Markdown grammar (`text.md`, wooorm/markdown-tm-language) against Sublime's
 /// Markdown: list items, emphasis and fenced code are not colored as a whole, only their
@@ -237,7 +262,8 @@ const JAVASCRIPT: &[(&str, Class)] = &[
     ("variable.language", Some("pl-smi")),
     ("support.type.object", Some("pl-smi")),
     ("meta.property.object", Some("pl-c1")),
-    ("entity.name.function variable", None),
+    ("entity.name.function variable.other.readwrite", None),
+    ("entity.name.function variable.other.constant", None),
     ("entity.name.class", Some("pl-v")),
     ("entity.other.inherited-class", Some("pl-v")),
     ("storage.type.function.arrow", Some("pl-c1")),
@@ -383,6 +409,228 @@ const HTML: &[(&str, Class)] = &[
     ("source", None),
 ];
 
+/// Makefile (TextMate): assignments and plain words unclassified, `$(VAR)` a string, recipes
+/// are shell without a wrapper class.
+const MAKEFILE: &[(&str, Class)] = &[
+    ("keyword.operator.assignment", None),
+    ("string.unquoted", None),
+    ("source", None),
+    ("variable.parameter", Some("pl-s")),
+    ("keyword.other.block", None),
+];
+
+/// C++ (TextMate on github.com): operators, calls and parameters unclassified, member calls
+/// `pl-c1`, access specifiers (with their colon) `pl-k`.
+const CPP: &[(&str, Class)] = &[
+    ("keyword.operator", None),
+    ("variable.function", None),
+    ("variable.function.member", Some("pl-c1")),
+    ("variable.parameter", None),
+    ("variable.other.readwrite.member", None),
+    ("punctuation.section.class", Some("pl-k")),
+];
+
+/// Dockerfile (TextMate): strings without delimiter spans; stage names unclassified.
+const DOCKERFILE: &[(&str, Class)] = &[
+    ("punctuation.definition.string", None),
+    ("variable.stage-name", None),
+    ("entity.name.enum.tag-digest", None),
+];
+
+/// SQL (TextMate): `*` is a keyword.
+const SQL: &[(&str, Class)] = &[("variable.language.star", Some("pl-k"))];
+
+/// INI (TextMate): `[section]` is `pl-en` as a whole, values unclassified.
+const INI: &[(&str, Class)] = &[
+    ("meta.tag.section", Some("pl-en")),
+    ("entity.section", None),
+    ("punctuation.definition.section", None),
+    ("string.name.value", None),
+];
+
+/// Kotlin (TextMate): template expressions `pl-e`, local names unclassified.
+const KOTLIN: &[(&str, Class)] = &[
+    ("entity.name.variable", None),
+    ("variable.parameter.template", Some("pl-e")),
+    ("storage.type.buildin", Some("pl-c1")),
+];
+
+/// GraphQL (TextMate): fields and variables `pl-v`, type references `pl-c1`.
+const GRAPHQL: &[(&str, Class)] = &[
+    ("entity.name.field", Some("pl-v")),
+    ("punctuation.definition.variable", Some("pl-v")),
+    ("variable.other", Some("pl-v")),
+    ("variable.type", Some("pl-c1")),
+    ("variable.type support.type", None),
+];
+
+/// Nix (tree-sitter on github.com).
+const NIX: &[(&str, Class)] = &[
+    ("keyword.operator", Some("pl-kos")),
+    ("keyword.operator.nix", None),
+    ("variable.parameter", Some("pl-s1")),
+    ("entity.other.attribute-name", Some("pl-c1")),
+    ("string.unquoted.spath", Some("pl-pds")),
+    ("markup.italic", None),
+    ("punctuation.section.embedded", Some("pl-kos")),
+];
+
+/// Regular expressions (tree-sitter on github.com).
+const REGEXP: &[(&str, Class)] = &[
+    ("keyword.control.group", Some("pl-kos")),
+    ("keyword.control.anchors", Some("pl-cce")),
+    ("keyword.control.set", Some("pl-kos")),
+    ("keyword.control.character-class", Some("pl-cce")),
+    ("keyword.operator.quantifier", Some("pl-c1")),
+    ("keyword.operator.alternation", Some("pl-c1")),
+    ("keyword.other.named-capture-group", Some("pl-kos")),
+    ("punctuation.definition.capture-group-name", None),
+    ("entity.name.capture-group", Some("pl-c1")),
+    ("constant.other.assertion", Some("pl-kos")),
+    ("meta.literal", Some("pl-s")),
+];
+
+/// SCSS (TextMate): `$variables` `pl-v`, `&` `pl-ent`, mixin names unclassified.
+const SCSS: &[(&str, Class)] = &[
+    ("variable.other", Some("pl-v")),
+    ("variable.other punctuation.definition.variable", None),
+    ("keyword.operator.ampersand", Some("pl-ent")),
+    ("variable.function", None),
+];
+
+/// Perl (TextMate).
+const PERL: &[(&str, Class)] = &[
+    ("keyword.operator.assignment", None),
+    ("storage.type keyword.declaration", None),
+    ("punctuation.separator.key-value", Some("pl-k")),
+];
+
+/// Lua (TextMate): table keys `pl-smi`, their `=` a keyword.
+const LUA: &[(&str, Class)] = &[
+    ("meta.mapping punctuation.separator.key-value", Some("pl-k")),
+    ("meta.mapping.key string.unquoted.key", Some("pl-smi")),
+];
+
+/// LaTeX (TextMate): `\begin`/`\end` one span, inline math a string.
+const LATEX: &[(&str, Class)] = &[
+    ("support.function keyword.control", None),
+    ("support.function punctuation.definition.backslash", None),
+    ("meta.environment.math", Some("pl-s")),
+    ("meta.environment.math variable", None),
+    ("meta.environment.math keyword.operator", None),
+];
+
+/// XML (TextMate): CDATA sections are strings with `pl-pds` delimiters.
+const XML: &[(&str, Class)] = &[
+    ("meta.tag.sgml.cdata", Some("pl-s")),
+    ("meta.tag.sgml.cdata punctuation.definition.tag", Some("pl-pds")),
+    ("meta.tag.sgml.cdata keyword", Some("pl-pds")),
+];
+
+/// PHP (tree-sitter on github.com): no punctuation classes, `$` of variables `pl-c1` inside
+/// `pl-s1`, `<?php` `pl-ent`, namespaces `pl-v`.
+const PHP: &[(&str, Class)] = &[
+    ("source", None),
+    ("punctuation", None),
+    ("punctuation.section.embedded", Some("pl-ent")),
+    ("punctuation.definition.variable", Some("pl-c1")),
+    ("variable.other", Some("pl-s1")),
+    ("storage.type", Some("pl-smi")),
+    ("storage.type.function", Some("pl-k")),
+    ("storage.type.class", Some("pl-k")),
+    ("storage.modifier", Some("pl-k")),
+    ("entity.name.namespace", Some("pl-v")),
+    ("support.other.namespace", Some("pl-v")),
+    ("support.class", Some("pl-smi")),
+    ("meta.string-contents", Some("pl-s")),
+    ("constant.character.escape", None),
+    ("keyword.operator.string", None),
+    ("keyword.operator.assignment", None),
+];
+
+/// C# (tree-sitter on github.com).
+const CSHARP: &[(&str, Class)] = &[
+    ("punctuation.definition.generic", Some("pl-c1")),
+    ("punctuation.separator.type", Some("pl-c1")),
+    ("meta.path", Some("pl-s1")),
+    ("entity.name.namespace", Some("pl-v")),
+    ("entity.name.class", Some("pl-smi")),
+    ("entity.other.inherited-class", Some("pl-smi")),
+    ("variable.annotation", Some("pl-c1")),
+    ("storage.type", Some("pl-smi")),
+    ("storage.type.function", Some("pl-c1")),
+    ("storage.type.function.accessor", Some("pl-k")),
+    ("storage.type.namespace", Some("pl-k")),
+    ("storage.type.class", Some("pl-k")),
+    ("storage.type.struct", Some("pl-k")),
+    ("storage.type.interface", Some("pl-k")),
+    ("storage.type.enum", Some("pl-k")),
+    ("keyword.operator.new", Some("pl-k")),
+    ("support.type", Some("pl-smi")),
+    ("variable.other", Some("pl-s1")),
+    ("variable.other.member", Some("pl-s1")),
+    ("meta.string.interpolated", Some("pl-s")),
+    ("meta.string.interpolated string", None),
+    ("source.cs", None),
+];
+
+/// Elixir (tree-sitter on github.com): modules `pl-v`, atoms and keyword keys `pl-pds`.
+const ELIXIR: &[(&str, Class)] = &[
+    ("entity.name.class", Some("pl-v")),
+    ("constant.other.keywords", Some("pl-pds")),
+    ("constant.other.symbol", Some("pl-pds")),
+    ("punctuation.definition.constant", None),
+];
+
+/// Java (tree-sitter on github.com): no punctuation or operator classes, types `pl-smi`,
+/// package path segments `pl-s1`, annotations `pl-c1`.
+const JAVA: &[(&str, Class)] = &[
+    ("punctuation", None),
+    ("keyword.operator", None),
+    ("entity.name.namespace", Some("pl-s1")),
+    ("support.type.package", Some("pl-s1")),
+    ("support.class", Some("pl-smi")),
+    ("support.class.import", Some("pl-s1")),
+    ("meta.annotation", Some("pl-c1")),
+    ("variable.annotation", None),
+    ("storage.type", Some("pl-smi")),
+    ("storage.modifier.array", None),
+    ("entity.name.class", Some("pl-smi")),
+    ("entity.other.inherited-class", Some("pl-smi")),
+    ("constant.numeric storage.type.numeric", None),
+];
+
+/// Ruby (tree-sitter on github.com): classes and modules `pl-v`, symbols `pl-pds`, instance and
+/// class variables `pl-c1`, `require`/`attr_*` `pl-en`, operators unclassified.
+const RUBY: &[(&str, Class)] = &[
+    ("keyword.operator", None),
+    ("storage.type keyword.declaration", None),
+    ("entity.name.namespace", Some("pl-v")),
+    ("entity.name.class", Some("pl-v")),
+    ("entity.other.inherited-class", Some("pl-v")),
+    ("punctuation.separator.inheritance", None),
+    ("keyword.control.import", Some("pl-en")),
+    ("keyword.other.special-method", Some("pl-en")),
+    ("constant.other.symbol", Some("pl-pds")),
+    ("constant.other.symbol punctuation", None),
+    ("variable.other.readwrite.instance", Some("pl-c1")),
+    ("variable.other.readwrite.class", Some("pl-c1")),
+    ("variable.other.readwrite.global", None),
+    ("variable.other.readwrite punctuation.definition.variable", None),
+    ("variable.language", Some("pl-smi")),
+    ("meta.interpolation", Some("pl-s1")),
+    ("source.ruby.embedded", None),
+    ("string.regexp keyword.other", None),
+    ("string.quoted.other.literal punctuation.definition.string", Some("pl-kos")),
+    ("meta.block.parameters punctuation", None),
+];
+
+/// Swift (tree-sitter on github.com).
+const SWIFT: &[(&str, Class)] = &[
+    ("support.type", Some("pl-smi")),
+    ("keyword.operator.function-result", Some("pl-c1")),
+];
+
 /// A condition on the first text of a scope (tree-sitter queries test token text, TextMate
 /// scopes cannot: GH §7.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -420,6 +668,8 @@ const BY_TEXT: &[(&str, &[(&str, TextIs, &str)])] = &[
     ("source.ts", JS_BY_TEXT),
     ("source.tsx", JS_BY_TEXT),
     ("source.rust", RUST_BY_TEXT),
+    ("source.sql", &[("constant.language", OneOf(&["NULL", "null", "Null"]), "pl-k")]),
+    ("source.java", &[("storage.type", OneOf(&["class", "interface", "enum", "record"]), "pl-k")]),
 ];
 
 /// tree-sitter-javascript: `((identifier) @constructor (#match? @constructor "^[A-Z]"))`.
@@ -458,6 +708,26 @@ const OVERLAYS: &[(&str, &[&[(&str, Class)]])] = &[
     ("source.go", &[GO, TREE_SITTER]),
     ("source.css", &[CSS, TREE_SITTER]),
     ("text.html.basic", &[HTML, TREE_SITTER]),
+    ("source.makefile", &[MAKEFILE, SHELL]),
+    ("source.c++", &[CPP]),
+    ("source.dockerfile", &[DOCKERFILE, SHELL]),
+    ("source.sql", &[SQL]),
+    ("source.ini", &[INI]),
+    ("source.kotlin", &[KOTLIN]),
+    ("source.graphql", &[GRAPHQL]),
+    ("source.nix", &[NIX, TREE_SITTER]),
+    ("source.regexp", &[REGEXP]),
+    ("source.css.scss", &[SCSS]),
+    ("source.perl", &[PERL]),
+    ("source.lua", &[LUA]),
+    ("text.tex.latex", &[LATEX]),
+    ("text.xml", &[XML]),
+    ("text.html.php", &[PHP, TREE_SITTER]),
+    ("source.cs", &[CSHARP, TREE_SITTER]),
+    ("source.elixir", &[ELIXIR, TREE_SITTER]),
+    ("source.java", &[JAVA, TREE_SITTER]),
+    ("source.swift", &[SWIFT, TREE_SITTER]),
+    ("source.ruby", &[RUBY, TREE_SITTER]),
 ];
 
 /// Selectors (per Linguist `tm_scope`, [`Variant::Hybrid`]) whose span replaces the span of the
@@ -470,14 +740,17 @@ const ABSORB: &[(&str, &[&str])] = &[
     ("source.tsx", &["string.regexp"]),
 ];
 
-/// Class scheme variants (see the module docs).
+/// Class scheme variants (see the module docs). Grammar ports (shell-session, diff) are used
+/// by all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Variant {
     /// The PrettyLights map alone (GH §7.5, "minimum viable").
     Map,
-    /// Map + [`EXTENDED`].
+    /// Map + the language-independent GH §7.6 rules ([`EXTENDED`]).
     Extended,
-    /// Map + [`EXTENDED`] + the per-language [`OVERLAYS`].
+    /// Map + the per-language overlays ([`OVERLAYS`], [`ABSORB`], [`BY_TEXT`]): TextMate
+    /// grammar bridges for TextMate languages, tree-sitter approximations (GH §7.7) for the
+    /// others.
     Hybrid,
 }
 
@@ -506,10 +779,8 @@ impl Scheme {
         let map = PRETTYLIGHTS_MAP.iter().map(|&(s, c)| (s, Some(c)));
         let extended = EXTENDED.iter().copied();
         let base = match variant {
-            Variant::Map => RuleSet::new(Precedence::LongestFirst, map),
-            Variant::Extended | Variant::Hybrid => {
-                RuleSet::new(Precedence::LongestFirst, map.chain(extended))
-            }
+            Variant::Map | Variant::Hybrid => RuleSet::new(Precedence::LongestFirst, map),
+            Variant::Extended => RuleSet::new(Precedence::LongestFirst, map.chain(extended)),
         };
         let mut overlays = HashMap::new();
         if variant == Variant::Hybrid {

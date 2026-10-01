@@ -23,8 +23,9 @@ mod rules;
 pub struct GithubCode {
     /// Linguist `tm_scope`, e.g. `source.rust`; `None` for an unknown language.
     pub scope: Option<String>,
-    /// Escaped code with `pl-*` spans, lines joined by `\n`, no trailing newline; `None` when
-    /// there is no grammar.
+    /// Escaped code with `pl-*` spans, lines joined by `\n`, no trailing newline (for the
+    /// languages GitHub highlights with tree-sitter a trailing blank line is dropped as well);
+    /// `None` when there is no grammar.
     pub html: Option<String>,
 }
 
@@ -45,11 +46,8 @@ pub fn github(code: &str, lang: &str) -> GithubCode {
 /// CRLF normalized; the final newline dropped), for a `highlight-<scope>` block without a
 /// grammar.
 pub fn github_plain(code: &str) -> String {
-    let mut html = pl::escape_text(&code.replace("\r\n", "\n"));
-    if html.ends_with('\n') {
-        html.pop();
-    }
-    html
+    let code = code.replace("\r\n", "\n");
+    pl::escape_text(code.strip_suffix('\n').unwrap_or(&code))
 }
 
 /// GitLab code block highlighting result.

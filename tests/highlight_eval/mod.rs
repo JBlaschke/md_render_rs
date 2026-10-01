@@ -67,6 +67,8 @@ pub struct GhBlock {
     /// The info-string word of the fenced block in the Markdown source with the same code
     /// (`None`: not found, e.g. a raw-HTML `<pre lang>` block).
     pub lang: Option<String>,
+    /// That block's code as the Markdown parser hands it over (with its final newline).
+    pub code: Option<String>,
 }
 
 /// The Markdown source of a GitHub API output file.
@@ -78,7 +80,7 @@ fn markdown_source(html_file: &str) -> String {
     }
 }
 
-/// Fenced code blocks of a Markdown document: (first info word, code without final newline).
+/// Fenced code blocks of a Markdown document: (first info word, code).
 fn fenced_blocks(markdown: &str) -> Vec<(String, String)> {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, markdown, &comrak::Options::default());
@@ -86,8 +88,7 @@ fn fenced_blocks(markdown: &str) -> Vec<(String, String)> {
     for node in root.descendants() {
         if let comrak::nodes::NodeValue::CodeBlock(cb) = &node.data().value {
             let word = cb.info.split_whitespace().next().unwrap_or("").to_owned();
-            let code = cb.literal.replace("\r\n", "\n");
-            out.push((word, code.strip_suffix('\n').unwrap_or(&code).to_owned()));
+            out.push((word, cb.literal.replace("\r\n", "\n")));
         }
     }
     out
@@ -103,13 +104,19 @@ pub fn github_blocks(doc: &str, markdown: &str) -> Vec<GhBlock> {
     re.captures_iter(doc)
         .map(|c| {
             let html = c[2].to_owned();
-            let code = code_of(&html);
-            // The same code may also appear in an untagged block; prefer a tagged one.
-            let lang = fenced
-                .iter()
-                .find(|(w, lit)| !w.is_empty() && *lit == code)
-                .map(|(w, _)| w.clone());
-            GhBlock { class: c[1].to_owned(), html, lang }
+            let text = code_of(&html);
+            // GitHub drops the final newline (and, for tree-sitter languages, a trailing blank
+            // line), so compare without trailing newlines. The same code may also appear in an
+            // untagged block; prefer a tagged one.
+            let found = fenced.iter().find(|(w, lit)| {
+                !w.is_empty() && lit.trim_end_matches('\n') == text.trim_end_matches('\n')
+            });
+            GhBlock {
+                class: c[1].to_owned(),
+                html,
+                lang: found.map(|(w, _)| w.clone()),
+                code: found.map(|(_, lit)| lit.clone()),
+            }
         })
         .collect()
 }
@@ -316,8 +323,8 @@ pub struct GithubEval {
     pub scores: BTreeMap<String, Score>,
     /// Blocks whose info word resolved to another scope than GitHub's: (word, ours, GitHub's).
     pub scope_mismatches: Vec<(String, Option<String>, String)>,
-    /// Blocks without a fenced source block (not evaluated).
-    pub unmatched: usize,
+    /// Blocks without a fenced source block (not evaluated), by `highlight-` class.
+    pub unmatched: Vec<String>,
 }
 
 /// Score `highlight` (code, info word) → (scope, html) over `blocks`, per `highlight-` class.
@@ -327,18 +334,18 @@ pub fn evaluate_github(
 ) -> GithubEval {
     let mut eval = GithubEval::default();
     for block in blocks {
-        let Some(lang) = &block.lang else {
-            eval.unmatched += 1;
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else {
+            eval.unmatched.push(block.class.clone());
             continue;
         };
-        // The input as the Markdown parser hands it over: with its final newline.
-        let code = format!("{}\n", code_of(&block.html));
-        let (scope, html) = highlight(&code, lang);
+        let (scope, html) = highlight(code, lang);
         if scope.as_ref().map(|s| s.replace('.', "-")).as_deref() != Some(block.class.as_str()) {
             eval.scope_mismatches.push((lang.clone(), scope, block.class.clone()));
         }
+        // No grammar: plain escaped code (as `highlight::github_plain`).
         let ours = html.unwrap_or_else(|| {
-            code.trim_end_matches('\n').replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+            let code = code.strip_suffix('\n').unwrap_or(code);
+            code.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
         });
         eval.scores.entry(block.class.clone()).or_default().add(score_github(&block.html, &ours));
     }
@@ -375,6 +382,16 @@ pub fn github_table(title: &str, scores: &BTreeMap<String, Score>) -> String {
         t.path_pct(),
         t.inner_pct(),
         t.color_pct()
+    );
+    let n = scores.len().max(1) as f64;
+    let mean = |f: fn(&Score) -> f64| scores.values().map(f).sum::<f64>() / n;
+    s += &format!(
+        "{:<28} {:>6} {:>7.1} {:>7.1} {:>7.1}\n",
+        "MEAN OVER LANGUAGES",
+        scores.len(),
+        mean(Score::path_pct),
+        mean(Score::inner_pct),
+        mean(Score::color_pct)
     );
     s
 }

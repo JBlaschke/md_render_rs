@@ -37,7 +37,7 @@ fn github_variants() {
         for (lang, ours, theirs) in t.scope_mismatches.iter().chain(&h.scope_mismatches) {
             println!("scope mismatch: {lang:?} -> ours {ours:?}, GitHub {theirs}");
         }
-        println!("unmatched blocks: {} tuning, {} held-out\n", t.unmatched, h.unmatched);
+        println!("unmatched blocks: tuning {:?}, held-out {:?}\n", t.unmatched, h.unmatched);
     }
 }
 
@@ -103,8 +103,7 @@ fn github_dump() {
         if block.class != want {
             continue;
         }
-        let Some(lang) = &block.lang else { continue };
-        let code = format!("{}\n", code_of(&block.html));
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else { continue };
         let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
         println!("=== {} ({lang})", block.class);
         for (a, b) in block.html.split('\n').zip(ours.split('\n')) {
@@ -128,8 +127,7 @@ fn github_scopes() {
         if block.class != want {
             continue;
         }
-        let Some(lang) = &block.lang else { continue };
-        let code = format!("{}\n", code_of(&block.html));
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else { continue };
         let ours = pl::highlight_with(&code, lang, pl::DEFAULT_VARIANT).html.unwrap_or_default();
         let theirs = class_paths(&block.html);
         let mine = class_paths(&ours);
