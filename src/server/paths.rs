@@ -259,8 +259,13 @@ pub fn resolve(root: &Path, rel: &str, follow_symlinks: bool) -> Result<Resolved
             let meta = std::fs::metadata(&canon)?;
             if meta.is_dir() {
                 Ok(Resolved::Dir(canon))
-            } else {
+            } else if meta.is_file() {
                 Ok(Resolved::File(canon))
+            } else {
+                // FIFOs, sockets and device nodes: reading them can block forever.
+                Err(ResolveError::Forbidden(
+                    "only regular files and directories are served".into(),
+                ))
             }
         }
         Err(e) if is_not_found(&e) => {
@@ -635,6 +640,22 @@ mod tests {
             resolve(&root, "sub/a.md/b", false).unwrap(),
             Resolved::Missing
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_files_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let fifo = root.join("pipe.md");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            return; // no mkfifo on this system
+        }
+        assert!(matches!(
+            resolve(&root, "pipe.md", false),
+            Err(ResolveError::Forbidden(_))
+        ));
     }
 
     #[cfg(unix)]

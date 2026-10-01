@@ -694,6 +694,13 @@ async fn read_contained(ctx: &RenderCtx, path: &Path) -> std::io::Result<Vec<u8>
             e.to_string(),
         ));
     }
+    // Only regular files: a FIFO or device node would block the reader forever.
+    if !tokio::fs::metadata(&canon).await?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
     tokio::fs::read(&canon).await
 }
 
