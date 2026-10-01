@@ -77,6 +77,13 @@ pub(super) const MAX_INCLUDES: usize = 32;
 /// Largest file `::include` reads; bigger blobs give GitLab's `too large` error.
 const MAX_INCLUDE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Largest text include expansion may produce (source plus every pasted copy). GitLab pastes
+/// a file once per directive too, but its renders run under timeouts; without this, 32 short
+/// lines could hand comrak 32 x 10 MB. Directives that would pass the budget get GitLab's
+/// `too large` error instead. Equal to the per-file limit, so a single include behaves as on
+/// GitLab.
+const MAX_INCLUDE_TOTAL_BYTES: usize = MAX_INCLUDE_BYTES as usize;
+
 /// Where `::include` may read from.
 #[derive(Clone, Debug, Default)]
 pub(super) struct IncludeContext {
@@ -135,11 +142,22 @@ pub(super) struct Included {
 
 /// `IncludeFilter` (GL §3.3). Not recursive (included text is not scanned again), at most
 /// [`MAX_INCLUDES`] directives are replaced, URLs become links (gitlab.com does not fetch them),
-/// and files are read only from inside the served root.
+/// files are read only from inside the served root, and the expansion stays within
+/// [`MAX_INCLUDE_TOTAL_BYTES`].
 pub(super) fn includes<'t>(
     text: &'t str,
     ctx: &IncludeContext,
     out: &mut Included,
+) -> Cow<'t, str> {
+    includes_within(text, ctx, out, MAX_INCLUDE_TOTAL_BYTES)
+}
+
+/// [`includes`] with an explicit expansion budget (`budget` bytes of source plus pasted text).
+fn includes_within<'t>(
+    text: &'t str,
+    ctx: &IncludeContext,
+    out: &mut Included,
+    budget: usize,
 ) -> Cow<'t, str> {
     if !text.contains("::include{file=") {
         return Cow::Borrowed(text);
@@ -147,6 +165,8 @@ pub(super) fn includes<'t>(
     let mut result = String::with_capacity(text.len());
     let mut cache: HashMap<String, String> = HashMap::new();
     let mut replaced = 0usize;
+    // Bytes of the source plus everything pasted so far (cached copies count every time).
+    let mut expanded = text.len();
     let mut line_start = 0usize;
     while line_start <= text.len() {
         let line_end = text[line_start..]
@@ -161,9 +181,14 @@ pub(super) fn includes<'t>(
             Some((file, consumed)) => {
                 let content = cache
                     .entry(file.to_owned())
-                    .or_insert_with(|| read_include(file, ctx, out))
-                    .clone();
-                result.push_str(&content);
+                    .or_insert_with(|| read_include(file, ctx, out));
+                if expanded.saturating_add(content.len()) > budget {
+                    let error = error_message_hint(file, "too large", TOTAL_HINT, out);
+                    result.push_str(&error);
+                } else {
+                    expanded += content.len();
+                    result.push_str(content);
+                }
                 result.push_str(&line[consumed..]);
                 replaced += 1;
             }
@@ -233,6 +258,9 @@ fn error_message_hint(file: &str, reason: &str, hint: &str, out: &mut Included) 
         .push(format!("::include{{file={file}}}: {reason}{sep}{hint}"));
     format!("**Error including '{}': {reason}**", markdown_link(file))
 }
+
+/// Banner hint for an include that would pass [`MAX_INCLUDE_TOTAL_BYTES`].
+const TOTAL_HINT: &str = "(all includes together are limited to 10 MiB)";
 
 /// Banner hint for an include that names something inside `.git`.
 const GIT_DIR_HINT: &str = "(`.git` is not part of the repository)";
@@ -528,6 +556,49 @@ mod tests {
         );
         assert_eq!(res, "IGNORE-OK\nDOTDIR-OK");
         assert!(out.warnings.is_empty());
+    }
+
+    /// GL-INC-3: repeated includes cannot amplify a short source past the total budget.
+    #[test]
+    fn include_expansion_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mib = "word *emph* text\n".repeat(1024 * 1024 / 17 + 1);
+        assert!(mib.len() >= 1024 * 1024);
+        std::fs::write(root.join("big.md"), &mib).unwrap();
+        std::fs::write(root.join("small.md"), "SMALL").unwrap();
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        let mut out = Included::default();
+        let text = "::include{file=big.md}\n".repeat(MAX_INCLUDES - 1) + "::include{file=small.md}";
+        let res = includes(&text, &ctx, &mut out);
+        let fits = (MAX_INCLUDE_TOTAL_BYTES - text.len()) / mib.len();
+        assert_eq!(res.matches(mib.as_str()).count(), fits);
+        let refused = MAX_INCLUDES - 1 - fits;
+        let error = "**Error including '[big\\.md](<big.md>)': too large**";
+        assert_eq!(res.matches(error).count(), refused);
+        assert!(res.len() <= MAX_INCLUDE_TOTAL_BYTES + refused * error.len());
+        // A later include that still fits the budget is pasted.
+        assert!(res.ends_with("SMALL"));
+        assert_eq!(out.warnings.len(), refused);
+        assert!(
+            out.warnings
+                .iter()
+                .all(|w| w.starts_with("::include{file=big.md}: too large"))
+        );
+
+        // The budget counts the source and every cached copy.
+        let mut out = Included::default();
+        let text =
+            "x\n::include{file=small.md}\n::include{file=small.md}\n::include{file=small.md}";
+        let res = includes_within(text, &ctx, &mut out, text.len() + 2 * "SMALL".len());
+        assert_eq!(
+            res,
+            "x\nSMALL\nSMALL\n**Error including '[small\\.md](<small.md>)': too large**"
+        );
+        assert_eq!(out.warnings.len(), 1);
     }
 
     #[test]
