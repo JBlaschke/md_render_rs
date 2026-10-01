@@ -112,17 +112,29 @@ fn normalize_oracle(root: &NodeRef<'_>) {
         if a.has_attr("data-gollum") {
             continue; // wiki link, handled below
         }
+        // `data-original` holds the original inner HTML.
         let original = attr(&a, "data-original").unwrap_or_else(|| a.text().to_string());
-        if let Some(href) = attr(&a, "data-original-href") {
-            let link = root.tree.new_element("a");
-            link.set_attr("data-sourcepos", "*");
-            link.set_attr("href", &href);
-            link.append_html(original.as_str());
-            a.insert_before(&link);
-        } else {
-            a.insert_before(&root.tree.new_text(original.as_str()));
+        let original_text = Document::fragment(original.as_str()).html_root().text().to_string();
+        // Labels are wrapped in `span.gl-label`.
+        let target = match a.parent() {
+            Some(p) if name(&p).as_deref() == Some("span") && classes(&p).iter().any(|c| c == "gl-label") => p,
+            _ => a.clone(),
+        };
+        let href = attr(&a, "data-original-href").or_else(|| {
+            (attr(&a, "data-link-reference").as_deref() == Some("true")).then(|| original_text.clone())
+        });
+        match href {
+            Some(href) => {
+                // The original link (an autolink or `[text](url)`): its sourcepos is lost.
+                let link = root.tree.new_element("a");
+                link.set_attr("data-sourcepos", "*");
+                link.set_attr("href", &href);
+                link.append_html(original.as_str());
+                target.insert_before(&link);
+            }
+            None => target.insert_before(&root.tree.new_text(original_text.as_str())),
         }
-        a.remove_from_parent();
+        target.remove_from_parent();
     }
     // Footnote suffix: every `li[id^=fn-]` of the section shares one `-NNNN`.
     let suffix = all_elements(root)
@@ -157,6 +169,12 @@ fn normalize_oracle(root: &NodeRef<'_>) {
             remove_classes(&n, &["gfm"]);
         }
         n.remove_attr("data-proxied-urls");
+        // HeadingLocalizationFilter translated the anchor label for the viewer's locale.
+        if let (Some(content), Some(label)) = (attr(&n, "data-heading-content"), attr(&n, "aria-label")) {
+            if !label.starts_with("Link to heading '") {
+                n.set_attr("aria-label", &format!("Link to heading '{content}'"));
+            }
+        }
         if let Some(sfx) = &suffix {
             for a in ["id", "href"] {
                 if let Some(v) = attr(&n, a) {
@@ -417,7 +435,12 @@ fn truncate(s: &str) -> String {
 
 /// Known residuals: (file, reason). These may differ; everything else must match exactly.
 const BLOB_RESIDUALS: &[(&str, &str)] = &[];
-const ISSUE_RESIDUALS: &[(&str, &str)] = &[];
+const ISSUE_RESIDUALS: &[(&str, &str)] = &[
+    ("issue_374563", "stale cached render: older comrak list end sourcepos (prototype differs too)"),
+    ("issue_388801", "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)"),
+    ("issue_424022", "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)"),
+    ("issue_630440", "needs GitLab services: PlantUML image, group custom emoji, `+` reference"),
+];
 
 fn run_set(dir: &Path, subdir: &str, mode: Mode, residuals: &[(&str, &str)]) -> (usize, usize, Vec<String>) {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir.join("gitlab").join(subdir))

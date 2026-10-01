@@ -16,18 +16,16 @@ pub(super) const FILTER_ITEM_LIMIT: usize = 1000;
 /// Context shared by the filters.
 #[derive(Clone, Debug)]
 pub(super) struct FilterContext {
-    /// Hosts treated as internal by ExternalLinkFilter (gitlab.com's `Gitlab.config.gitlab.url`
-    /// host, plus local hosts offline, GL §5.12).
+    /// Hosts treated as internal by ExternalLinkFilter: gitlab.com's `Gitlab.config.gitlab.url`
+    /// host (GL §5.12). Local hosts are deliberately *not* added: gitlab.com gives
+    /// `http://localhost:3000` links `rel="nofollow ..."` and `target="_blank"` too (verified
+    /// against the live `doc/user/markdown.md` render).
     pub internal_hosts: Vec<String>,
 }
 
 impl Default for FilterContext {
     fn default() -> Self {
-        FilterContext {
-            internal_hosts: ["gitlab.com", "localhost", "127.0.0.1", "[::1]", "::1"]
-                .map(String::from)
-                .to_vec(),
-        }
+        FilterContext { internal_hosts: vec!["gitlab.com".to_owned()] }
     }
 }
 
