@@ -14,6 +14,10 @@ use crate::error::{Error, Result};
 /// [`InMemoryFileSystem::write_file`](crate::InMemoryFileSystem::write_file)
 /// enforces this; the reader rejects archives whose members violate it.
 ///
+/// # Errors
+///
+/// [`Error::InvalidPath`] naming the path and the rule it breaks.
+///
 /// ```
 /// use tarfs::check_path;
 ///

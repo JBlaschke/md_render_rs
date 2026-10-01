@@ -2,6 +2,7 @@
 name = "tarfs"
 version = "0.1.0"
 description = "In-memory filesystem view of a .tar.gz archive (Rust port of TarFS.jl)"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -270,6 +270,20 @@ fn garbage_and_bad_checksums_are_corrupt() {
 }
 
 #[test]
+fn data_after_the_last_gzip_member_is_corrupt() {
+    // Documented limitation (README "Limitations"): unlike GNU gzip, which warns
+    // about and ignores trailing zero bytes, the decoder reads anything after the
+    // last member as the start of a malformed next member.
+    let gz = gzip(&fs_from(&tree()).write_tarball(Vec::new()).unwrap());
+    for trailer in [&[0u8; 512][..], b"garbage"] {
+        let mut padded = gz.clone();
+        padded.extend_from_slice(trailer);
+        let msg = corrupt_message(InMemoryFileSystem::from_tar_gz_bytes(&padded));
+        assert!(msg.starts_with("gzip:"), "{msg}");
+    }
+}
+
+#[test]
 fn open_reports_missing_and_corrupt_files_with_their_path() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.tar.gz");

@@ -47,7 +47,10 @@
 //! * **Reproducible bytes.** Entries are written in sorted path order with fixed
 //!   metadata (mode `0o644`, uid/gid/mtime `0`). The tar bytes are identical to
 //!   TarFS.jl's for the same contents, and, unlike TarFS.jl, the gzip layer is
-//!   reproducible across platforms too (fixed header, pure-Rust compressor).
+//!   reproducible across platforms too: the gzip header is fixed (mtime 0, OS byte
+//!   "unknown") and the compressor is flate2's default pure-Rust backend
+//!   (`miniz_oxide`). A build that switches flate2 to another backend (its `zlib*`
+//!   features) still writes identical tar bytes, but may compress them differently.
 //! * **Zero-copy reads, streaming writes.** The decompressed archive is one
 //!   immutable [`Bytes`] buffer; reading a file is an O(1) reference-counted slice
 //!   and flushing streams source-backed files straight from it.
@@ -82,6 +85,11 @@ mod write;
 pub use error::{Error, Result};
 pub use path::check_path;
 
+// Compile and run the README's examples as doctests, so they cannot go stale.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 /// Where an entry's bytes live.
 #[derive(Debug, Clone)]
 enum Entry {
@@ -99,7 +107,8 @@ enum Entry {
 /// [`write_file`](Self::write_file) / [`delete_file`](Self::delete_file); flush
 /// with [`write_tarball_gz`](Self::write_tarball_gz) or [`open_tarball_gz`].
 ///
-/// Cloning is cheap: the source buffer and staged contents are reference-counted.
+/// Cloning copies the path index only: the source buffer and staged contents are
+/// reference-counted and shared.
 ///
 /// ```
 /// let mut fs = tarfs::InMemoryFileSystem::new();
@@ -141,6 +150,7 @@ impl InMemoryFileSystem {
     /// let fs = tarfs::InMemoryFileSystem::new();
     /// assert!(fs.is_empty());
     /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -296,7 +306,10 @@ impl InMemoryFileSystem {
         let bytes = self
             .get(path)
             .ok_or_else(|| Error::NotFound(path.to_owned()))?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| Error::Utf8(path.to_owned()))
+        // Validate before copying, so a binary file costs no allocation.
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| Error::Utf8(path.to_owned()))
     }
 
     /// Borrowed contents of `path`, if present.

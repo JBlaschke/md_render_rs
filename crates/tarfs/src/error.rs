@@ -56,6 +56,18 @@ pub enum Error {
 }
 
 /// Result alias for tarfs operations.
+///
+/// ```
+/// fn first_line(fs: &tarfs::InMemoryFileSystem) -> tarfs::Result<String> {
+///     let text = fs.read_to_string("notes.txt")?;
+///     Ok(text.lines().next().unwrap_or_default().to_owned())
+/// }
+///
+/// let mut fs = tarfs::InMemoryFileSystem::new();
+/// fs.write_file("notes.txt", "one\ntwo\n")?;
+/// assert_eq!(first_line(&fs)?, "one");
+/// # Ok::<(), tarfs::Error>(())
+/// ```
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Wrap an OS error with a description of what was being done to which path,
