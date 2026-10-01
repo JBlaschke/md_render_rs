@@ -14,7 +14,9 @@ pub(crate) fn html_open(theme: Theme, icon_sprite: Option<&str>) -> String {
         Theme::Light => "gl-light",
         Theme::Dark => "gl-dark",
     };
-    let sprite = icon_sprite.map(|s| format!(" data-icon-sprite=\"{}\"", html::attr(s))).unwrap_or_default();
+    let sprite = icon_sprite
+        .map(|s| format!(" data-icon-sprite=\"{}\"", html::attr(s)))
+        .unwrap_or_default();
     format!("<html class=\"{mode} ui-neutral\" lang=\"en\"{sprite}>\n")
 }
 
@@ -59,10 +61,19 @@ pub(crate) const CHROME_CSS: &str = "\
 pub(crate) const BODY_OPEN: &str = "<body class=\"tab-width-8\">\n";
 
 /// The `<body>` contents: wrapper markup per mode × layout around `content`.
-pub(crate) fn body(mode: Mode, layout: Layout, file_name: Option<&str>, content: &str, banners: &str, root_attrs: &str) -> String {
+pub(crate) fn body(
+    mode: Mode,
+    layout: Layout,
+    file_name: Option<&str>,
+    content: &str,
+    banners: &str,
+    root_attrs: &str,
+) -> String {
     let mut out = String::with_capacity(content.len() + 2048);
     out.push_str("<div class=\"container-fluid container-limited gl-pt-5 mdr-page\">\n");
-    out.push_str(&format!("<div id=\"mdr-banners\" class=\"mdr-banners\">{banners}</div>\n"));
+    out.push_str(&format!(
+        "<div id=\"mdr-banners\" class=\"mdr-banners\">{banners}</div>\n"
+    ));
     match (mode, layout) {
         (Mode::Readme, Layout::Readme) => {
             out.push_str("<div class=\"file-holder\" id=\"fileHolder\">\n");
@@ -86,7 +97,10 @@ pub(crate) fn body(mode: Mode, layout: Layout, file_name: Option<&str>, content:
         (Mode::Comment, Layout::Readme) => {
             out.push_str("<div class=\"mdr-note\">\n");
             if let Some(name) = file_name {
-                out.push_str(&format!("<div class=\"mdr-note-header\"><strong>{}</strong></div>\n", html::text(name)));
+                out.push_str(&format!(
+                    "<div class=\"mdr-note-header\"><strong>{}</strong></div>\n",
+                    html::text(name)
+                ));
             }
             out.push_str(&format!(
                 "<div class=\"note-body\"><div class=\"note-text md js-markup-content\" id=\"md-content\"{root_attrs}>{content}</div></div>\n"
@@ -102,7 +116,10 @@ pub(crate) fn body(mode: Mode, layout: Layout, file_name: Option<&str>, content:
 }
 
 fn alert_icon(icon: Icon) -> String {
-    octicons::svg(icon, "gl-icon s16 gl-alert-icon gl-alert-icon-no-title mdr-alert-icon")
+    octicons::svg(
+        icon,
+        "gl-icon s16 gl-alert-icon gl-alert-icon-no-title mdr-alert-icon",
+    )
 }
 
 /// A banner above the content (GitLab UI `GlAlert` markup).
@@ -133,12 +150,20 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
     }
     for e in entries {
         let (icon, label) = if e.is_dir {
-            (octicons::svg(Icon::FileDirectoryFill, "s16 mdr-listing-icon folder-icon"), "Directory")
+            (
+                octicons::svg(Icon::FileDirectoryFill, "s16 mdr-listing-icon folder-icon"),
+                "Directory",
+            )
         } else {
-            (octicons::svg(Icon::File, "s16 mdr-listing-icon file-icon"), "File")
+            (
+                octicons::svg(Icon::File, "s16 mdr-listing-icon file-icon"),
+                "File",
+            )
         };
         let size = match (e.is_dir, e.size) {
-            (false, Some(n)) => format!("<span class=\"mdr-listing-size\">{}</span>", human_size(n)),
+            (false, Some(n)) => {
+                format!("<span class=\"mdr-listing-size\">{}</span>", human_size(n))
+            }
             _ => String::new(),
         };
         out.push_str(&format!(
@@ -185,7 +210,10 @@ mod tests {
 
     #[test]
     fn banner_variants() {
-        let b = banner(&Banner { kind: BannerKind::Error, message: "x & y".into() });
+        let b = banner(&Banner {
+            kind: BannerKind::Error,
+            message: "x & y".into(),
+        });
         assert!(b.contains("gl-alert-danger"));
         assert!(b.contains("x &amp; y"));
     }

@@ -24,7 +24,14 @@ pub(crate) struct Selection<'a> {
 }
 
 /// GitHub core roles after the theme files, in cascade order (GH §4.5).
-const GITHUB_ORDER: [&str; 6] = ["primitives", "primer", "global", "github", "repository", "code"];
+const GITHUB_ORDER: [&str; 6] = [
+    "primitives",
+    "primer",
+    "global",
+    "github",
+    "repository",
+    "code",
+];
 
 /// Media queries GitLab uses for "system" (auto) mode (GL §11.3).
 const MEDIA_LIGHT: &str = "(prefers-color-scheme: light)";
@@ -48,13 +55,20 @@ fn is_fallback(m: &FlavorManifest) -> bool {
 }
 
 fn sheet(s: &Stylesheet, media: Option<String>) -> Sheet<'_> {
-    Sheet { path: &s.path, media }
+    Sheet {
+        path: &s.path,
+        media,
+    }
 }
 
 /// Fallback bundles: every sheet in manifest order.
 fn fallback_selection<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'a> {
     Selection {
-        sheets: m.stylesheets.iter().map(|s| sheet(s, s.media.clone())).collect(),
+        sheets: m
+            .stylesheets
+            .iter()
+            .map(|s| sheet(s, s.media.clone()))
+            .collect(),
         light: theme.light.clone(),
         dark: theme.dark.clone(),
     }
@@ -66,8 +80,12 @@ pub(crate) fn github<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
     if is_fallback(m) {
         return fallback_selection(m, theme);
     }
-    let theme_sheets: Vec<&Stylesheet> = m.stylesheets.iter().filter(|s| s.role == "theme").collect();
-    let available: Vec<&str> = theme_sheets.iter().filter_map(|s| s.theme.as_deref()).collect();
+    let theme_sheets: Vec<&Stylesheet> =
+        m.stylesheets.iter().filter(|s| s.role == "theme").collect();
+    let available: Vec<&str> = theme_sheets
+        .iter()
+        .filter_map(|s| s.theme.as_deref())
+        .collect();
     let light = resolve_theme(&available, &theme.light, "light");
     let dark = resolve_theme(&available, &theme.dark, "dark");
     let wanted: Vec<&str> = match theme.theme {
@@ -84,19 +102,35 @@ pub(crate) fn github<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
             continue;
         }
         sheets.extend(
-            theme_sheets.iter().filter(|s| s.theme.as_deref() == Some(*id)).map(|s| sheet(s, s.media.clone())),
+            theme_sheets
+                .iter()
+                .filter(|s| s.theme.as_deref() == Some(*id))
+                .map(|s| sheet(s, s.media.clone())),
         );
     }
     for role in GITHUB_ORDER {
-        sheets.extend(m.stylesheets.iter().filter(|s| s.role == role).map(|s| sheet(s, s.media.clone())));
+        sheets.extend(
+            m.stylesheets
+                .iter()
+                .filter(|s| s.role == role)
+                .map(|s| sheet(s, s.media.clone())),
+        );
     }
     sheets.extend(
         m.stylesheets
             .iter()
-            .filter(|s| s.role != "theme" && s.role != "fallback" && !GITHUB_ORDER.contains(&s.role.as_str()))
+            .filter(|s| {
+                s.role != "theme"
+                    && s.role != "fallback"
+                    && !GITHUB_ORDER.contains(&s.role.as_str())
+            })
             .map(|s| sheet(s, s.media.clone())),
     );
-    Selection { sheets, light, dark }
+    Selection {
+        sheets,
+        light,
+        dark,
+    }
 }
 
 /// GitLab: `app` light/dark, `tailwind`, `fonts`, `highlight` light/dark, then unknown roles.
@@ -107,8 +141,12 @@ pub(crate) fn gitlab<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
         return fallback_selection(m, theme);
     }
     let themed = |s: &&Stylesheet| s.role == "app" || s.role == "highlight";
-    let available: Vec<&str> =
-        m.stylesheets.iter().filter(themed).map(|s| s.theme.as_deref().unwrap_or("light")).collect();
+    let available: Vec<&str> = m
+        .stylesheets
+        .iter()
+        .filter(themed)
+        .map(|s| s.theme.as_deref().unwrap_or("light"))
+        .collect();
     let light = resolve_theme(&available, &theme.light, "light");
     let dark = resolve_theme(&available, &theme.dark, "dark");
 
@@ -126,16 +164,25 @@ pub(crate) fn gitlab<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
         }
     };
     let slot_order = |s: &Stylesheet| -> u8 {
-        if s.theme.as_deref().unwrap_or("light") == light { 0 } else { 1 }
+        if s.theme.as_deref().unwrap_or("light") == light {
+            0
+        } else {
+            1
+        }
     };
 
     let mut sheets = Vec::new();
     for role in ["app", "tailwind", "fonts", "highlight"] {
-        let mut of_role: Vec<&Stylesheet> = m.stylesheets.iter().filter(|s| s.role == role).collect();
+        let mut of_role: Vec<&Stylesheet> =
+            m.stylesheets.iter().filter(|s| s.role == role).collect();
         if role == "app" || role == "highlight" {
             // Light before dark regardless of manifest order (GL §12); stable otherwise.
             of_role.sort_by_key(|s| slot_order(s));
-            sheets.extend(of_role.into_iter().filter_map(|s| themed_media(s).map(|media| sheet(s, media))));
+            sheets.extend(
+                of_role
+                    .into_iter()
+                    .filter_map(|s| themed_media(s).map(|media| sheet(s, media))),
+            );
         } else {
             sheets.extend(of_role.into_iter().map(|s| sheet(s, s.media.clone())));
         }
@@ -143,10 +190,16 @@ pub(crate) fn gitlab<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
     sheets.extend(
         m.stylesheets
             .iter()
-            .filter(|s| !["app", "tailwind", "fonts", "highlight", "fallback"].contains(&s.role.as_str()))
+            .filter(|s| {
+                !["app", "tailwind", "fonts", "highlight", "fallback"].contains(&s.role.as_str())
+            })
             .map(|s| sheet(s, s.media.clone())),
     );
-    Selection { sheets, light, dark }
+    Selection {
+        sheets,
+        light,
+        dark,
+    }
 }
 
 #[cfg(test)]
@@ -164,7 +217,11 @@ mod tests {
     }
 
     fn sel(theme: Theme, light: &str, dark: &str) -> ThemeSel {
-        ThemeSel { theme, light: light.into(), dark: dark.into() }
+        ThemeSel {
+            theme,
+            light: light.into(),
+            dark: dark.into(),
+        }
     }
 
     fn github_manifest() -> FlavorManifest {
@@ -236,14 +293,20 @@ mod tests {
     #[test]
     fn github_missing_theme_falls_back() {
         let m = github_manifest();
-        let s = github(&m, &sel(Theme::Auto, "light_tritanopia", "dark_high_contrast"));
+        let s = github(
+            &m,
+            &sel(Theme::Auto, "light_tritanopia", "dark_high_contrast"),
+        );
         assert_eq!((s.light.as_str(), s.dark.as_str()), ("light", "dark"));
         assert_eq!(paths(&s)[..2], ["g/light.css", "g/dark.css"]);
     }
 
     #[test]
     fn github_without_any_theme_files_keeps_ids() {
-        let m = FlavorManifest { stylesheets: vec![ss("g/primer.css", "primer", None)], ..Default::default() };
+        let m = FlavorManifest {
+            stylesheets: vec![ss("g/primer.css", "primer", None)],
+            ..Default::default()
+        };
         let s = github(&m, &sel(Theme::Auto, "light_colorblind", "dark"));
         assert_eq!(s.light, "light_colorblind");
         assert_eq!(paths(&s), ["g/primer.css"]);
@@ -253,7 +316,11 @@ mod tests {
     fn fallback_manifest_links_everything() {
         let m = FlavorManifest {
             fallback: true,
-            stylesheets: vec![Stylesheet { path: "github/fallback.css".into(), role: "fallback".into(), ..Default::default() }],
+            stylesheets: vec![Stylesheet {
+                path: "github/fallback.css".into(),
+                role: "fallback".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let s = github(&m, &ThemeSel::default());
@@ -280,7 +347,11 @@ mod tests {
     fn gitlab_auto_media_and_order() {
         let m = gitlab_manifest();
         let s = gitlab(&m, &ThemeSel::default());
-        let got: Vec<(&str, Option<&str>)> = s.sheets.iter().map(|s| (s.path, s.media.as_deref())).collect();
+        let got: Vec<(&str, Option<&str>)> = s
+            .sheets
+            .iter()
+            .map(|s| (s.path, s.media.as_deref()))
+            .collect();
         assert_eq!(
             got,
             [
@@ -298,10 +369,16 @@ mod tests {
     fn gitlab_light_and_dark_filter() {
         let m = gitlab_manifest();
         let s = gitlab(&m, &sel(Theme::Light, "light", "dark"));
-        assert_eq!(paths(&s), ["l/app.css", "l/tw.css", "l/fonts.css", "l/hl-white.css"]);
+        assert_eq!(
+            paths(&s),
+            ["l/app.css", "l/tw.css", "l/fonts.css", "l/hl-white.css"]
+        );
         assert!(s.sheets[0].media.is_none());
         let s = gitlab(&m, &sel(Theme::Dark, "light", "dark_dimmed"));
-        assert_eq!(paths(&s), ["l/app-dark.css", "l/tw.css", "l/fonts.css", "l/hl-dark.css"]);
+        assert_eq!(
+            paths(&s),
+            ["l/app-dark.css", "l/tw.css", "l/fonts.css", "l/hl-dark.css"]
+        );
         assert_eq!(s.dark, "dark");
     }
 }

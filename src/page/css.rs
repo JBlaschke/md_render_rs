@@ -18,7 +18,10 @@ pub(crate) enum Target {
     /// Leave the reference untouched (`data:` URI, `#fragment`, empty).
     Keep,
     /// A file inside the bundle, plus an optional `#fragment` to re-append.
-    Bundle { path: String, fragment: Option<String> },
+    Bundle {
+        path: String,
+        fragment: Option<String>,
+    },
     /// An absolute/external URL or a path that leaves the bundle.
     Unresolved,
 }
@@ -45,7 +48,13 @@ fn ref_regex() -> &'static Regex {
 }
 
 fn split_capture<'h>(c: &Captures<'h>) -> (RefKind, &'h str) {
-    for (group, kind) in [(1, RefKind::Url), (2, RefKind::Url), (3, RefKind::Url), (4, RefKind::ImportString), (5, RefKind::ImportString)] {
+    for (group, kind) in [
+        (1, RefKind::Url),
+        (2, RefKind::Url),
+        (3, RefKind::Url),
+        (4, RefKind::ImportString),
+        (5, RefKind::ImportString),
+    ] {
         if let Some(m) = c.get(group) {
             return (kind, m.as_str());
         }
@@ -69,7 +78,10 @@ pub(crate) fn references(css: &str) -> Vec<(RefKind, String)> {
 /// or `None` to keep the original text. The result is always written as `url("…")`
 /// (`@import url("…")` for import strings), so the new URL must not contain `"`, `\` or
 /// newlines (data URIs and percent-encoded paths never do).
-pub(crate) fn rewrite<'c>(css: &'c str, mut replace: impl FnMut(RefKind, &str) -> Option<String>) -> Cow<'c, str> {
+pub(crate) fn rewrite<'c>(
+    css: &'c str,
+    mut replace: impl FnMut(RefKind, &str) -> Option<String>,
+) -> Cow<'c, str> {
     ref_regex().replace_all(css, |c: &Captures<'_>| {
         let (kind, raw) = split_capture(c);
         match replace(kind, raw) {
@@ -84,11 +96,15 @@ pub(crate) fn rewrite<'c>(css: &'c str, mut replace: impl FnMut(RefKind, &str) -
 
 /// Does `s` start with a URL scheme (`http:`, `data:`, `c:`…)?
 fn has_scheme(s: &str) -> bool {
-    let Some(colon) = s.find(':') else { return false };
+    let Some(colon) = s.find(':') else {
+        return false;
+    };
     let scheme = &s[..colon];
     !scheme.is_empty()
         && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// Normalize a `/`-separated relative path, resolving `.` and `..`. `None` if it climbs out
@@ -104,13 +120,20 @@ pub(crate) fn normalize(path: &str) -> Option<String> {
             s => out.push(s),
         }
     }
-    if out.is_empty() { None } else { Some(out.join("/")) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join("/"))
+    }
 }
 
 /// Resolve a stylesheet reference against the bundle path of the stylesheet containing it.
 pub(crate) fn resolve(base_path: &str, reference: &str) -> Target {
     let r = reference.trim();
-    if r.is_empty() || r.starts_with('#') || r.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:")) {
+    if r.is_empty()
+        || r.starts_with('#')
+        || r.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:"))
+    {
         return Target::Keep;
     }
     if r.starts_with("//") || has_scheme(r) {
@@ -145,7 +168,10 @@ mod tests {
     #[test]
     fn route_matches_render_default() {
         assert_eq!(BUNDLE_ROUTE, format!("{}/bundle", crate::PREFIX));
-        assert_eq!(crate::render::RenderOptions::new(crate::Flavor::Github).bundle_url, BUNDLE_ROUTE);
+        assert_eq!(
+            crate::render::RenderOptions::new(crate::Flavor::Github).bundle_url,
+            BUNDLE_ROUTE
+        );
     }
 
     #[test]
@@ -154,7 +180,18 @@ mod tests {
             @import 'x.css'; @import "y.css"; @import url(z.css);
             c{src:url('f.woff2') format("woff2")} d{e:url(data:image/png;base64,AAA=)}"#;
         let refs: Vec<String> = references(css).into_iter().map(|(_, r)| r).collect();
-        assert_eq!(refs, ["img/a.png", "b c.svg#x", "x.css", "y.css", "z.css", "f.woff2", "data:image/png;base64,AAA="]);
+        assert_eq!(
+            refs,
+            [
+                "img/a.png",
+                "b c.svg#x",
+                "x.css",
+                "y.css",
+                "z.css",
+                "f.woff2",
+                "data:image/png;base64,AAA="
+            ]
+        );
         assert_eq!(references(css)[2].0, RefKind::ImportString);
     }
 
@@ -162,7 +199,10 @@ mod tests {
     fn rewrite_wraps_consistently() {
         let css = "a{b:url(x.png)}@import 'y.css';c{d:url(keep.png)}";
         let out = rewrite(css, |_, r| (r != "keep.png").then(|| format!("data:,{r}")));
-        assert_eq!(out, "a{b:url(\"data:,x.png\")}@import url(\"data:,y.css\");c{d:url(keep.png)}");
+        assert_eq!(
+            out,
+            "a{b:url(\"data:,x.png\")}@import url(\"data:,y.css\");c{d:url(keep.png)}"
+        );
     }
 
     #[test]
@@ -170,29 +210,53 @@ mod tests {
         let base = "github/assets/global-1.css";
         assert_eq!(
             resolve(base, "../images/spinners/a.gif"),
-            Target::Bundle { path: "github/images/spinners/a.gif".into(), fragment: None }
+            Target::Bundle {
+                path: "github/images/spinners/a.gif".into(),
+                fragment: None
+            }
         );
         assert_eq!(
-            resolve("gitlab/assets/application-1.css", "./icons-stacked-2.svg#git"),
-            Target::Bundle { path: "gitlab/assets/icons-stacked-2.svg".into(), fragment: Some("git".into()) }
+            resolve(
+                "gitlab/assets/application-1.css",
+                "./icons-stacked-2.svg#git"
+            ),
+            Target::Bundle {
+                path: "gitlab/assets/icons-stacked-2.svg".into(),
+                fragment: Some("git".into())
+            }
         );
         assert_eq!(
-            resolve("gitlab/lib/katex/katex.min.css", "fonts/KaTeX_Main-Regular.woff2?v=1"),
-            Target::Bundle { path: "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2".into(), fragment: None }
+            resolve(
+                "gitlab/lib/katex/katex.min.css",
+                "fonts/KaTeX_Main-Regular.woff2?v=1"
+            ),
+            Target::Bundle {
+                path: "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2".into(),
+                fragment: None
+            }
         );
         assert_eq!(
             resolve(base, "a%20b.png"),
-            Target::Bundle { path: "github/assets/a b.png".into(), fragment: None }
+            Target::Bundle {
+                path: "github/assets/a b.png".into(),
+                fragment: None
+            }
         );
         assert_eq!(
             resolve(base, "/__/md-render/bundle/github/emoji/x.png"),
-            Target::Bundle { path: "github/emoji/x.png".into(), fragment: None }
+            Target::Bundle {
+                path: "github/emoji/x.png".into(),
+                fragment: None
+            }
         );
         assert_eq!(resolve(base, "data:image/png;base64,AA"), Target::Keep);
         assert_eq!(resolve(base, "DATA:,x"), Target::Keep);
         assert_eq!(resolve(base, "#filter"), Target::Keep);
         assert_eq!(resolve(base, ""), Target::Keep);
-        assert_eq!(resolve(base, "https://example.com/x.png"), Target::Unresolved);
+        assert_eq!(
+            resolve(base, "https://example.com/x.png"),
+            Target::Unresolved
+        );
         assert_eq!(resolve(base, "//cdn.example.com/x.png"), Target::Unresolved);
         assert_eq!(resolve(base, "/images/x.png"), Target::Unresolved);
         assert_eq!(resolve(base, "../../../etc/passwd"), Target::Unresolved);

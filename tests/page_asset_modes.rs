@@ -21,9 +21,13 @@ fn bundle() -> (tempfile::TempDir, Bundle) {
 }
 
 fn decode_data_uri(uri: &str) -> Vec<u8> {
-    let (_, b64) = uri.split_once(";base64,").unwrap_or_else(|| panic!("base64 data URI: {uri}"));
+    let (_, b64) = uri
+        .split_once(";base64,")
+        .unwrap_or_else(|| panic!("base64 data URI: {uri}"));
     let b64 = b64.split('#').next().unwrap_or(b64);
-    base64::engine::general_purpose::STANDARD.decode(b64).expect("valid base64")
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("valid base64")
 }
 
 /// Text of the inlined stylesheet for bundle path `path`.
@@ -39,7 +43,10 @@ fn github_inline_is_self_contained() {
     let mut page = Page::new(Flavor::Github);
     page.assets = AssetMode::Inline;
     page.live = Some(live_info()); // ignored outside server mode
-    page.content.features = Features { math: true, mermaid: true };
+    page.content.features = Features {
+        math: true,
+        mermaid: true,
+    };
     let html = page.render(&bundle);
     assert_self_contained(&html);
     let doc = Document::from(html.as_str());
@@ -73,31 +80,55 @@ fn github_inline_is_self_contained() {
     assert_eq!(urls.len(), 3, "{global}");
     assert!(urls[0].starts_with("data:image/gif;base64,"));
     assert_eq!(decode_data_uri(&urls[0]), GIF);
-    assert_eq!(urls[1], "data:,", "root-relative URL outside the bundle is dropped");
+    assert_eq!(
+        urls[1], "data:,",
+        "root-relative URL outside the bundle is dropped"
+    );
     assert_eq!(urls[2], "data:,", "external URL is dropped");
     let primer = inlined_css(&doc, "github/assets/primer-0002.css");
-    assert_eq!(css_urls(&primer), ["data:image/svg+xml;base64,PHN2Zy8+"], "data: URIs are untouched");
+    assert_eq!(
+        css_urls(&primer),
+        ["data:image/svg+xml;base64,PHN2Zy8+"],
+        "data: URIs are untouched"
+    );
     let promo = inlined_css(&doc, "github/assets/github-0004.css");
-    assert_eq!(css_urls(&promo), ["data:,"], "large site images are not inlined");
+    assert_eq!(
+        css_urls(&promo),
+        ["data:,"],
+        "large site images are not inlined"
+    );
     // @import is followed and inlined as CSS, with its own references resolved.
     let repo = inlined_css(&doc, "github/assets/repository-0005.css");
-    let import = repo.split("@import url(\"").nth(1).expect("@import rewritten");
+    let import = repo
+        .split("@import url(\"")
+        .nth(1)
+        .expect("@import rewritten");
     let import = &import[..import.find('"').unwrap()];
     assert!(import.starts_with("data:text/css;base64,"));
     let imported = String::from_utf8(decode_data_uri(import)).unwrap();
     let nested = css_urls(&imported);
     assert_eq!(nested.len(), 1);
-    assert!(nested[0].starts_with("data:image/svg+xml;base64,") && nested[0].ends_with("#frag"), "{}", nested[0]);
+    assert!(
+        nested[0].starts_with("data:image/svg+xml;base64,") && nested[0].ends_with("#frag"),
+        "{}",
+        nested[0]
+    );
 
     // Content: no data-sourcepos, custom emoji inlined, the author's links untouched.
     assert!(!html.contains("data-sourcepos"));
     let emoji = attr(&doc, "img.emoji", "src").unwrap();
     assert!(emoji.starts_with("data:image/png;base64,"));
     assert_eq!(decode_data_uri(&emoji), PNG);
-    assert_eq!(attr(&doc, "#md-content a[href=\"docs/x.md\"]", "href").as_deref(), Some("docs/x.md"));
+    assert_eq!(
+        attr(&doc, "#md-content a[href=\"docs/x.md\"]", "href").as_deref(),
+        Some("docs/x.md")
+    );
 
     // Client JS inlined; no live client; libraries as inert holders referenced from mdr-config.
-    assert_eq!(doc.select("script[data-mdr-static=\"github.js\"]").length(), 1);
+    assert_eq!(
+        doc.select("script[data-mdr-static=\"github.js\"]").length(),
+        1
+    );
     assert!(!html.contains("data-mdr-static=\"live.js\""));
     let cfg = config(&doc);
     assert!(cfg["live"].is_null());
@@ -106,12 +137,22 @@ fn github_inline_is_self_contained() {
         serde_json::json!({ "mathjax": "#mdr-lib-mathjax", "mathjax-safe": "#mdr-lib-mathjax-safe", "mermaid": "#mdr-lib-mermaid" })
     );
     for key in ["mathjax", "mathjax-safe", "mermaid"] {
-        assert_eq!(attr(&doc, &format!("script#mdr-lib-{key}"), "type").as_deref(), Some("text/plain"), "{key}");
+        assert_eq!(
+            attr(&doc, &format!("script#mdr-lib-{key}"), "type").as_deref(),
+            Some("text/plain"),
+            "{key}"
+        );
     }
     // Inlined script text cannot end its <script> element early.
     let mathjax = doc.select("script#mdr-lib-mathjax").text().to_string();
-    assert!(mathjax.contains("window.MJ = '\\x3C/script>\\x3C!--';"), "{mathjax}");
-    assert_eq!(attr(&doc, "link[rel=icon]", "href").map(|h| h.starts_with("data:image/svg+xml;base64,")), Some(true));
+    assert!(
+        mathjax.contains("window.MJ = '\\x3C/script>\\x3C!--';"),
+        "{mathjax}"
+    );
+    assert_eq!(
+        attr(&doc, "link[rel=icon]", "href").map(|h| h.starts_with("data:image/svg+xml;base64,")),
+        Some(true)
+    );
 }
 
 #[test]
@@ -124,7 +165,10 @@ fn github_inline_without_features_has_no_libraries() {
     let doc = Document::from(html.as_str());
     assert!(!doc.select("script[type=\"text/plain\"]").exists());
     assert_eq!(config(&doc)["scripts"], serde_json::json!({}));
-    assert!(!html.contains("window.MJ") && !html.contains("window.mermaid ="), "library code not inlined");
+    assert!(
+        !html.contains("window.MJ") && !html.contains("window.mermaid ="),
+        "library code not inlined"
+    );
 }
 
 #[test]
@@ -132,20 +176,32 @@ fn gitlab_inline_is_self_contained() {
     let (_dir, bundle) = bundle();
     let mut page = Page::new(Flavor::Gitlab);
     page.assets = AssetMode::Inline;
-    page.content.features = Features { math: true, mermaid: false };
+    page.content.features = Features {
+        math: true,
+        mermaid: false,
+    };
     let html = page.render(&bundle);
     assert_self_contained(&html);
     let doc = Document::from(html.as_str());
 
     // Theme media survive inlining (auto mode, GL §11.3).
     assert_eq!(
-        attr(&doc, "style[data-mdr-path=\"gitlab/assets/application_dark-2222.css\"]", "media").as_deref(),
+        attr(
+            &doc,
+            "style[data-mdr-path=\"gitlab/assets/application_dark-2222.css\"]",
+            "media"
+        )
+        .as_deref(),
         Some("(prefers-color-scheme: dark)")
     );
     let fonts = inlined_css(&doc, "gitlab/assets/fonts-4444.css");
     let urls = css_urls(&fonts);
     assert_eq!(urls.len(), 1);
-    assert!(urls[0].starts_with("data:font/woff2;base64,"), "{}", urls[0]);
+    assert!(
+        urls[0].starts_with("data:font/woff2;base64,"),
+        "{}",
+        urls[0]
+    );
     assert_eq!(decode_data_uri(&urls[0]), WOFF2);
     let app = inlined_css(&doc, "gitlab/assets/application-1111.css");
     assert!(css_urls(&app)[0].starts_with("data:image/svg+xml;base64,"));
@@ -162,9 +218,16 @@ fn gitlab_inline_is_self_contained() {
     );
     // The icon sprite cannot be used from a data: URI; gitlab.js draws its own icon.
     assert!(attr(&doc, "html", "data-icon-sprite").is_none());
-    assert_eq!(doc.select("script[data-mdr-static=\"gitlab.js\"]").length(), 1);
+    assert_eq!(
+        doc.select("script[data-mdr-static=\"gitlab.js\"]").length(),
+        1
+    );
     // The system-mode bootstrap stays inline in <head>.
-    assert!(doc.select("head").inner_html().contains("classList.add('gl-dark')"));
+    assert!(
+        doc.select("head")
+            .inner_html()
+            .contains("classList.add('gl-dark')")
+    );
 }
 
 #[test]
@@ -185,14 +248,24 @@ fn inline_fallback_styles() {
 fn assert_relative_refs_exist(html: &str, base: &Path, prefix: &str) -> usize {
     let doc = Document::from(html);
     let mut n = 0;
-    for (sel, name) in [("link[href]", "href"), ("script[src]", "src"), ("img[src]", "src")] {
+    for (sel, name) in [
+        ("link[href]", "href"),
+        ("script[src]", "src"),
+        ("img[src]", "src"),
+    ] {
         for node in doc.select(sel).nodes() {
             let value = node.attr(name).unwrap_or_default().to_string();
             if !value.starts_with(prefix) {
                 continue;
             }
-            let decoded = percent_encoding::percent_decode_str(&value).decode_utf8_lossy().into_owned();
-            assert!(base.join(&decoded).is_file(), "{value} -> {}", base.join(&decoded).display());
+            let decoded = percent_encoding::percent_decode_str(&value)
+                .decode_utf8_lossy()
+                .into_owned();
+            assert!(
+                base.join(&decoded).is_file(),
+                "{value} -> {}",
+                base.join(&decoded).display()
+            );
             n += 1;
         }
     }
@@ -205,8 +278,14 @@ fn directory_mode_copies_and_links_relatively() {
     let out = tempfile::tempdir().unwrap();
     let files = out.path().join("my doc_files");
     let mut page = Page::new(Flavor::Github);
-    page.assets = AssetMode::Directory { href: "my%20doc_files".into(), dir: files.clone() };
-    page.content.features = Features { math: true, mermaid: true };
+    page.assets = AssetMode::Directory {
+        href: "my%20doc_files".into(),
+        dir: files.clone(),
+    };
+    page.content.features = Features {
+        math: true,
+        mermaid: true,
+    };
     let html = page.render(&bundle);
     let doc = Document::from(html.as_str());
 
@@ -219,7 +298,10 @@ fn directory_mode_copies_and_links_relatively() {
         "libraries load lazily; the live client is never exported"
     );
     let linked = assert_relative_refs_exist(&html, out.path(), "my%20doc_files/");
-    assert!(linked >= 11, "stylesheets, favicon, github.js, emoji: {linked}");
+    assert!(
+        linked >= 11,
+        "stylesheets, favicon, github.js, emoji: {linked}"
+    );
 
     // Bundle paths are preserved, so the CSS's relative url()s keep working; their targets
     // (including @import chains) are copied as well.
@@ -237,11 +319,20 @@ fn directory_mode_copies_and_links_relatively() {
         assert!(files.join(rel).is_file(), "{rel} copied");
     }
     let global = std::fs::read_to_string(files.join("github/assets/global-0003.css")).unwrap();
-    assert!(global.contains("url(../images/spinners/octocat-spinner-16px.gif)"), "copied verbatim");
+    assert!(
+        global.contains("url(../images/spinners/octocat-spinner-16px.gif)"),
+        "copied verbatim"
+    );
 
     let cfg = config(&doc);
-    assert_eq!(cfg["scripts"]["mermaid"], "my%20doc_files/github/lib/mermaid/mermaid.min.js");
-    assert_eq!(attr(&doc, "img.emoji", "src").as_deref(), Some("my%20doc_files/github/emoji/octocat.png"));
+    assert_eq!(
+        cfg["scripts"]["mermaid"],
+        "my%20doc_files/github/lib/mermaid/mermaid.min.js"
+    );
+    assert_eq!(
+        attr(&doc, "img.emoji", "src").as_deref(),
+        Some("my%20doc_files/github/emoji/octocat.png")
+    );
     assert!(!html.contains("data-sourcepos"));
     assert!(!html.contains("/__/md-render/"));
 }
@@ -252,19 +343,45 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
     let out = tempfile::tempdir().unwrap();
     let files = out.path().join("x_files");
     let mut page = Page::new(Flavor::Gitlab);
-    page.assets = AssetMode::Directory { href: "x_files".into(), dir: files.clone() };
-    page.content.features = Features { math: true, mermaid: false };
+    page.assets = AssetMode::Directory {
+        href: "x_files".into(),
+        dir: files.clone(),
+    };
+    page.content.features = Features {
+        math: true,
+        mermaid: false,
+    };
     // Content rendered with `bundle_url = href` (what export does) points into the directory.
-    page.content.html.push_str("<p><img src=\"x_files/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>");
+    page.content
+        .html
+        .push_str("<p><img src=\"x_files/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>");
     let html = page.render(&bundle);
     let doc = Document::from(html.as_str());
     assert_relative_refs_exist(&html, out.path(), "x_files/");
-    assert!(files.join("gitlab/assets/gitlab-sans/GitLabSans-abc.woff2").is_file());
-    assert!(files.join("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2").is_file());
+    assert!(
+        files
+            .join("gitlab/assets/gitlab-sans/GitLabSans-abc.woff2")
+            .is_file()
+    );
+    assert!(
+        files
+            .join("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2")
+            .is_file()
+    );
     assert!(files.join("gitlab/assets/icon_anchor-abc.svg").is_file());
-    assert_eq!(attr(&doc, "link[data-mdr-lib=katex-css]", "href").as_deref(), Some("x_files/gitlab/lib/katex/katex.min.css"));
-    assert_eq!(attr(&doc, "html", "data-icon-sprite").as_deref(), Some("x_files/gitlab/assets/icons-0123456789abcdef.svg"));
-    assert!(files.join("gitlab/assets/icons-0123456789abcdef.svg").is_file());
+    assert_eq!(
+        attr(&doc, "link[data-mdr-lib=katex-css]", "href").as_deref(),
+        Some("x_files/gitlab/lib/katex/katex.min.css")
+    );
+    assert_eq!(
+        attr(&doc, "html", "data-icon-sprite").as_deref(),
+        Some("x_files/gitlab/assets/icons-0123456789abcdef.svg")
+    );
+    assert!(
+        files
+            .join("gitlab/assets/icons-0123456789abcdef.svg")
+            .is_file()
+    );
 }
 
 #[test]
@@ -275,7 +392,10 @@ fn directory_mode_reports_io_errors() {
     let blocker = out.path().join("blocked_files");
     std::fs::write(&blocker, b"not a directory").unwrap();
     let mut page = Page::new(Flavor::Github);
-    page.assets = AssetMode::Directory { href: "blocked_files".into(), dir: blocker };
+    page.assets = AssetMode::Directory {
+        href: "blocked_files".into(),
+        dir: blocker,
+    };
     let input = md_render::page::PageInput {
         flavor: page.flavor,
         mode: page.mode,

@@ -127,8 +127,14 @@ fn lib_keys(flavor: Flavor) -> (&'static [&'static str], &'static [&'static str]
 /// GitLab's copy-button icon sprite (`/assets/icons-<hash>.svg`, GL §10.4), if vendored.
 fn gitlab_icon_sprite(bundle: &Bundle) -> Option<&str> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"^gitlab/(?:.*/)?icons-[0-9a-f]+\.svg$").expect("valid regex"));
-    bundle.flavor(Flavor::Gitlab)?.assets.iter().map(|a| a.path.as_str()).find(|p| re.is_match(p))
+    let re = RE
+        .get_or_init(|| Regex::new(r"^gitlab/(?:.*/)?icons-[0-9a-f]+\.svg$").expect("valid regex"));
+    bundle
+        .flavor(Flavor::Gitlab)?
+        .assets
+        .iter()
+        .map(|a| a.path.as_str())
+        .find(|p| re.is_match(p))
 }
 
 /// Build a complete HTML document.
@@ -154,14 +160,19 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     let content_html = match input.assets {
         AssetMode::Server { .. } => input.content.html.clone(),
         AssetMode::Inline => content::for_export(&input.content.html, &mut assets, None)?,
-        AssetMode::Directory { href, .. } => content::for_export(&input.content.html, &mut assets, Some(href))?,
+        AssetMode::Directory { href, .. } => {
+            content::for_export(&input.content.html, &mut assets, Some(href))?
+        }
     };
 
     // Banners: explicit ones first, then renderer warnings not already shown.
     let mut banners: Vec<Banner> = input.banners.to_vec();
     for w in &input.content.warnings {
         if !banners.iter().any(|b| &b.message == w) {
-            banners.push(Banner { kind: BannerKind::Warning, message: w.clone() });
+            banners.push(Banner {
+                kind: BannerKind::Warning,
+                message: w.clone(),
+            });
         }
     }
     let banners_html: String = banners
@@ -191,7 +202,11 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     if linked == 0 {
         // The flavor is missing from the bundle, or its manifest lists no readable stylesheet:
         // the embedded fallback keeps the page readable (DESIGN D11).
-        assets.embedded_stylesheet(&mut head, &format!("fallback-{}.css", input.flavor), BUNDLE_ATTR)?;
+        assets.embedded_stylesheet(
+            &mut head,
+            &format!("fallback-{}.css", input.flavor),
+            BUNDLE_ATTR,
+        )?;
     }
 
     // Client libraries: only what the content needs; a live page may gain math or diagrams
@@ -208,7 +223,9 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     let mut holders = String::new();
     if let Some(m) = manifest {
         for key in wanted {
-            let Some(path) = m.scripts.get(key) else { continue };
+            let Some(path) = m.scripts.get(key) else {
+                continue;
+            };
             let reference = if key.ends_with("-css") {
                 assets.lib_css(&mut head, key, path, input.content.features.math)?
             } else {
@@ -224,9 +241,14 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         Flavor::Github => github::CHROME_CSS,
         Flavor::Gitlab => gitlab::CHROME_CSS,
     };
-    head.push_str(&format!("<style data-mdr-style=\"chrome\">\n{chrome_css}</style>\n"));
+    head.push_str(&format!(
+        "<style data-mdr-style=\"chrome\">\n{chrome_css}</style>\n"
+    ));
     for url in input.extra_css {
-        head.push_str(&format!("<link rel=\"stylesheet\" href=\"{}\" data-mdr-style=\"extra\">\n", html::attr(url)));
+        head.push_str(&format!(
+            "<link rel=\"stylesheet\" href=\"{}\" data-mdr-style=\"extra\">\n",
+            html::attr(url)
+        ));
     }
 
     // ---- <html>
@@ -242,10 +264,26 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     };
 
     // ---- <body>
-    let root_attrs = live.map(|l| format!(" data-version=\"{}\"", l.version)).unwrap_or_default();
+    let root_attrs = live
+        .map(|l| format!(" data-version=\"{}\"", l.version))
+        .unwrap_or_default();
     let chrome = match input.flavor {
-        Flavor::Github => github::body(input.mode, input.layout, input.file_name, &content_html, &banners_html, &root_attrs),
-        Flavor::Gitlab => gitlab::body(input.mode, input.layout, input.file_name, &content_html, &banners_html, &root_attrs),
+        Flavor::Github => github::body(
+            input.mode,
+            input.layout,
+            input.file_name,
+            &content_html,
+            &banners_html,
+            &root_attrs,
+        ),
+        Flavor::Gitlab => gitlab::body(
+            input.mode,
+            input.layout,
+            input.file_name,
+            &content_html,
+            &banners_html,
+            &root_attrs,
+        ),
     };
 
     let config = serde_json::json!({
@@ -325,17 +363,34 @@ pub fn error_html(flavor: Flavor, status: u16, message: &str) -> String {
 }
 
 /// URL path segment escape set for breadcrumbs.
-const SEGMENT_SET: &AsciiSet =
-    &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'%').add(b'<').add(b'>').add(b'?').add(b'`').add(b'{').add(b'}').add(b'\'');
+const SEGMENT_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'\'');
 
 /// `/` + one link per path segment of `dir`, each pointing at that directory.
 fn crumbs_html(dir: &str) -> String {
     let mut out = String::from("<a href=\"/\">/</a>");
     let mut href = String::from("/");
-    for seg in dir.split('/').filter(|s| !s.is_empty() && *s != "." && *s != "..") {
+    for seg in dir
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+    {
         href.push_str(&utf8_percent_encode(seg, SEGMENT_SET).to_string());
         href.push('/');
-        out.push_str(&format!("<a href=\"{}\">{}</a>/", html::attr(&href), html::text(seg)));
+        out.push_str(&format!(
+            "<a href=\"{}\">{}</a>/",
+            html::attr(&href),
+            html::text(seg)
+        ));
     }
     out
 }

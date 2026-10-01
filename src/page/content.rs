@@ -13,9 +13,16 @@ const URL_ATTRS: [&str; 3] = ["src", "href", "poster"];
 
 /// Rewrite `html` (a content fragment) for an export. Returns the input unchanged when there is
 /// nothing to do, so the common case does not re-serialize the document.
-pub(crate) fn for_export(html: &str, assets: &mut Assets<'_>, directory_href: Option<&str>) -> anyhow::Result<String> {
-    let href_prefix = directory_href.map(|h| h.trim_end_matches('/')).filter(|h| !h.is_empty());
-    let mentions_bundle = html.contains(BUNDLE_ROUTE) || href_prefix.is_some_and(|h| html.contains(h));
+pub(crate) fn for_export(
+    html: &str,
+    assets: &mut Assets<'_>,
+    directory_href: Option<&str>,
+) -> anyhow::Result<String> {
+    let href_prefix = directory_href
+        .map(|h| h.trim_end_matches('/'))
+        .filter(|h| !h.is_empty());
+    let mentions_bundle =
+        html.contains(BUNDLE_ROUTE) || href_prefix.is_some_and(|h| html.contains(h));
     if !html.contains("data-sourcepos") && !mentions_bundle {
         return Ok(html.to_owned());
     }
@@ -25,7 +32,9 @@ pub(crate) fn for_export(html: &str, assets: &mut Assets<'_>, directory_href: Op
     if mentions_bundle {
         for attr in URL_ATTRS {
             for node in doc.select(&format!("[{attr}]")).nodes() {
-                let Some(value) = node.attr(attr) else { continue };
+                let Some(value) = node.attr(attr) else {
+                    continue;
+                };
                 match assets.content_url(&value)? {
                     Some(new) if new.is_empty() => node.remove_attr(attr),
                     Some(new) => node.set_attr(attr, &new),

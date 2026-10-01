@@ -57,8 +57,18 @@ pub struct ExportConfig {
 }
 
 /// Characters escaped in the assets-directory href.
-const HREF_SET: &AsciiSet =
-    &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'%').add(b'<').add(b'>').add(b'?').add(b'`').add(b'{').add(b'}').add(b'\'');
+const HREF_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'\'');
 
 /// Render and write a standalone HTML file.
 pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
@@ -77,9 +87,12 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         flavor: cfg.flavor,
         mode: cfg.mode,
         context: cfg.context.clone(),
-        root: source_path
-            .as_deref()
-            .map(|p| p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf()),
+        root: source_path.as_deref().map(|p| {
+            p.parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .to_path_buf()
+        }),
         source_path,
         sourcepos: false,
         // Inline: the default bundle route, rewritten to data URIs by the page. Directory:
@@ -89,10 +102,12 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
             _ => format!("{}/bundle", crate::PREFIX),
         },
     };
-    let rendered = cfg
-        .renderer
-        .render(&markdown, &opts)
-        .with_context(|| format!("rendering {display_name} with the {} renderer", cfg.renderer.name()))?;
+    let rendered = cfg.renderer.render(&markdown, &opts).with_context(|| {
+        format!(
+            "rendering {display_name} with the {} renderer",
+            cfg.renderer.name()
+        )
+    })?;
 
     let (bundle, warning) = crate::styles::load_or_fallback(&cfg.bundle_path);
     if !cfg.quiet {
@@ -119,7 +134,13 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         .title
         .clone()
         .or_else(|| rendered.title.clone().filter(|t| !t.trim().is_empty()))
-        .unwrap_or_else(|| if display_name.is_empty() { "md-render".to_owned() } else { display_name.clone() });
+        .unwrap_or_else(|| {
+            if display_name.is_empty() {
+                "md-render".to_owned()
+            } else {
+                display_name.clone()
+            }
+        });
     let input = PageInput {
         flavor: cfg.flavor,
         mode: cfg.mode,
@@ -165,7 +186,10 @@ fn read_input(cfg: &ExportConfig) -> anyhow::Result<(String, Option<PathBuf>, St
                     String::from_utf8_lossy(e.as_bytes()).into_owned()
                 }
             };
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             Ok((strip_bom(&text).to_owned(), Some(path.clone()), name))
         }
     }
@@ -183,26 +207,47 @@ fn assets_directory(out: &Path) -> anyhow::Result<AssetMode> {
         .filter(|s| !s.is_empty())
         .with_context(|| format!("output path {} has no file name", out.display()))?;
     let name = format!("{stem}_files");
-    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    Ok(AssetMode::Directory { href: utf8_percent_encode(&name, HREF_SET).to_string(), dir: parent.join(name) })
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok(AssetMode::Directory {
+        href: utf8_percent_encode(&name, HREF_SET).to_string(),
+        dir: parent.join(name),
+    })
 }
 
 /// Write `data` to `path` via a temporary file in the same directory and a rename, so readers
 /// never see a partial file.
 fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let name = path.file_name().with_context(|| format!("output path {} has no file name", path.display()))?;
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .with_context(|| format!("output path {} has no file name", path.display()))?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     let mut last_err = None;
     for attempt in 0..16u32 {
-        let tmp = dir.join(format!(".{}.{}.{nanos:x}{attempt}.tmp", name.to_string_lossy(), std::process::id()));
+        let tmp = dir.join(format!(
+            ".{}.{}.{nanos:x}{attempt}.tmp",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
         let file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 last_err = Some(e);
                 continue;
             }
-            Err(e) => return Err(e).with_context(|| format!("creating a temporary file in {}", dir.display())),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating a temporary file in {}", dir.display()));
+            }
         };
         let result = (|| -> io::Result<()> {
             let mut file = file;
@@ -237,12 +282,17 @@ mod tests {
 
     #[test]
     fn assets_dir_naming() {
-        let AssetMode::Directory { href, dir } = assets_directory(Path::new("out/My Doc.html")).unwrap() else {
+        let AssetMode::Directory { href, dir } =
+            assets_directory(Path::new("out/My Doc.html")).unwrap()
+        else {
             panic!("expected directory mode")
         };
         assert_eq!(href, "My%20Doc_files");
         assert_eq!(dir, Path::new("out/My Doc_files"));
-        let AssetMode::Directory { dir, .. } = assets_directory(Path::new("x.html")).unwrap() else { panic!() };
+        let AssetMode::Directory { dir, .. } = assets_directory(Path::new("x.html")).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(dir, Path::new("./x_files"));
     }
 
@@ -253,7 +303,10 @@ mod tests {
         write_atomic(&p, b"one").unwrap();
         write_atomic(&p, b"two").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"two");
-        let leftovers: Vec<_> = fs::read_dir(tmp.path()).unwrap().filter_map(Result::ok).collect();
+        let leftovers: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
         assert_eq!(leftovers.len(), 1, "temporary files must not remain");
     }
 

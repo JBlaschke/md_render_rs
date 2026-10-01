@@ -50,7 +50,14 @@ pub(crate) const CHROME_CSS: &str = "\
 ";
 
 /// The `<body>` contents: wrapper markup per mode × layout around `content`.
-pub(crate) fn body(mode: Mode, layout: Layout, file_name: Option<&str>, content: &str, banners: &str, root_attrs: &str) -> String {
+pub(crate) fn body(
+    mode: Mode,
+    layout: Layout,
+    file_name: Option<&str>,
+    content: &str,
+    banners: &str,
+    root_attrs: &str,
+) -> String {
     let banners = format!("<div id=\"mdr-banners\" class=\"mdr-banners\">{banners}</div>\n");
     let mut out = String::with_capacity(content.len() + 2048);
     match (mode, layout) {
@@ -87,7 +94,10 @@ pub(crate) fn body(mode: Mode, layout: Layout, file_name: Option<&str>, content:
             if boxed {
                 out.push_str("<div class=\"Box mdr-comment\">\n");
                 if let Some(name) = file_name {
-                    out.push_str(&format!("<div class=\"Box-header\"><strong>{}</strong></div>\n", html::text(name)));
+                    out.push_str(&format!(
+                        "<div class=\"Box-header\"><strong>{}</strong></div>\n",
+                        html::text(name)
+                    ));
                 }
             }
             out.push_str("<div class=\"js-snippet-clipboard-copy-unpositioned\">\n");
@@ -134,7 +144,10 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
         };
         let label = if e.is_dir { "Directory" } else { "File" };
         let size = match (e.is_dir, e.size) {
-            (false, Some(n)) => format!("<span class=\"color-fg-muted mdr-listing-size\">{}</span>", human_size(n)),
+            (false, Some(n)) => format!(
+                "<span class=\"color-fg-muted mdr-listing-size\">{}</span>",
+                human_size(n)
+            ),
             _ => String::new(),
         };
         out.push_str(&format!(
@@ -173,9 +186,18 @@ mod tests {
 
     #[test]
     fn banner_kinds() {
-        let b = banner(&Banner { kind: BannerKind::Warning, message: "<b>".into() });
+        let b = banner(&Banner {
+            kind: BannerKind::Warning,
+            message: "<b>".into(),
+        });
         assert!(b.contains("flash flash-warn"));
         assert!(b.contains("&lt;b&gt;"));
-        assert!(banner(&Banner { kind: BannerKind::Info, message: String::new() }).contains("role=\"status\""));
+        assert!(
+            banner(&Banner {
+                kind: BannerKind::Info,
+                message: String::new()
+            })
+            .contains("role=\"status\"")
+        );
     }
 }

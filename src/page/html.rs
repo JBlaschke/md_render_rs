@@ -110,7 +110,10 @@ mod tests {
         let out = inline_script(js);
         assert!(!out.to_ascii_lowercase().contains("</script"));
         assert!(!out.contains("<!--"));
-        assert_eq!(out, r#"var a = "\x3C/script>"; var b = '\x3C/SCRIPT x'; /\x3C!--/.test(c);"#);
+        assert_eq!(
+            out,
+            r#"var a = "\x3C/script>"; var b = '\x3C/SCRIPT x'; /\x3C!--/.test(c);"#
+        );
         assert!(matches!(inline_script("let x = 1 < 2;"), Cow::Borrowed(_)));
     }
 

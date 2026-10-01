@@ -18,7 +18,10 @@ use sha2::{Digest as _, Sha256};
 pub const BIG_IMAGE_LEN: usize = 70 * 1024;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Builds a bundle `.tar.gz` with a schema-1 manifest whose sha256/size fields are correct.
@@ -35,20 +38,28 @@ impl Default for BundleBuilder {
 
 impl BundleBuilder {
     pub fn new() -> Self {
-        BundleBuilder { fs: tarfs::InMemoryFileSystem::new(), manifest: Manifest::default() }
+        BundleBuilder {
+            fs: tarfs::InMemoryFileSystem::new(),
+            manifest: Manifest::default(),
+        }
     }
 
     fn flavor_mut(&mut self, flavor: Flavor) -> &mut FlavorManifest {
-        self.manifest.flavors.entry(flavor).or_insert_with(|| FlavorManifest {
-            fetched_at: "2026-10-01T00:00:00Z".into(),
-            source_page: format!("https://example.invalid/{flavor}"),
-            user_agent: "md-render-tests".into(),
-            ..Default::default()
-        })
+        self.manifest
+            .flavors
+            .entry(flavor)
+            .or_insert_with(|| FlavorManifest {
+                fetched_at: "2026-10-01T00:00:00Z".into(),
+                source_page: format!("https://example.invalid/{flavor}"),
+                user_agent: "md-render-tests".into(),
+                ..Default::default()
+            })
     }
 
     fn put(&mut self, path: &str, bytes: &[u8]) {
-        self.fs.write_file(path, bytes.to_vec()).expect("valid bundle path");
+        self.fs
+            .write_file(path, bytes.to_vec())
+            .expect("valid bundle path");
     }
 
     /// Register a flavor with no files at all.
@@ -57,7 +68,14 @@ impl BundleBuilder {
         self
     }
 
-    pub fn stylesheet(mut self, flavor: Flavor, path: &str, role: &str, theme: Option<&str>, css: &str) -> Self {
+    pub fn stylesheet(
+        mut self,
+        flavor: Flavor,
+        path: &str,
+        role: &str,
+        theme: Option<&str>,
+        css: &str,
+    ) -> Self {
         self.put(path, css.as_bytes());
         let entry = Stylesheet {
             path: path.into(),
@@ -92,7 +110,9 @@ impl BundleBuilder {
 
     pub fn script(mut self, flavor: Flavor, key: &str, path: &str, bytes: &[u8]) -> Self {
         self.put(path, bytes);
-        self.flavor_mut(flavor).scripts.insert(key.into(), path.into());
+        self.flavor_mut(flavor)
+            .scripts
+            .insert(key.into(), path.into());
         self
     }
 
@@ -121,49 +141,106 @@ pub const WOFF2: &[u8] = b"wOF2fake-font";
 /// of cascade order), core files with every kind of `url()`, emoji, MathJax and mermaid.
 pub fn github(b: BundleBuilder) -> BundleBuilder {
     let big = vec![0u8; BIG_IMAGE_LEN];
-    b.stylesheet(Flavor::Github, "github/assets/code-c0de.css", "code", None, ".highlight{display:flex}")
-        .stylesheet(Flavor::Github, "github/assets/dark-d4a4.css", "theme", Some("dark"), "[data-color-mode=dark]{--fgColor-default:#f0f6fc}")
-        .stylesheet(Flavor::Github, "github/assets/light-1167.css", "theme", Some("light"), "[data-color-mode=light]{--fgColor-default:#1f2328}")
-        .stylesheet(Flavor::Github, "github/assets/dark_dimmed-d1d1.css", "theme", Some("dark_dimmed"), "[data-dark-theme=dark_dimmed]{--x:1}")
-        .stylesheet(Flavor::Github, "github/assets/primer-primitives-0001.css", "primitives", None, ":root{--base-size-8:8px}")
-        .stylesheet(
-            Flavor::Github,
-            "github/assets/primer-0002.css",
-            "primer",
-            None,
-            ".select{background:url(\"data:image/svg+xml;base64,PHN2Zy8+\")}",
-        )
-        .stylesheet(
-            Flavor::Github,
-            "github/assets/global-0003.css",
-            "global",
-            None,
-            ".spin{background:url(../images/spinners/octocat-spinner-16px.gif)}\
+    b.stylesheet(
+        Flavor::Github,
+        "github/assets/code-c0de.css",
+        "code",
+        None,
+        ".highlight{display:flex}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/dark-d4a4.css",
+        "theme",
+        Some("dark"),
+        "[data-color-mode=dark]{--fgColor-default:#f0f6fc}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/light-1167.css",
+        "theme",
+        Some("light"),
+        "[data-color-mode=light]{--fgColor-default:#1f2328}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/dark_dimmed-d1d1.css",
+        "theme",
+        Some("dark_dimmed"),
+        "[data-dark-theme=dark_dimmed]{--x:1}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/primer-primitives-0001.css",
+        "primitives",
+        None,
+        ":root{--base-size-8:8px}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/primer-0002.css",
+        "primer",
+        None,
+        ".select{background:url(\"data:image/svg+xml;base64,PHN2Zy8+\")}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/global-0003.css",
+        "global",
+        None,
+        ".spin{background:url(../images/spinners/octocat-spinner-16px.gif)}\
              .gone{background:url(/images/never-vendored.png)}\
              .ext{background:url(https://example.com/x.png)}",
-        )
-        .stylesheet(
-            Flavor::Github,
-            "github/assets/github-0004.css",
-            "github",
-            None,
-            ".promo{background-image:url('../images/modules/promo.png')}",
-        )
-        .stylesheet(
-            Flavor::Github,
-            "github/assets/repository-0005.css",
-            "repository",
-            None,
-            "@import \"repo-extra.css\";.r{color:red}",
-        )
-        .asset(Flavor::Github, "github/assets/repo-extra.css", b".extra{background:url(../images/x.svg#frag)}")
-        .asset(Flavor::Github, "github/images/x.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
-        .asset(Flavor::Github, "github/images/spinners/octocat-spinner-16px.gif", GIF)
-        .asset(Flavor::Github, "github/images/modules/promo.png", &big)
-        .asset(Flavor::Github, "github/emoji/octocat.png", PNG)
-        .script(Flavor::Github, "mathjax", "github/lib/mathjax/es5/tex-chtml-full.js", b"window.MJ = '</script><!--';")
-        .script(Flavor::Github, "mathjax-safe", "github/lib/mathjax/es5/ui/safe.js", b"window.MJSAFE = 1;")
-        .script(Flavor::Github, "mermaid", "github/lib/mermaid/mermaid.min.js", b"window.mermaid = {};")
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/github-0004.css",
+        "github",
+        None,
+        ".promo{background-image:url('../images/modules/promo.png')}",
+    )
+    .stylesheet(
+        Flavor::Github,
+        "github/assets/repository-0005.css",
+        "repository",
+        None,
+        "@import \"repo-extra.css\";.r{color:red}",
+    )
+    .asset(
+        Flavor::Github,
+        "github/assets/repo-extra.css",
+        b".extra{background:url(../images/x.svg#frag)}",
+    )
+    .asset(
+        Flavor::Github,
+        "github/images/x.svg",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    )
+    .asset(
+        Flavor::Github,
+        "github/images/spinners/octocat-spinner-16px.gif",
+        GIF,
+    )
+    .asset(Flavor::Github, "github/images/modules/promo.png", &big)
+    .asset(Flavor::Github, "github/emoji/octocat.png", PNG)
+    .script(
+        Flavor::Github,
+        "mathjax",
+        "github/lib/mathjax/es5/tex-chtml-full.js",
+        b"window.MJ = '</script><!--';",
+    )
+    .script(
+        Flavor::Github,
+        "mathjax-safe",
+        "github/lib/mathjax/es5/ui/safe.js",
+        b"window.MJSAFE = 1;",
+    )
+    .script(
+        Flavor::Github,
+        "mermaid",
+        "github/lib/mermaid/mermaid.min.js",
+        b"window.mermaid = {};",
+    )
 }
 
 /// GitLab flavor in the shape vendoring produces (GL §11, §13).
@@ -215,7 +292,11 @@ pub fn full_bundle(dir: &Path) -> Bundle {
 }
 
 pub fn theme(theme: Theme, light: &str, dark: &str) -> ThemeSel {
-    ThemeSel { theme, light: light.into(), dark: dark.into() }
+    ThemeSel {
+        theme,
+        light: light.into(),
+        dark: dark.into(),
+    }
 }
 
 /// Typical rendered content per flavor; `sourcepos` adds `data-sourcepos` like the server does.
@@ -242,11 +323,18 @@ pub fn content(flavor: Flavor, features: Features) -> Rendered {
         )
         .to_owned(),
     };
-    Rendered { html, title: Some("Title".into()), features, warnings: Vec::new() }
+    Rendered {
+        html,
+        title: Some("Title".into()),
+        features,
+        warnings: Vec::new(),
+    }
 }
 
 pub fn server() -> AssetMode {
-    AssetMode::Server { prefix: "/__/md-render".into() }
+    AssetMode::Server {
+        prefix: "/__/md-render".into(),
+    }
 }
 
 pub fn live_info() -> LiveInfo {
@@ -311,12 +399,22 @@ impl<'a> Page<'a> {
 
 /// `href`s of the stylesheet `<link>`s, in document order.
 pub fn stylesheet_hrefs(doc: &Document) -> Vec<String> {
-    doc.select("link[rel=stylesheet]").nodes().iter().filter_map(|n| n.attr("href")).map(|s| s.to_string()).collect()
+    doc.select("link[rel=stylesheet]")
+        .nodes()
+        .iter()
+        .filter_map(|n| n.attr("href"))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// `src`s of the `<script src>` elements, in document order.
 pub fn script_srcs(doc: &Document) -> Vec<String> {
-    doc.select("script[src]").nodes().iter().filter_map(|n| n.attr("src")).map(|s| s.to_string()).collect()
+    doc.select("script[src]")
+        .nodes()
+        .iter()
+        .filter_map(|n| n.attr("src"))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// The parsed `mdr-config` JSON block.
@@ -332,9 +430,16 @@ pub fn attr(doc: &Document, selector: &str, name: &str) -> Option<String> {
 
 /// Every `url(...)` argument in `css`, unquoted.
 pub fn css_urls(css: &str) -> Vec<String> {
-    let re = regex::Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)"#).expect("regex");
+    let re = regex::Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)"#)
+        .expect("regex");
     re.captures_iter(css)
-        .map(|c| c.get(1).or(c.get(2)).or(c.get(3)).map_or("", |m| m.as_str()).to_owned())
+        .map(|c| {
+            c.get(1)
+                .or(c.get(2))
+                .or(c.get(3))
+                .map_or("", |m| m.as_str())
+                .to_owned()
+        })
         .collect()
 }
 
@@ -346,17 +451,27 @@ pub fn assert_self_contained(html: &str) {
         let href = n.attr("href").map(|s| s.to_string()).unwrap_or_default();
         assert!(href.starts_with("data:"), "external <link href={href:?}>");
     }
-    assert_eq!(doc.select("script[src]").length(), 0, "no <script src> in an inline export");
+    assert_eq!(
+        doc.select("script[src]").length(),
+        0,
+        "no <script src> in an inline export"
+    );
     for n in doc.select("[src]").nodes() {
         let src = n.attr("src").map(|s| s.to_string()).unwrap_or_default();
         assert!(!src.starts_with("/__/"), "internal URL left in src={src:?}");
     }
     for n in doc.select("style").nodes() {
         for url in css_urls(&n.text()) {
-            assert!(url.starts_with("data:") || url.starts_with('#'), "url({url}) in an inlined stylesheet");
+            assert!(
+                url.starts_with("data:") || url.starts_with('#'),
+                "url({url}) in an inlined stylesheet"
+            );
         }
     }
-    assert!(!html.contains("/__/md-render/"), "internal route left in the export");
+    assert!(
+        !html.contains("/__/md-render/"),
+        "internal route left in the export"
+    );
 }
 
 /// A renderer double that returns fixed output and records the options it was called with.
@@ -368,7 +483,11 @@ pub struct FixedRenderer {
 
 impl FixedRenderer {
     pub fn new(output: Rendered) -> Self {
-        FixedRenderer { output, seen: Mutex::new(Vec::new()), fail: false }
+        FixedRenderer {
+            output,
+            seen: Mutex::new(Vec::new()),
+            fail: false,
+        }
     }
 }
 
