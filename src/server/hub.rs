@@ -34,6 +34,10 @@ pub const RENDER_WAIT: Duration = Duration::from_secs(60);
 /// made in that window would be missed, so new subscribers trigger one extra re-check.
 const RECHECK_AFTER_WATCH: Duration = Duration::from_millis(750);
 
+/// How long a document that suddenly reads as empty gets to receive its new content before
+/// the empty render is published (truncate-then-write saves).
+const EMPTY_SETTLE: Duration = Duration::from_millis(250);
+
 /// After this many consecutive stale drops a render is published anyway (progress
 /// guarantee under continuous writes).
 const MAX_STALE_DROPS: u32 = 3;
@@ -674,7 +678,21 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
 async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
     let t0 = entry.triggers.load(Ordering::SeqCst);
     let snap = entry.snapshot();
-    let bytes = match read_contained(ctx, &entry.path).await {
+    let mut read = read_contained(ctx, &entry.path).await;
+    if matches!(&read, Ok(b) if b.is_empty())
+        && snap
+            .content
+            .as_ref()
+            .is_some_and(|c| !c.rendered.html.is_empty())
+    {
+        // A document that just became empty is probably being rewritten in place (truncate,
+        // then write: `gen.py > README.md`, slow writers, network file systems). Publishing
+        // the empty render would throw away the reader's scroll position and every
+        // client-rendered block, so give the writer a moment first.
+        tokio::time::sleep(EMPTY_SETTLE).await;
+        read = read_contained(ctx, &entry.path).await;
+    }
+    let bytes = match read {
         Ok(b) => b,
         Err(e) if paths::is_not_found(&e) => {
             if snap.status == DocStatus::Missing {
@@ -1138,6 +1156,51 @@ mod tests {
         assert!(s.version > v2);
         let html = &s.content.as_ref().unwrap().rendered.html;
         assert!(html.contains("CHANGED_PART"), "stale include: {html}");
+    }
+
+    /// LIVE-2: a truncate-then-write save does not publish an empty render in between.
+    #[tokio::test]
+    async fn truncate_then_write_saves_skip_the_empty_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let doc = root.join("a.md");
+        std::fs::write(&doc, "full one").unwrap();
+        let (hub, _stop) = hub(&root, Arc::new(Counting(AtomicUsize::new(0))));
+        let v1 = hub.current("a.md").await.unwrap().version;
+        let mut rx = hub.get("a.md").unwrap().subscribe_events();
+
+        std::fs::write(&doc, "").unwrap(); // truncated; the new bytes follow 100 ms later
+        let writer = {
+            let doc = doc.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                std::fs::write(&doc, "full two").unwrap();
+            })
+        };
+        let s = hub.current("a.md").await.unwrap();
+        writer.await.unwrap();
+        let s = if s.content.as_ref().unwrap().rendered.html.contains("two") {
+            s
+        } else {
+            hub.current("a.md").await.unwrap()
+        };
+        assert!(s.version > v1);
+        assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>full two</p>");
+        let mut contents = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if ev.name == "content" {
+                contents.push(ev.data.clone());
+            }
+        }
+        assert!(
+            contents.iter().all(|d| !d.contains(r#""html":"<p></p>""#)),
+            "an empty render was published: {contents:?}"
+        );
+
+        // A file that stays empty is published as empty (after the settle delay).
+        std::fs::write(&doc, "").unwrap();
+        let s = hub.current("a.md").await.unwrap();
+        assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p></p>");
     }
 
     #[test]

@@ -49,6 +49,7 @@
     frame: 0,
     lastResync: 0,
     reloading: false,
+    lastAnchor: null, // scroll anchor of the last update applied to non-empty content
   };
   const keys = new WeakMap(); // top-level node -> key computed from pristine server HTML
   const banners = new Map(); // slot ("doc" | "bundle" | "warnings") -> element
@@ -251,7 +252,14 @@
   function applyContent(msg) {
     const container = root();
     if (!container) return;
-    const anchor = captureAnchor(container);
+    let anchor = captureAnchor(container);
+    if (container.firstElementChild) {
+      state.lastAnchor = anchor;
+    } else if (state.lastAnchor) {
+      // The previous update emptied the document (e.g. a truncate-then-write save), which
+      // scrolled the page to the top: return to where the reader was before that.
+      anchor = state.lastAnchor;
+    }
     let added;
     try {
       added = reconcile(container, msg.html);
