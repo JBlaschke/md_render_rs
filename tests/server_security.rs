@@ -1,0 +1,230 @@
+//! Path safety and DNS-rebinding protection (DESIGN D14, GRIP C39): traversal in every
+//! encoding, symlink escapes, `.git`, and the loopback `Host` allowlist. Requests are sent
+//! byte-for-byte over a raw socket so no client normalises the paths first.
+
+mod server_support;
+
+use server_support::{Fixture, TestServer};
+
+const SECRET: &str = "TOP-SECRET-CONTENT";
+
+/// A server whose root sits next to a secret file (`<tmp>/secret.txt`, `<tmp>/outside/`).
+async fn server(follow_symlinks: bool) -> TestServer {
+    let f = Fixture::new();
+    f.file("README.md", "public readme");
+    f.file("docs/README.md", "docs");
+    f.file(".github/README.md", "github dir readme");
+    f.file(".gitignore", "target/");
+    f.file(".git/config", SECRET);
+    f.file("sub/.git/HEAD", SECRET);
+    server_support::write(&f.tmp.join("secret.txt"), SECRET);
+    server_support::write(&f.tmp.join("secret.md"), SECRET);
+    server_support::write(&f.tmp.join("outside/inner.txt"), SECRET);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(f.tmp.join("secret.txt"), f.root.join("escape.txt")).unwrap();
+        std::os::unix::fs::symlink(f.tmp.join("secret.md"), f.root.join("escape.md")).unwrap();
+        std::os::unix::fs::symlink(f.tmp.join("outside"), f.root.join("outdir")).unwrap();
+        std::os::unix::fs::symlink(f.root.join("README.md"), f.root.join("inside.md")).unwrap();
+    }
+    f.start(|cfg| cfg.follow_symlinks = follow_symlinks).await
+}
+
+fn assert_no_leak(path: &str, r: &server_support::Response) {
+    assert!(
+        !r.text().contains(SECRET),
+        "{path} leaked the secret: {} {}",
+        r.status,
+        r.text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn traversal_is_rejected_in_every_encoding() {
+    let s = server(false).await;
+    let attempts = [
+        "/../secret.txt",
+        "/docs/../../secret.txt",
+        "/%2e%2e/secret.txt",
+        "/%2E%2E/secret.txt",
+        "/.%2e/secret.txt",
+        "/docs/%2e%2e/%2e%2e/secret.txt",
+        "/docs%2f..%2f..%2fsecret.txt",
+        "/docs%2F%2E%2E%2F%2E%2E%2Fsecret.txt",
+        "/..%5csecret.txt",
+        "/docs%5c..%5c..%5csecret.txt",
+        "/README.md%00.txt",
+        "/../secret.md",
+        "/%2e%2e/secret.md?raw=1",
+    ];
+    for path in attempts {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 400, "{path}: {}", r.text());
+        assert_no_leak(path, &r);
+    }
+    // A raw backslash is refused by the HTTP parser or by us; either way nothing leaks.
+    let r = s.get("/..\\secret.txt").await;
+    assert!(r.status >= 400, "raw backslash: {}", r.status);
+    assert_no_leak("raw backslash", &r);
+    // Decoding happens exactly once: `%252e%252e` is a literal directory name `%2e%2e`.
+    let r = s.get("/%252e%252e/secret.txt").await;
+    assert_eq!(r.status, 404);
+    assert_no_leak("double encoding", &r);
+    // Absolute-looking paths stay inside the root.
+    for path in ["//etc/passwd", "/etc/passwd", "///etc//passwd"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 404, "{path}");
+        assert!(!r.text().contains("root:"), "{path}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_endpoints_validate_their_path_parameter() {
+    let s = server(false).await;
+    for q in [
+        "../secret.md",
+        "%2e%2e/secret.md",
+        "docs/../../secret.md",
+        "a\\b.md",
+        "x%00.md",
+    ] {
+        for endpoint in ["render", "events"] {
+            let r = s.get(&format!("/__/md-render/{endpoint}?path={q}")).await;
+            assert_eq!(r.status, 400, "{endpoint}?path={q}: {}", r.text());
+            assert_no_leak(q, &r);
+        }
+    }
+    for q in [".git/x.md", "sub/.git/HEAD.md"] {
+        for endpoint in ["render", "events"] {
+            let r = s.get(&format!("/__/md-render/{endpoint}?path={q}")).await;
+            assert_eq!(r.status, 403, "{endpoint}?path={q}");
+        }
+    }
+    // A leading slash is accepted and means the same document.
+    let (status, v) = s.render_json("/README.md").await;
+    assert_eq!(status, 200);
+    assert!(v["html"].as_str().unwrap().contains("public readme"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn symlink_escapes_are_blocked() {
+    let s = server(false).await;
+    for path in [
+        "/escape.txt",
+        "/escape.md",
+        "/escape.md?raw=1",
+        "/outdir/",
+        "/outdir",
+        "/outdir/inner.txt",
+        "/outdir/new.md",
+    ] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 403, "{path}: {}", r.text());
+        assert_no_leak(path, &r);
+    }
+    let (status, _) = s.render_json("escape.md").await;
+    assert_eq!(status, 403);
+    // Symlinks that stay inside the root are fine.
+    let r = s.get("/inside.md").await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("public readme"));
+    // Escaping links are not even listed.
+    let r = s.get("/?listing").await;
+    assert_no_leak("/", &r);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_symlinks_allows_links_out_of_the_root() {
+    let s = server(true).await;
+    let r = s.get("/escape.txt").await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), SECRET);
+    let r = s.get("/outdir/inner.txt").await;
+    assert_eq!(r.status, 200);
+    // `..` stays forbidden even then.
+    assert_eq!(s.get("/../secret.txt").await.status, 400);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_replaced_by_an_escaping_symlink_is_not_read() {
+    let s = server(false).await;
+    assert_eq!(s.get("/docs/README.md").await.status, 200);
+    std::fs::remove_file(s.path("docs/README.md")).unwrap();
+    std::os::unix::fs::symlink(s.tmp.join("secret.md"), s.path("docs/README.md")).unwrap();
+    let r = s.get("/docs/README.md").await;
+    assert_eq!(r.status, 403);
+    assert_no_leak("/docs/README.md", &r);
+    let (_, v) = s.render_json("docs/README.md").await;
+    assert_no_leak(
+        "render",
+        &server_support::Response {
+            status: 0,
+            headers: vec![],
+            body: v.to_string().into_bytes(),
+        },
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_directories_are_never_served() {
+    let s = server(false).await;
+    for path in [
+        "/.git/config",
+        "/.git/",
+        "/.git",
+        "/.GIT/config",
+        "/sub/.git/HEAD",
+        "/%2egit/config",
+        "/sub/.Git/",
+    ] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 403, "{path}");
+        assert_no_leak(path, &r);
+    }
+    let listing = s.get("/sub/").await;
+    assert_eq!(listing.status, 200);
+    assert!(!listing.text().contains(".git"), "{}", listing.text());
+    // Other dot files and `.github` are served normally.
+    assert_eq!(s.get("/.gitignore").await.text(), "target/");
+    let r = s.get("/.github/").await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("github dir readme"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_header_allowlist_on_loopback() {
+    let s = server(false).await;
+    let port = s.addr.port();
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "localhost".into(),
+        format!("app.localhost:{port}"),
+        format!("LOCALHOST:{port}"),
+    ] {
+        let r = s.get_with("/README.md", &[("Host", &host)]).await;
+        assert_eq!(r.status, 200, "Host: {host}");
+    }
+    for host in [
+        format!("evil.example:{port}"),
+        "evil.example".into(),
+        format!("localhost:{}", port.wrapping_add(1)),
+        format!("127.0.0.1.evil.example:{port}"),
+        format!("10.0.0.1:{port}"),
+    ] {
+        for path in [
+            "/README.md",
+            "/__/md-render/static/live.js",
+            "/__/md-render/render?path=README.md",
+            "/__/md-render/events?path=README.md",
+        ] {
+            let r = s.get_with(path, &[("Host", &host)]).await;
+            assert_eq!(r.status, 403, "Host: {host} {path}");
+            assert!(!r.text().contains("public readme"));
+        }
+    }
+}
