@@ -476,3 +476,23 @@ fn readme_of_20kb_renders_quickly() {
     };
     assert!(per < limit, "render took {per:?} (limit {limit:?})");
 }
+
+/// Rendering time grows linearly with the document (no quadratic passes). Run in release:
+/// `cargo test --release --test github_render -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing; run in release"]
+fn large_documents_scale_linearly() {
+    let unit = sample_readme();
+    let o = opts(Mode::Readme, true);
+    let time = |copies: usize| {
+        let md = unit.repeat(copies);
+        let t = Instant::now();
+        let r = github::render(&md, &o);
+        assert!(!r.html.is_empty());
+        (md.len(), t.elapsed())
+    };
+    let (small_len, small) = time(10);
+    let (big_len, big) = time(100);
+    println!("{small_len} bytes: {small:?}; {big_len} bytes: {big:?}");
+    assert!(big < small * 30, "{small:?} -> {big:?}");
+}
