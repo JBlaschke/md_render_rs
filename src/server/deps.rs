@@ -134,10 +134,10 @@ mod tests {
 
     #[test]
     fn skips_remote_data_internal_and_escaping_urls() {
-        let html = r#"<img src="https://example.com/a.png"><img src="//cdn/x.png">
+        let html = r##"<img src="https://example.com/a.png"><img src="//cdn/x.png">
             <img src="data:image/png;base64,AAAA"><img src="/__/md-render/bundle/github/emoji/shipit.png">
             <img src="../../outside.png"><img src="#frag"><img src=""><img src="../.git/x.png">
-            <a href="link.png">not media</a>"#;
+            <a href="link.png">not media</a>"##;
         assert!(rels(html, "docs/README.md").is_empty(), "{:?}", rels(html, "docs/README.md"));
     }
 

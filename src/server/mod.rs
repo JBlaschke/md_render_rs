@@ -30,14 +30,14 @@ mod hub;
 mod paths;
 mod routes;
 mod styles;
-mod watch;
+mod watcher;
 
 pub use paths::{GITLAB_EXTRA_EXTENSIONS, MARKDOWN_EXTENSIONS, is_markdown};
 
 use events::WireEvent;
 use hub::{Hub, RenderCtx};
 use styles::{ExtraCss, Styles};
-use watch::FsWatcher;
+use watcher::FsWatcher;
 
 /// How long graceful shutdown may take before remaining connections are dropped.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);

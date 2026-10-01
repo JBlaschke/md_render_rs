@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use notify::{PollWatcher, RecommendedWatcher, RecursiveMode, Watcher as _};
+use notify::{PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{Config, DebounceEventResult, Debouncer, new_debouncer_opt};
 use tokio::sync::mpsc::UnboundedSender;
 

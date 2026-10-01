@@ -208,7 +208,8 @@ async fn client_task(app: Arc<App>, sub: super::hub::Subscription, since: u64, t
         let current = sub.entry.version();
         tokio::select! {
             biased;
-            _ = shutdown.wait_for(|stop| *stop) => {
+            // The `wait_for` guard must not live across the `send` below (it is not `Send`).
+            _ = async { drop(shutdown.wait_for(|stop| *stop).await) } => {
                 let _ = send(WireEvent::shutdown().to_sse(&server_id, current)).await;
                 break;
             }

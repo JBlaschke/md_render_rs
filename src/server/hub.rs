@@ -23,7 +23,7 @@ use tokio::sync::{Notify, broadcast, watch};
 use super::deps;
 use super::events::{ErrorKind, WireEvent};
 use super::paths;
-use super::watch::FsWatcher;
+use super::watcher::FsWatcher;
 use crate::render::{RenderOptions, Rendered, Renderer};
 
 /// How long a page load waits for the worker to render the current file.

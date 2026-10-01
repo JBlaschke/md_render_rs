@@ -17,7 +17,7 @@ use tokio::sync::{Notify, broadcast, watch};
 
 use super::events::{ErrorKind, WireEvent};
 use super::paths;
-use super::watch::FsWatcher;
+use super::watcher::FsWatcher;
 use crate::PREFIX;
 use crate::flavor::Flavor;
 use crate::styles::Bundle;
