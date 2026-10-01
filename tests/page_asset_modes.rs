@@ -307,7 +307,6 @@ fn directory_mode_copies_and_links_relatively() {
     // (including @import chains) are copied as well.
     for rel in [
         "github/images/spinners/octocat-spinner-16px.gif",
-        "github/images/modules/promo.png",
         "github/assets/repo-extra.css",
         "github/images/x.svg",
         "github/emoji/octocat.png",
@@ -318,6 +317,10 @@ fn directory_mode_copies_and_links_relatively() {
     ] {
         assert!(files.join(rel).is_file(), "{rel} copied");
     }
+    assert!(
+        !files.join("github/images/modules/promo.png").exists(),
+        "large site images are not copied"
+    );
     let global = std::fs::read_to_string(files.join("github/assets/global-0003.css")).unwrap();
     assert!(
         global.contains("url(../images/spinners/octocat-spinner-16px.gif)"),
@@ -411,4 +414,64 @@ fn directory_mode_reports_io_errors() {
     };
     let err = md_render::page::render_page(&input, &bundle).expect_err("cannot write below a file");
     assert!(format!("{err:#}").contains("blocked_files"), "{err:#}");
+}
+
+/// EXP-2: raster images referenced from site CSS above 16 KiB (GitHub's dashboard promos and
+/// banners, GitLab's blooms: UI chrome that markdown never shows) stay out of exports, however
+/// often they are referenced; small ones (spinners, icons) and document images are kept.
+#[test]
+fn large_site_images_stay_out_of_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let promo = vec![7u8; 60 * 1024];
+    let icon = vec![9u8; 4 * 1024];
+    let emoji = vec![5u8; 40 * 1024]; // like :fishsticks: (41 KB)
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Github,
+            "github/assets/github-1.css",
+            "github",
+            None,
+            ".a{background:url(../images/promo.png)}.b{background:url(\"../images/promo.png\")}\
+             .c{background-image:url('../images/promo.png')}.d{background:url(../images/icon.png)}",
+        )
+        .asset(Flavor::Github, "github/images/promo.png", &promo)
+        .asset(Flavor::Github, "github/images/icon.png", &icon)
+        .asset(Flavor::Github, "github/emoji/octocat.png", &emoji)
+        .open(dir.path());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    let mut page = Page::new(Flavor::Github);
+    page.assets = AssetMode::Inline;
+    let html = page.render(&bundle);
+    assert_self_contained(&html);
+    assert!(
+        !html.contains(&b64(&promo)[..64]),
+        "the promo is not inlined"
+    );
+    let doc = Document::from(html.as_str());
+    let css = inlined_css(&doc, "github/assets/github-1.css");
+    let urls = css_urls(&css);
+    assert_eq!(urls[..3], ["data:,", "data:,", "data:,"], "{css}");
+    assert_eq!(decode_data_uri(&urls[3]), icon, "small images are inlined");
+    let emoji_src = attr(&doc, "img.emoji", "src").unwrap();
+    assert_eq!(
+        decode_data_uri(&emoji_src),
+        emoji,
+        "document images are never capped"
+    );
+    assert!(html.len() < 100 * 1024, "{} bytes", html.len());
+
+    let out = tempfile::tempdir().unwrap();
+    page.assets = AssetMode::Directory {
+        href: "x_files".into(),
+        dir: out.path().join("x_files"),
+    };
+    page.render(&bundle);
+    let files = out.path().join("x_files/github");
+    assert!(
+        !files.join("images/promo.png").exists(),
+        "the promo is not copied"
+    );
+    assert!(files.join("images/icon.png").is_file());
+    assert!(files.join("emoji/octocat.png").is_file());
 }

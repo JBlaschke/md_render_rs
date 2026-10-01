@@ -14,7 +14,7 @@ use md_render::styles::{Asset, Bundle, FlavorManifest, Manifest, Stylesheet};
 use md_render::{Flavor, Mode, Theme, ThemeSel};
 use sha2::{Digest as _, Sha256};
 
-/// Images above the inline limit of the page module (64 KiB).
+/// Images above the export limit of the page module for site CSS images (16 KiB).
 pub const BIG_IMAGE_LEN: usize = 70 * 1024;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

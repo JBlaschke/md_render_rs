@@ -33,11 +33,17 @@ const PATH_SET: &AsciiSet = &CONTROLS
     .add(b'%')
     .add(b'\'');
 
-/// Images referenced from site CSS that are larger than this are not inlined. On both sites
-/// these are UI-chrome banners and illustrations that markdown never uses (GH §4.3: dashboard
-/// promos 53-303 KB; GL §11.2: blooms, icon sheets), and inlining them would triple the size of
-/// an export. Fonts are always inlined.
-pub(crate) const MAX_INLINE_IMAGE_BYTES: usize = 64 * 1024;
+/// Raster images referenced from site CSS that are larger than this are neither inlined nor
+/// copied into an export. On both sites these are UI-chrome banners and illustrations that
+/// markdown never uses (GH §4.3: dashboard promos and banners of 53-303 KB; GL §11.2: blooms of
+/// 103-322 KB), while the images markdown-related rules use (spinners, icons) are at most
+/// 11.5 KB; inlining the promos doubled the size of every GitHub export. Fonts are always
+/// inlined, and images the document itself references (custom emoji) are never capped.
+pub(crate) const MAX_INLINE_IMAGE_BYTES: usize = 16 * 1024;
+
+/// The same for SVG images referenced from site CSS (GitLab's 247 KB `icons-stacked` sprite
+/// for the blame/diff UI).
+pub(crate) const MAX_INLINE_SVG_BYTES: usize = 64 * 1024;
 
 /// Maximum `@import` nesting followed when inlining or copying CSS.
 const MAX_CSS_DEPTH: usize = 4;
@@ -213,7 +219,9 @@ impl<'a> Assets<'a> {
         if is_css(path) && depth < MAX_CSS_DEPTH {
             let text = String::from_utf8_lossy(&bytes);
             for (_, reference) in css::references(&text) {
-                if let Target::Bundle { path: dep, .. } = css::resolve(path, &reference) {
+                if let Target::Bundle { path: dep, .. } = css::resolve(path, &reference)
+                    && !self.oversize_site_image(&dep)
+                {
                     self.copy_bundle_file(&dep, depth + 1)?;
                 }
             }
@@ -221,8 +229,27 @@ impl<'a> Assets<'a> {
         Ok(true)
     }
 
-    /// Inline mode: `data:` URI of a bundle file. CSS files are inlined recursively, images
-    /// above [`MAX_INLINE_IMAGE_BYTES`] and missing files give `None`.
+    /// Is `path` an image above [`MAX_INLINE_IMAGE_BYTES`] (raster) or
+    /// [`MAX_INLINE_SVG_BYTES`] (SVG)? Such images referenced from site CSS stay out of exports.
+    fn oversize_site_image(&self, path: &str) -> bool {
+        let mime = mime_of(path);
+        if !mime.starts_with("image/") || is_font(&mime, path) {
+            return false;
+        }
+        let cap = if mime == "image/svg+xml" {
+            MAX_INLINE_SVG_BYTES
+        } else {
+            MAX_INLINE_IMAGE_BYTES
+        };
+        let oversize = self.bundle.read(path).is_some_and(|b| b.len() > cap);
+        if oversize {
+            tracing::debug!(path, "large site CSS image left out of the export");
+        }
+        oversize
+    }
+
+    /// Inline mode: `data:` URI of a bundle file. CSS files are inlined recursively; missing
+    /// files give `None`.
     pub(crate) fn data_uri(&mut self, path: &str) -> Option<Rc<str>> {
         self.data_uri_at(path, 0)
     }
@@ -249,15 +276,7 @@ impl<'a> Assets<'a> {
             let inlined = self.inline_css_at(path, &text, depth + 1);
             return Some(data_uri("text/css", inlined.as_bytes()));
         }
-        let mime = mime_of(path);
-        if mime.starts_with("image/")
-            && bytes.len() > MAX_INLINE_IMAGE_BYTES
-            && !is_font(&mime, path)
-        {
-            tracing::debug!(path, size = bytes.len(), "large CSS image not inlined");
-            return None;
-        }
-        Some(data_uri(&mime, &bytes))
+        Some(data_uri(&mime_of(path), &bytes))
     }
 
     /// Inline mode: `css` (the text of bundle file `path`) with every reference replaced by a
@@ -290,6 +309,9 @@ impl<'a> Assets<'a> {
                         && referenced.contains(&woff2)
                         && self.has(&woff2)
                     {
+                        return Some(EMPTY_DATA_URI.to_owned());
+                    }
+                    if self.oversize_site_image(&dep) {
                         return Some(EMPTY_DATA_URI.to_owned());
                     }
                     let uri = self.data_uri_at(&dep, depth);
