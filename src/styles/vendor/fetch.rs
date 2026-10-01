@@ -43,7 +43,12 @@ impl Response {
 
     /// A body-less response with `status` (handy for test doubles).
     pub fn status(url: &str, status: u16) -> Response {
-        Response { status, final_url: url.to_owned(), content_type: None, body: Vec::new() }
+        Response {
+            status,
+            final_url: url.to_owned(),
+            content_type: None,
+            body: Vec::new(),
+        }
     }
 
     /// Whether the status is 2xx.
@@ -54,7 +59,12 @@ impl Response {
     /// The media type without parameters, lowercased (`text/css; charset=utf-8` → `text/css`).
     pub fn mime(&self) -> Option<String> {
         let ct = self.content_type.as_deref()?;
-        let mime = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let mime = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         (!mime.is_empty()).then_some(mime)
     }
 }
@@ -123,10 +133,22 @@ impl UreqFetcher {
         let mut r = self.agent.get(url).call()?;
         let status = r.status().as_u16();
         let final_url = r.get_uri().to_string();
-        let content_type =
-            r.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let body = r.body_mut().with_config().limit(MAX_BODY_BYTES).read_to_vec()?;
-        Ok(Response { status, final_url, content_type, body })
+        let content_type = r
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = r
+            .body_mut()
+            .with_config()
+            .limit(MAX_BODY_BYTES)
+            .read_to_vec()?;
+        Ok(Response {
+            status,
+            final_url,
+            content_type,
+            body,
+        })
     }
 }
 

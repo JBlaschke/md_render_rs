@@ -15,7 +15,7 @@
 //! updated with one tarfs read-modify-write (D9) that replaces only the vendored flavors'
 //! directories and manifest entries, and is flushed atomically.
 
-mod css;
+pub(crate) mod css;
 pub mod fetch;
 pub mod libs;
 mod paths;
@@ -128,13 +128,18 @@ pub fn vendor_with(opts: &VendorOptions, fetcher: &dyn Fetch) -> anyhow::Result<
 
     write_bundle(&opts.output, &outputs, &progress)?;
 
-    let mut report = VendorReport { output: opts.output.clone(), ..Default::default() };
+    let mut report = VendorReport {
+        output: opts.output.clone(),
+        ..Default::default()
+    };
     for o in &outputs {
         report.files += o.files.len();
         report.bytes += o.files.values().map(|b| b.len() as u64).sum::<u64>();
         report.failures.extend(o.manifest.failures.iter().cloned());
     }
-    let on_disk = std::fs::metadata(&opts.output).map(|m| m.len()).unwrap_or(0);
+    let on_disk = std::fs::metadata(&opts.output)
+        .map(|m| m.len())
+        .unwrap_or(0);
     progress.say(format_args!(
         "wrote {} ({} files, {} uncompressed, {} on disk{})",
         opts.output.display(),
@@ -230,7 +235,9 @@ fn vendor_flavor(
         Flavor::Gitlab => &opts.gitlab_source,
     };
     let page_url = parse_http_url(source, &format!("{flavor} source page"))?;
-    progress.say(format_args!("{flavor}: scraping stylesheets from {page_url}"));
+    progress.say(format_args!(
+        "{flavor}: scraping stylesheets from {page_url}"
+    ));
     let resp = fetcher.get(page_url.as_str())?;
     if !resp.is_success() {
         bail!("GET {page_url}: HTTP {}", resp.status);
@@ -275,7 +282,14 @@ fn vendor_flavor(
             for f in &pkg.files {
                 let url = parse_http_url(&pkg.url(f), "library")?;
                 let path = run.mapper.reserve(&url, &pkg.path(f));
-                let kind = if f.css { Kind::Css { depth: 0, lib: true } } else { Kind::Binary };
+                let kind = if f.css {
+                    Kind::Css {
+                        depth: 0,
+                        lib: true,
+                    }
+                } else {
+                    Kind::Binary
+                };
                 later.push(run.job(url, path, kind, None, Some(f.script)));
             }
         }
@@ -300,7 +314,13 @@ fn vendor_flavor(
         // The copy-code button's icon sprite (GL §10.4); scraped because its name is hashed.
         if let Some(sprite) = page.sprites.first() {
             let path = run.mapper.map(sprite);
-            jobs.push(run.job(sprite.clone(), path, Kind::Binary, None, Some(script::ICONS)));
+            jobs.push(run.job(
+                sprite.clone(),
+                path,
+                Kind::Binary,
+                None,
+                Some(script::ICONS),
+            ));
         }
     }
     jobs.extend(later);
@@ -325,7 +345,11 @@ fn check_roles(
                 (role::PRIMER, None),
                 (role::GLOBAL, None),
             ],
-            &[(role::GITHUB, None), (role::REPOSITORY, None), (role::CODE, None)],
+            &[
+                (role::GITHUB, None),
+                (role::REPOSITORY, None),
+                (role::CODE, None),
+            ],
         ),
         Flavor::Gitlab => (
             &[(role::APP, Some("light")), (role::HIGHLIGHT, Some("light"))],
@@ -341,8 +365,11 @@ fn check_roles(
         Some(t) => format!("{r} ({t})"),
         None => (*r).to_owned(),
     };
-    let missing: Vec<String> =
-        required.iter().filter(|(r, t)| !c.has(r, *t)).map(describe).collect();
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|(r, t)| !c.has(r, *t))
+        .map(describe)
+        .collect();
     if !missing.is_empty() {
         bail!(
             "{page} does not link the {} stylesheet(s) md-render needs (it has {links} stylesheet \
@@ -371,7 +398,14 @@ impl FlavorRun<'_> {
         script: Option<&'static str>,
     ) -> Job {
         self.queued.insert(path.clone());
-        Job { url, path, kind, policy: Policy::Record, referenced_by, script }
+        Job {
+            url,
+            path,
+            kind,
+            policy: Policy::Record,
+            referenced_by,
+            script,
+        }
     }
 
     /// Download in waves: the fatal jobs (site stylesheets) first, so a broken site fails before
@@ -450,7 +484,12 @@ impl FlavorRun<'_> {
         if let Some(key) = job.script {
             self.scripts.insert(key.to_owned(), job.path.clone());
         }
-        self.progress.say(format_args!("  {:>3} {:>10}  {}", resp.status, human_bytes(size), job.path));
+        self.progress.say(format_args!(
+            "  {:>3} {:>10}  {}",
+            resp.status,
+            human_bytes(size),
+            job.path
+        ));
         self.files.insert(job.path, bytes);
         Ok(())
     }
@@ -462,7 +501,10 @@ impl FlavorRun<'_> {
         self.progress.say(format_args!(
             "  warning: {} failed: {error}{}",
             job.url,
-            job.referenced_by.as_deref().map(|r| format!(" (referenced by {r})")).unwrap_or_default()
+            job.referenced_by
+                .as_deref()
+                .map(|r| format!(" (referenced by {r})"))
+                .unwrap_or_default()
         ));
         self.failures.push(Failure {
             url: job.url.to_string(),
@@ -489,7 +531,9 @@ impl FlavorRun<'_> {
             // data: URIs and same-document fragments (`url(#filter)`) stay as they are.
             if value.is_empty()
                 || value.starts_with('#')
-                || value.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:"))
+                || value
+                    .get(..5)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("data:"))
             {
                 return None;
             }
@@ -509,9 +553,10 @@ impl FlavorRun<'_> {
             if wanted && queued.insert(path.clone()) {
                 let kind = match r.kind {
                     css::RefKind::Url => Some(Kind::Binary),
-                    css::RefKind::Import if depth < MAX_IMPORT_DEPTH => {
-                        Some(Kind::Css { depth: depth + 1, lib })
-                    }
+                    css::RefKind::Import if depth < MAX_IMPORT_DEPTH => Some(Kind::Css {
+                        depth: depth + 1,
+                        lib,
+                    }),
                     css::RefKind::Import => None,
                 };
                 match kind {
@@ -546,13 +591,19 @@ impl FlavorRun<'_> {
             Flavor::Gitlab => ["light", "dark"]
                 .into_iter()
                 .filter(|t| {
-                    stylesheets.iter().any(|s| s.role == role::APP && s.theme.as_deref() == Some(t))
+                    stylesheets
+                        .iter()
+                        .any(|s| s.role == role::APP && s.theme.as_deref() == Some(t))
                 })
                 .map(str::to_owned)
                 .collect(),
         };
         self.assets.sort_by(|a, b| a.path.cmp(&b.path));
-        self.failures.sort_by(|a, b| a.url.cmp(&b.url).then(a.referenced_by.cmp(&b.referenced_by)));
+        self.failures.sort_by(|a, b| {
+            a.url
+                .cmp(&b.url)
+                .then(a.referenced_by.cmp(&b.referenced_by))
+        });
         self.progress.say(format_args!(
             "{}: {} stylesheets, {} other files, {} non-fatal failures",
             self.flavor,
@@ -580,7 +631,8 @@ impl FlavorRun<'_> {
 
 /// Stylesheets must be UTF-8 (both sites serve UTF-8); a BOM is dropped.
 fn decode_css(body: Vec<u8>) -> Result<String, String> {
-    let mut s = String::from_utf8(body).map_err(|e| format!("stylesheet is not valid UTF-8 ({e})"))?;
+    let mut s =
+        String::from_utf8(body).map_err(|e| format!("stylesheet is not valid UTF-8 ({e})"))?;
     if s.starts_with('\u{feff}') {
         s.drain(..3);
     }
@@ -602,8 +654,9 @@ fn fetch_all(fetcher: &dyn Fetch, urls: &[&str]) -> Vec<anyhow::Result<Response>
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(url) = urls.get(i) else { break };
                     let result = fetcher.get(url);
-                    *slots[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(result);
+                    *slots[i]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
                 }
             });
         }
@@ -662,7 +715,9 @@ fn existing_manifest(
     output: &Path,
     progress: &Progress,
 ) -> anyhow::Result<Manifest> {
-    let Some(raw) = fs.get(MANIFEST_PATH) else { return Ok(Manifest::default()) };
+    let Some(raw) = fs.get(MANIFEST_PATH) else {
+        return Ok(Manifest::default());
+    };
     match serde_json::from_slice::<Manifest>(raw) {
         Ok(m) if m.schema == SCHEMA => Ok(m),
         Ok(m) if m.schema > SCHEMA => bail!(
@@ -689,7 +744,11 @@ fn existing_manifest(
     }
 }
 
-fn write_bundle(output: &Path, outputs: &[FlavorOutput], progress: &Progress) -> anyhow::Result<()> {
+fn write_bundle(
+    output: &Path,
+    outputs: &[FlavorOutput],
+    progress: &Progress,
+) -> anyhow::Result<()> {
     if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -699,7 +758,8 @@ fn write_bundle(output: &Path, outputs: &[FlavorOutput], progress: &Progress) ->
         for o in outputs {
             fs.delete_prefix(o.flavor.as_str());
             for (path, bytes) in &o.files {
-                fs.write_file(path, bytes.clone()).with_context(|| format!("adding {path}"))?;
+                fs.write_file(path, bytes.clone())
+                    .with_context(|| format!("adding {path}"))?;
             }
             manifest.flavors.insert(o.flavor, o.manifest.clone());
         }
@@ -712,10 +772,9 @@ fn write_bundle(output: &Path, outputs: &[FlavorOutput], progress: &Progress) ->
             .filter(|f| !outputs.iter().any(|o| o.flavor == *f))
             .collect();
         for flavor in kept {
-            let ok = manifest
-                .flavors
-                .get(&flavor)
-                .is_some_and(|fm| crate::styles::validate_flavor(flavor, fm, |p| fs.contains(p)).is_ok());
+            let ok = manifest.flavors.get(&flavor).is_some_and(|fm| {
+                crate::styles::validate_flavor(flavor, fm, |p| fs.contains(p)).is_ok()
+            });
             if !ok {
                 progress.say(format_args!(
                     "  warning: dropping the incomplete {flavor} styles from {} (run `md-render \
@@ -762,7 +821,11 @@ fn human_bytes(n: u64) -> String {
         v /= 1000.0;
         u += 1;
     }
-    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
 }
 
 /// RFC 3339 UTC timestamp with second precision, e.g. `2026-10-01T10:00:00Z`.
@@ -782,7 +845,12 @@ fn rfc3339_utc(t: SystemTime) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", sod / 3600, sod % 3600 / 60, sod % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        sod / 3600,
+        sod % 3600 / 60,
+        sod % 60
+    )
 }
 
 #[cfg(test)]

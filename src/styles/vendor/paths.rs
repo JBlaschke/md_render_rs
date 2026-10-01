@@ -34,7 +34,10 @@ fn is_safe_char(c: char) -> bool {
 /// Sanitize one (percent-encoded) URL path segment into a bundle path segment.
 pub(crate) fn sanitize_segment(seg: &str) -> String {
     let decoded = percent_encoding::percent_decode_str(seg).decode_utf8_lossy();
-    let mut s: String = decoded.chars().map(|c| if is_safe_char(c) { c } else { '_' }).collect();
+    let mut s: String = decoded
+        .chars()
+        .map(|c| if is_safe_char(c) { c } else { '_' })
+        .collect();
     if s.is_empty() || s == "." || s == ".." {
         s = "_".into();
     }
@@ -72,7 +75,11 @@ pub(crate) fn relative_path(from: &str, to: &str) -> String {
     };
     let to_parts: Vec<&str> = to.split('/').collect();
     let (to_dir, to_name) = to_parts.split_at(to_parts.len().saturating_sub(1));
-    let common = from_dir.iter().zip(to_dir).take_while(|(a, b)| a == b).count();
+    let common = from_dir
+        .iter()
+        .zip(to_dir)
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut out = String::new();
     for _ in common..from_dir.len() {
         out.push_str("../");
@@ -122,8 +129,12 @@ impl Mapper {
             let p = format!("{}/", base.path());
             base.set_path(&p);
         }
-        self.mounts.push(Mount { base, prefix: prefix.trim_end_matches('/').to_owned() });
-        self.mounts.sort_by_key(|m| std::cmp::Reverse(m.base.path().len()));
+        self.mounts.push(Mount {
+            base,
+            prefix: prefix.trim_end_matches('/').to_owned(),
+        });
+        self.mounts
+            .sort_by_key(|m| std::cmp::Reverse(m.base.path().len()));
     }
 
     /// Dedupe key: the URL without its fragment.
@@ -164,11 +175,17 @@ impl Mapper {
                 if let Some(port) = url.port() {
                     host.push_str(&format!("_{port}"));
                 }
-                (format!("{}/_ext/{host}", self.flavor_prefix), raw_path.trim_start_matches('/'))
+                (
+                    format!("{}/_ext/{host}", self.flavor_prefix),
+                    raw_path.trim_start_matches('/'),
+                )
             }
         };
-        let mut segs: Vec<String> =
-            rest.split('/').filter(|s| !s.is_empty()).map(sanitize_segment).collect();
+        let mut segs: Vec<String> = rest
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(sanitize_segment)
+            .collect();
         if segs.is_empty() || rest.ends_with('/') {
             segs.push("index".into());
         }
@@ -179,7 +196,11 @@ impl Mapper {
         if !fits_ustar(&path) {
             let name = segs.last().map(String::as_str).unwrap_or("index");
             let (_, ext) = split_ext(name);
-            path = format!("{}/_long/{}{ext}", self.flavor_prefix, &sha256_hex(key.as_bytes())[..32]);
+            path = format!(
+                "{}/_long/{}{ext}",
+                self.flavor_prefix,
+                &sha256_hex(key.as_bytes())[..32]
+            );
         }
         let path = self.unique(&path, &key);
         self.insert(key, path.clone());
@@ -219,23 +240,43 @@ mod tests {
     #[test]
     fn relative_paths() {
         let cases = [
-            ("github/assets/global.css", "github/images/spinners/a.gif", "../images/spinners/a.gif"),
+            (
+                "github/assets/global.css",
+                "github/images/spinners/a.gif",
+                "../images/spinners/a.gif",
+            ),
             ("github/assets/global.css", "github/assets/x.png", "x.png"),
-            ("github/assets/global.css", "github/assets/images/x.svg", "images/x.svg"),
+            (
+                "github/assets/global.css",
+                "github/assets/images/x.svg",
+                "images/x.svg",
+            ),
             (
                 "gitlab/assets/highlight/themes/white.css",
                 "gitlab/assets/icons-stacked.svg",
                 "../../icons-stacked.svg",
             ),
-            ("gitlab/assets/fonts.css", "gitlab/assets/gitlab-sans/S.woff2", "gitlab-sans/S.woff2"),
-            ("gitlab/lib/katex/katex.min.css", "gitlab/lib/katex/fonts/K.woff2", "fonts/K.woff2"),
+            (
+                "gitlab/assets/fonts.css",
+                "gitlab/assets/gitlab-sans/S.woff2",
+                "gitlab-sans/S.woff2",
+            ),
+            (
+                "gitlab/lib/katex/katex.min.css",
+                "gitlab/lib/katex/fonts/K.woff2",
+                "fonts/K.woff2",
+            ),
             ("a/b/c/d.css", "a/x/y/z.png", "../../x/y/z.png"),
             ("a/b.css", "c/d.png", "../c/d.png"),
             ("top.css", "a/b.png", "a/b.png"),
             ("a/top.css", "b.png", "../b.png"),
             ("same.css", "other.png", "other.png"),
             // Shared prefix of names must not count as a shared directory.
-            ("gitlab/assets/a.css", "gitlab/assets2/b.png", "../assets2/b.png"),
+            (
+                "gitlab/assets/a.css",
+                "gitlab/assets2/b.png",
+                "../assets2/b.png",
+            ),
         ];
         for (from, to, want) in cases {
             assert_eq!(relative_path(from, to), want, "{from} -> {to}");
@@ -248,8 +289,14 @@ mod tests {
         let base = url("http://x/__/md-render/bundle/");
         for (from, to) in [
             ("github/assets/global.css", "github/images/a/b.gif"),
-            ("gitlab/assets/highlight/themes/dark.css", "gitlab/assets/icons.svg"),
-            ("gitlab/lib/katex/katex.min.css", "gitlab/lib/katex/fonts/f.woff2"),
+            (
+                "gitlab/assets/highlight/themes/dark.css",
+                "gitlab/assets/icons.svg",
+            ),
+            (
+                "gitlab/lib/katex/katex.min.css",
+                "gitlab/lib/katex/fonts/f.woff2",
+            ),
         ] {
             let css = base.join(from).expect("join");
             let got = css.join(&relative_path(from, to)).expect("join");
@@ -260,7 +307,10 @@ mod tests {
     #[test]
     fn sanitizes_segments() {
         assert_eq!(sanitize_segment("a%20b.png"), "a_b.png");
-        assert_eq!(sanitize_segment("image_comment_light_cursor@2x-1.svg"), "image_comment_light_cursor@2x-1.svg");
+        assert_eq!(
+            sanitize_segment("image_comment_light_cursor@2x-1.svg"),
+            "image_comment_light_cursor@2x-1.svg"
+        );
         assert_eq!(sanitize_segment("%C3%BC.css"), "_.css");
         assert_eq!(sanitize_segment("%2E%2E"), "_");
         assert_eq!(sanitize_segment(".."), "_");
@@ -277,10 +327,27 @@ mod tests {
     fn ustar_fit() {
         assert!(fits_ustar(&"a".repeat(100)));
         assert!(!fits_ustar(&"a".repeat(101)));
-        assert!(fits_ustar(&format!("{}/{}", "d".repeat(155), "n".repeat(100))));
-        assert!(!fits_ustar(&format!("{}/{}", "d".repeat(156), "n".repeat(100))));
-        assert!(!fits_ustar(&format!("{}/{}", "d".repeat(10), "n".repeat(101))));
-        assert!(fits_ustar(&format!("{}/{}/{}", "a".repeat(100), "b".repeat(50), "n".repeat(99))));
+        assert!(fits_ustar(&format!(
+            "{}/{}",
+            "d".repeat(155),
+            "n".repeat(100)
+        )));
+        assert!(!fits_ustar(&format!(
+            "{}/{}",
+            "d".repeat(156),
+            "n".repeat(100)
+        )));
+        assert!(!fits_ustar(&format!(
+            "{}/{}",
+            "d".repeat(10),
+            "n".repeat(101)
+        )));
+        assert!(fits_ustar(&format!(
+            "{}/{}/{}",
+            "a".repeat(100),
+            "b".repeat(50),
+            "n".repeat(99)
+        )));
     }
 
     #[test]
@@ -288,34 +355,54 @@ mod tests {
         let mut m = Mapper::new("github");
         m.mount(&url("https://github.githubassets.com/"), "github");
         assert_eq!(
-            m.map(&url("https://github.githubassets.com/assets/light-99f877e9ddfc0e51.css")),
+            m.map(&url(
+                "https://github.githubassets.com/assets/light-99f877e9ddfc0e51.css"
+            )),
             "github/assets/light-99f877e9ddfc0e51.css"
         );
         assert_eq!(
-            m.map(&url("https://github.githubassets.com/images/spinners/octocat-spinner-32.gif")),
+            m.map(&url(
+                "https://github.githubassets.com/images/spinners/octocat-spinner-32.gif"
+            )),
             "github/images/spinners/octocat-spinner-32.gif"
         );
         // Fragment ignored, same path; idempotent.
         assert_eq!(
-            m.map(&url("https://github.githubassets.com/images/spinners/octocat-spinner-32.gif#x")),
+            m.map(&url(
+                "https://github.githubassets.com/images/spinners/octocat-spinner-32.gif#x"
+            )),
             "github/images/spinners/octocat-spinner-32.gif"
         );
         // Foreign host.
-        assert_eq!(m.map(&url("https://example.com:8443/a/b.png")), "github/_ext/example.com_8443/a/b.png");
+        assert_eq!(
+            m.map(&url("https://example.com:8443/a/b.png")),
+            "github/_ext/example.com_8443/a/b.png"
+        );
         // Directory URL.
-        assert_eq!(m.map(&url("https://github.githubassets.com/dir/")), "github/dir/index");
+        assert_eq!(
+            m.map(&url("https://github.githubassets.com/dir/")),
+            "github/dir/index"
+        );
     }
 
     #[test]
     fn mapper_longest_mount_wins() {
         let mut m = Mapper::new("gitlab");
         m.mount(&url("https://cdn.jsdelivr.net/"), "gitlab/_cdn");
-        m.mount(&url("https://cdn.jsdelivr.net/npm/katex@0.16.47/dist"), "gitlab/lib/katex");
+        m.mount(
+            &url("https://cdn.jsdelivr.net/npm/katex@0.16.47/dist"),
+            "gitlab/lib/katex",
+        );
         assert_eq!(
-            m.map(&url("https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/fonts/KaTeX_Main-Regular.woff2")),
+            m.map(&url(
+                "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/fonts/KaTeX_Main-Regular.woff2"
+            )),
             "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2"
         );
-        assert_eq!(m.map(&url("https://cdn.jsdelivr.net/other.js")), "gitlab/_cdn/other.js");
+        assert_eq!(
+            m.map(&url("https://cdn.jsdelivr.net/other.js")),
+            "gitlab/_cdn/other.js"
+        );
     }
 
     #[test]
@@ -325,7 +412,10 @@ mod tests {
         let a = m.map(&url("https://gitlab.com/assets/a.png?v=1"));
         let b = m.map(&url("https://gitlab.com/assets/a.png?v=2"));
         let c = m.map(&url("https://gitlab.com/assets/a.png"));
-        assert!(a.starts_with("gitlab/assets/a-q") && a.ends_with(".png"), "{a}");
+        assert!(
+            a.starts_with("gitlab/assets/a-q") && a.ends_with(".png"),
+            "{a}"
+        );
         assert_ne!(a, b);
         assert_eq!(c, "gitlab/assets/a.png");
         // Two URLs that sanitize to the same path get distinct paths.
@@ -333,13 +423,22 @@ mod tests {
         let e = m.map(&url("https://gitlab.com/assets/x_y.png"));
         assert_eq!(d, "gitlab/assets/x_y.png");
         assert_ne!(d, e);
-        assert!(e.starts_with("gitlab/assets/x_y-") && e.ends_with(".png"), "{e}");
+        assert!(
+            e.starts_with("gitlab/assets/x_y-") && e.ends_with(".png"),
+            "{e}"
+        );
         // Reserved paths take precedence and are stable.
         let lib = url("https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js");
-        assert_eq!(m.reserve(&lib, "gitlab/lib/mermaid/mermaid.min.js"), "gitlab/lib/mermaid/mermaid.min.js");
+        assert_eq!(
+            m.reserve(&lib, "gitlab/lib/mermaid/mermaid.min.js"),
+            "gitlab/lib/mermaid/mermaid.min.js"
+        );
         assert_eq!(m.map(&lib), "gitlab/lib/mermaid/mermaid.min.js");
         let other = url("https://elsewhere.example/mermaid.min.js");
-        assert_ne!(m.reserve(&other, "gitlab/lib/mermaid/mermaid.min.js"), "gitlab/lib/mermaid/mermaid.min.js");
+        assert_ne!(
+            m.reserve(&other, "gitlab/lib/mermaid/mermaid.min.js"),
+            "gitlab/lib/mermaid/mermaid.min.js"
+        );
     }
 
     #[test]

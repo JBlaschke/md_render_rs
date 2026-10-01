@@ -50,7 +50,9 @@ fn sprite_re() -> &'static Regex {
 
 /// The last path segment of `url`.
 pub(crate) fn file_name(url: &Url) -> &str {
-    url.path_segments().and_then(|mut s| s.next_back()).unwrap_or("")
+    url.path_segments()
+        .and_then(|mut s| s.next_back())
+        .unwrap_or("")
 }
 
 /// Parse `html` (fetched from `page_url`) and collect its stylesheets and icon sprites.
@@ -68,35 +70,67 @@ pub(crate) fn scrape_page(html: &str, page_url: &Url) -> Page {
     let mut page = Page::default();
     let mut seen = HashSet::new();
     for node in doc.select("link[rel]").nodes() {
-        let rel = node.attr("rel").map(|r| r.to_ascii_lowercase()).unwrap_or_default();
+        let rel = node
+            .attr("rel")
+            .map(|r| r.to_ascii_lowercase())
+            .unwrap_or_default();
         let tokens: Vec<&str> = rel.split_ascii_whitespace().collect();
         if !tokens.contains(&"stylesheet") || tokens.contains(&"alternate") {
             continue;
         }
         let href = node.attr("href").or_else(|| node.attr("data-href"));
-        let Some(url) = href.and_then(|h| resolve(&base, &h)) else { continue };
+        let Some(url) = href.and_then(|h| resolve(&base, &h)) else {
+            continue;
+        };
         if !seen.insert(url.as_str().to_owned()) {
             continue;
         }
-        let media = node.attr("media").map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        let media = node
+            .attr("media")
+            .map(|m| m.trim().to_owned())
+            .filter(|m| !m.is_empty());
         let color_theme = node.attr("data-color-theme").map(|t| t.trim().to_owned());
-        page.links.push(LinkRef { url, media, color_theme });
+        page.links.push(LinkRef {
+            url,
+            media,
+            color_theme,
+        });
     }
 
     let mut seen = HashSet::new();
+    let mut add_sprite = |candidate: &str, sprites: &mut Vec<Url>| {
+        let Some(url) = resolve(&base, candidate) else {
+            return;
+        };
+        if sprite_re().is_match(file_name(&url)) && seen.insert(url.as_str().to_owned()) {
+            sprites.push(url);
+        }
+    };
+    // GL §10.4 / §13 step 2: `<use href="/assets/icons-<hash>.svg#name">` on any page.
     for node in doc.select("*").nodes() {
         for attr in node.attrs() {
-            let value: &str = &attr.value;
-            if !value.contains("icons-") {
-                continue;
-            }
-            let Some(url) = resolve(&base, value) else { continue };
-            if sprite_re().is_match(file_name(&url)) && seen.insert(url.as_str().to_owned()) {
-                page.sprites.push(url);
+            if attr.value.contains("icons-") {
+                add_sprite(&attr.value, &mut page.sprites);
             }
         }
     }
+    if page.sprites.is_empty() {
+        // Pages without inline icons still name the sprite in their scripts
+        // (`gon.sprite_icons = "/assets/icons-<hash>.svg"`, JSON with `\/` escapes).
+        let text = html.replace("\\/", "/");
+        for m in sprite_text_re().captures_iter(&text) {
+            add_sprite(&m[1], &mut page.sprites);
+        }
+    }
     page
+}
+
+fn sprite_text_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"["'(]((?:https?:)?[^"'()\s<>]*/icons-[0-9a-f]{16,}\.svg)"#)
+            .expect("valid regex")
+    })
 }
 
 /// A stylesheet selected for vendoring.
@@ -121,7 +155,9 @@ pub(crate) struct Classified {
 impl Classified {
     /// Whether a sheet of `role` (and `theme`, if given) was selected.
     pub(crate) fn has(&self, role: &str, theme: Option<&str>) -> bool {
-        self.sheets.iter().any(|s| s.role == role && (theme.is_none() || s.theme.as_deref() == theme))
+        self.sheets
+            .iter()
+            .any(|s| s.role == role && (theme.is_none() || s.theme.as_deref() == theme))
     }
 }
 
@@ -180,11 +216,13 @@ pub(crate) fn classify_github(links: &[LinkRef], all_themes: bool) -> Classified
     for link in links {
         let name = file_name(&link.url);
         if module_re.is_match(name) {
-            out.skipped.push((link.url.clone(), "React component CSS (*.module.css)"));
+            out.skipped
+                .push((link.url.clone(), "React component CSS (*.module.css)"));
         } else if let Some(c) = theme_re.captures(name) {
             let id = c[1].to_owned();
             if !all_themes && id != "light" && id != "dark" {
-                out.skipped.push((link.url.clone(), "theme not requested (use all themes)"));
+                out.skipped
+                    .push((link.url.clone(), "theme not requested (use all themes)"));
             } else if !themes_seen.insert(id.clone()) {
                 out.skipped.push((link.url.clone(), "duplicate theme"));
             } else {
@@ -215,7 +253,8 @@ pub(crate) fn classify_github(links: &[LinkRef], all_themes: bool) -> Classified
                 });
             }
         } else {
-            out.skipped.push((link.url.clone(), "not a markdown-relevant stylesheet"));
+            out.skipped
+                .push((link.url.clone(), "not a markdown-relevant stylesheet"));
         }
     }
     sort_cascade(&mut out.sheets);
@@ -268,10 +307,12 @@ pub(crate) fn classify_gitlab(links: &[LinkRef]) -> Classified {
                 theme: theme.map(str::to_owned),
                 media: link.media.clone(),
             }),
-            None if in_highlight => {
-                out.skipped.push((link.url.clone(), "highlight theme other than white/dark"))
-            }
-            None => out.skipped.push((link.url.clone(), "not a markdown-relevant stylesheet")),
+            None if in_highlight => out
+                .skipped
+                .push((link.url.clone(), "highlight theme other than white/dark")),
+            None => out
+                .skipped
+                .push((link.url.clone(), "not a markdown-relevant stylesheet")),
         }
     }
     sort_cascade(&mut out.sheets);
@@ -303,7 +344,10 @@ mod tests {
 </head><body></body></html>"#;
 
     fn gh_page() -> Page {
-        scrape_page(GH_PAGE, &Url::parse("https://github.com/joeyespo/grip").expect("url"))
+        scrape_page(
+            GH_PAGE,
+            &Url::parse("https://github.com/joeyespo/grip").expect("url"),
+        )
     }
 
     #[test]
@@ -334,8 +378,11 @@ mod tests {
     #[test]
     fn github_default_themes() {
         let c = classify_github(&gh_page().links, false);
-        let got: Vec<(&str, Option<&str>)> =
-            c.sheets.iter().map(|s| (s.role, s.theme.as_deref())).collect();
+        let got: Vec<(&str, Option<&str>)> = c
+            .sheets
+            .iter()
+            .map(|s| (s.role, s.theme.as_deref()))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -349,15 +396,25 @@ mod tests {
                 ("code", None),
             ]
         );
-        assert!(c.sheets.iter().all(|s| s.media.is_none()), "media=all is normalized away");
-        assert!(c.skipped.iter().any(|(u, _)| file_name(u).ends_with(".module.css")));
+        assert!(
+            c.sheets.iter().all(|s| s.media.is_none()),
+            "media=all is normalized away"
+        );
+        assert!(
+            c.skipped
+                .iter()
+                .any(|(u, _)| file_name(u).ends_with(".module.css"))
+        );
     }
 
     #[test]
     fn github_all_themes_keep_page_order() {
         let c = classify_github(&gh_page().links, true);
         let themes: Vec<&str> = c.sheets.iter().filter_map(|s| s.theme.as_deref()).collect();
-        assert_eq!(themes, vec!["light", "light_high_contrast", "dark", "dark_dimmed"]);
+        assert_eq!(
+            themes,
+            vec!["light", "light_high_contrast", "dark", "dark_dimmed"]
+        );
         assert_eq!(c.sheets[4].role, "primitives");
     }
 
@@ -365,10 +422,18 @@ mod tests {
     fn github_cascade_order_is_enforced() {
         // Shuffled page: code before primer, themes last.
         let base = Url::parse("https://h/assets/").expect("url");
-        let links: Vec<LinkRef> = ["code-0123456789abcdef.css", "primer-0123456789abcdef.css", "dark-0123456789abcdef.css"]
-            .iter()
-            .map(|n| LinkRef { url: base.join(n).expect("join"), media: None, color_theme: None })
-            .collect();
+        let links: Vec<LinkRef> = [
+            "code-0123456789abcdef.css",
+            "primer-0123456789abcdef.css",
+            "dark-0123456789abcdef.css",
+        ]
+        .iter()
+        .map(|n| LinkRef {
+            url: base.join(n).expect("join"),
+            media: None,
+            color_theme: None,
+        })
+        .collect();
         let c = classify_github(&links, false);
         let roles: Vec<&str> = c.sheets.iter().map(|s| s.role).collect();
         assert_eq!(roles, vec!["theme", "primer", "code"]);
@@ -391,7 +456,10 @@ mod tests {
 </body></html>"#;
 
     fn gl_page() -> Page {
-        scrape_page(GL_PAGE, &Url::parse("https://gitlab.com/gitlab-org/gitlab-foss").expect("url"))
+        scrape_page(
+            GL_PAGE,
+            &Url::parse("https://gitlab.com/gitlab-org/gitlab-foss").expect("url"),
+        )
     }
 
     #[test]
@@ -410,8 +478,16 @@ mod tests {
                 ("app", Some("dark"), Some("(prefers-color-scheme: dark)")),
                 ("tailwind", None, None),
                 ("fonts", None, None),
-                ("highlight", Some("light"), Some("(prefers-color-scheme: light)")),
-                ("highlight", Some("dark"), Some("(prefers-color-scheme: dark)")),
+                (
+                    "highlight",
+                    Some("light"),
+                    Some("(prefers-color-scheme: light)")
+                ),
+                (
+                    "highlight",
+                    Some("dark"),
+                    Some("(prefers-color-scheme: dark)")
+                ),
             ]
         );
         assert_eq!(
@@ -427,8 +503,31 @@ mod tests {
         let sprites: Vec<&str> = page.sprites.iter().map(Url::as_str).collect();
         assert_eq!(
             sprites,
-            vec!["https://gitlab.com/assets/icons-5a3f88503a318f1eaf3b49d9d82c93cdde31fd5224ab8aeeb08534974b21f10c.svg"]
+            vec![
+                "https://gitlab.com/assets/icons-5a3f88503a318f1eaf3b49d9d82c93cdde31fd5224ab8aeeb08534974b21f10c.svg"
+            ]
         );
+    }
+
+    #[test]
+    fn gitlab_sprite_from_script_text() {
+        let html = r#"<html><head><script>
+gon.sprite_icons="/assets/icons-5a3f88503a318f1eaf3b49d9d82c93cdde31fd5224ab8aeeb08534974b21f10c.svg";
+window.x = {"sprite_file_icons":"https:\/\/gitlab.example\/assets\/file_icons\/file_icons-0123456789abcdef.svg"};
+</script></head><body></body></html>"#;
+        let page = scrape_page(
+            html,
+            &Url::parse("https://gitlab.example/g/p").expect("url"),
+        );
+        let sprites: Vec<&str> = page.sprites.iter().map(Url::as_str).collect();
+        assert_eq!(
+            sprites,
+            vec![
+                "https://gitlab.example/assets/icons-5a3f88503a318f1eaf3b49d9d82c93cdde31fd5224ab8aeeb08534974b21f10c.svg"
+            ]
+        );
+        // No sprite anywhere: nothing found, no panic.
+        assert!(gh_page().sprites.is_empty());
     }
 
     #[test]
@@ -436,12 +535,21 @@ mod tests {
         let html = r#"<head><base href="https://cdn.example/root/"><link rel=STYLESHEET href="x/primer-0123456789abcdef.css"><link rel="stylesheet" href="javascript:alert(1)"><link rel="stylesheet" href=""></head>"#;
         let page = scrape_page(html, &Url::parse("https://example/page").expect("url"));
         assert_eq!(page.links.len(), 1);
-        assert_eq!(page.links[0].url.as_str(), "https://cdn.example/root/x/primer-0123456789abcdef.css");
+        assert_eq!(
+            page.links[0].url.as_str(),
+            "https://cdn.example/root/x/primer-0123456789abcdef.css"
+        );
     }
 
     #[test]
     fn garbage_html_does_not_panic() {
-        for html in ["", "<link", "<<<>>>", "<link rel=stylesheet href=\"http://[::1\">", "\u{0}\u{1}"] {
+        for html in [
+            "",
+            "<link",
+            "<<<>>>",
+            "<link rel=stylesheet href=\"http://[::1\">",
+            "\u{0}\u{1}",
+        ] {
             let p = scrape_page(html, &Url::parse("https://example/").expect("url"));
             let _ = classify_github(&p.links, true);
             let _ = classify_gitlab(&p.links);

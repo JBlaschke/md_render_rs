@@ -42,6 +42,9 @@ pub struct Bundle {
     manifest: Manifest,
     origin: BundleOrigin,
     etag: String,
+    /// SHA-256 of the `.tar.gz` bytes this bundle was read from (`None` for the fallback), so
+    /// [`SharedBundle::reload`] can detect an unchanged file without decompressing it.
+    source_sha256: Option<String>,
 }
 
 impl fmt::Debug for Bundle {
@@ -104,7 +107,9 @@ pub(crate) fn validate_manifest(m: &Manifest, exists: impl Fn(&str) -> bool) -> 
 
 /// The embedded fallback CSS of `flavor` (empty if the asset registry lacks it).
 fn fallback_css(flavor: Flavor) -> &'static [u8] {
-    crate::assets::get(&format!("fallback-{flavor}.css")).map(|(b, _)| b).unwrap_or_default()
+    crate::assets::get(&format!("fallback-{flavor}.css"))
+        .map(|(b, _)| b)
+        .unwrap_or_default()
 }
 
 /// Content hash of the embedded fallback CSS of `flavors` (part of the etag of bundles that use
@@ -133,12 +138,29 @@ impl Bundle {
     /// Like [`Bundle::open`] for bundle bytes already in memory. The etag is the SHA-256 of
     /// `gz`.
     pub fn from_tar_gz_bytes(gz: &[u8], origin: BundleOrigin) -> anyhow::Result<Bundle> {
+        Self::from_tar_gz_bytes_hashed(gz, sha256_hex(gz), origin)
+    }
+
+    /// [`Bundle::from_tar_gz_bytes`] with the SHA-256 of `gz` already computed.
+    fn from_tar_gz_bytes_hashed(
+        gz: &[u8],
+        sha256: String,
+        origin: BundleOrigin,
+    ) -> anyhow::Result<Bundle> {
         let fs = tarfs::InMemoryFileSystem::from_tar_gz_bytes(gz).context("reading the archive")?;
-        let raw = fs.get(MANIFEST_PATH).with_context(|| format!("no {MANIFEST_PATH} in the archive"))?;
+        let raw = fs
+            .get(MANIFEST_PATH)
+            .with_context(|| format!("no {MANIFEST_PATH} in the archive"))?;
         let manifest: Manifest =
             serde_json::from_slice(raw).with_context(|| format!("parsing {MANIFEST_PATH}"))?;
         validate_manifest(&manifest, |p| fs.contains(p))?;
-        Ok(Bundle { fs, manifest, origin, etag: sha256_hex(gz) })
+        Ok(Bundle {
+            fs,
+            manifest,
+            origin,
+            etag: sha256.clone(),
+            source_sha256: Some(sha256),
+        })
     }
 
     /// The embedded fallback bundle (minimal CSS for both flavors at `<flavor>/fallback.css`,
@@ -154,10 +176,15 @@ impl Bundle {
             manifest,
             origin: BundleOrigin::Fallback,
             etag: format!("fallback-{}", fallback_tag(&Flavor::ALL)),
+            source_sha256: None,
         }
     }
 
-    fn insert_fallback(fs: &mut tarfs::InMemoryFileSystem, manifest: &mut Manifest, flavor: Flavor) {
+    fn insert_fallback(
+        fs: &mut tarfs::InMemoryFileSystem,
+        manifest: &mut Manifest,
+        flavor: Flavor,
+    ) {
         let css = fallback_css(flavor);
         let path = format!("{flavor}/fallback.css");
         // A constant, valid path: write_file cannot fail here.
@@ -182,8 +209,10 @@ impl Bundle {
 
     /// Add fallback entries for flavors this bundle lacks (the etag changes accordingly).
     pub fn with_fallbacks(mut self) -> Bundle {
-        let missing: Vec<Flavor> =
-            Flavor::ALL.into_iter().filter(|f| !self.manifest.flavors.contains_key(f)).collect();
+        let missing: Vec<Flavor> = Flavor::ALL
+            .into_iter()
+            .filter(|f| !self.manifest.flavors.contains_key(f))
+            .collect();
         if missing.is_empty() {
             return self;
         }
@@ -245,13 +274,83 @@ impl Bundle {
     }
 }
 
+/// The values of every `url()` and `@import` reference in `css`, in source order, with CSS
+/// escapes resolved. References inside comments and strings are not reported (CR §7).
+pub fn css_references(css: &str) -> Vec<String> {
+    vendor::css::scan(css)
+        .into_iter()
+        .map(|r| r.value)
+        .collect()
+}
+
+/// Rewrite the value of every `url()` / `@import` reference in `css` for which `replace`
+/// returns a new (unescaped) value; it is escaped as the reference's quoting requires. Other
+/// bytes are kept verbatim. Export uses this to inline bundle files as `data:` URIs, e.g. with
+/// [`resolve_bundle_ref`] and [`Bundle::read`].
+pub fn rewrite_css_references(
+    css: &str,
+    mut replace: impl FnMut(&str) -> Option<String>,
+) -> String {
+    let refs = vendor::css::scan(css);
+    vendor::css::rewrite(css, &refs, |r| replace(&r.value))
+}
+
+/// Resolve `reference`, a relative `url()` / `@import` value found in the bundle file `from`,
+/// to the bundle path it designates (query and fragment dropped, `%`-escapes decoded, `.` and
+/// `..` applied). Vendored stylesheets only contain such relative references (D10).
+///
+/// Returns `None` for references that do not point into the bundle: absolute URLs (`https:`,
+/// `data:`, ...), root-relative (`/x`) and fragment-only (`#f`) references, directories, and
+/// paths that climb above the bundle root. The result is not checked for existence.
+///
+/// ```
+/// use md_render::styles::resolve_bundle_ref;
+/// let css = "github/assets/global-1.css";
+/// assert_eq!(resolve_bundle_ref(css, "../images/a.gif#x").as_deref(), Some("github/images/a.gif"));
+/// assert_eq!(resolve_bundle_ref(css, "data:image/png;base64,AA"), None);
+/// assert_eq!(resolve_bundle_ref(css, "../../../etc/passwd"), None);
+/// ```
+pub fn resolve_bundle_ref(from: &str, reference: &str) -> Option<String> {
+    let r = reference.trim();
+    if r.is_empty() || r.starts_with(['#', '/', '\\']) {
+        return None;
+    }
+    let r = &r[..r.find(['?', '#']).unwrap_or(r.len())];
+    // A `:` before the first `/` makes it an absolute URL (RFC 3986 §4.2).
+    if r.find(':').is_some_and(|colon| !r[..colon].contains('/')) {
+        return None;
+    }
+    let decoded = percent_encoding::percent_decode_str(r).decode_utf8().ok()?;
+    // A trailing `/`, `.` or `..` designates a directory, never a bundle file.
+    if matches!(decoded.rsplit('/').next(), None | Some("" | "." | "..")) {
+        return None;
+    }
+    let mut segs: Vec<&str> = from.split('/').collect();
+    segs.pop(); // the file name of `from`
+    for seg in decoded.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segs.pop()?;
+            }
+            s => segs.push(s),
+        }
+    }
+    let path = segs.join("/");
+    tarfs::check_path(&path).is_ok().then_some(path)
+}
+
 /// `Content-Type` for a bundle file, by extension (`text/*` and JavaScript get
 /// `charset=utf-8`; fonts get `font/*` even though GitLab serves them as octet-stream, GL §11.2).
 pub fn content_type(path: &str) -> String {
     let mime = mime_guess::from_path(path).first_or_octet_stream();
     let essence = mime.essence_str();
     if mime.type_() == mime_guess::mime::TEXT || essence == "application/javascript" {
-        let essence = if essence == "application/javascript" { "text/javascript" } else { essence };
+        let essence = if essence == "application/javascript" {
+            "text/javascript"
+        } else {
+            essence
+        };
         format!("{essence}; charset=utf-8")
     } else if essence == "application/json" {
         "application/json".to_owned()
@@ -279,7 +378,10 @@ pub fn vendor_command(flavor: Option<Flavor>, path: &Path) -> String {
     }
     if path != default_bundle_path() {
         let shown = path.display().to_string();
-        if shown.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@:=,".contains(c)) {
+        if shown
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+@:=,".contains(c))
+        {
             cmd.push_str(&format!(" -o {shown}"));
         } else {
             cmd.push_str(&format!(" -o '{}'", shown.replace('\'', r"'\''")));
@@ -323,7 +425,9 @@ pub fn load_or_fallback(path: &Path) -> (Bundle, Option<String>) {
 /// when the flavor was vendored, or when the whole bundle is the fallback (then
 /// [`load_or_fallback`] already returned a warning).
 pub fn flavor_warning(bundle: &Bundle, flavor: Flavor) -> Option<String> {
-    let BundleOrigin::File(path) = bundle.origin() else { return None };
+    let BundleOrigin::File(path) = bundle.origin() else {
+        return None;
+    };
     bundle.is_fallback(flavor).then(|| {
         format!(
             "style bundle {} has no {flavor} styles; using minimal fallback styles (run `{}`)",
@@ -360,7 +464,10 @@ impl SharedBundle {
 
     /// Share an already loaded `bundle` that [`SharedBundle::reload`] re-reads from `path`.
     pub fn new(path: impl Into<PathBuf>, bundle: Bundle) -> SharedBundle {
-        SharedBundle { path: path.into(), current: ArcSwap::from_pointee(bundle) }
+        SharedBundle {
+            path: path.into(),
+            current: ArcSwap::from_pointee(bundle),
+        }
     }
 
     /// The bundle file this holder watches.
@@ -379,16 +486,33 @@ impl SharedBundle {
     }
 
     /// Re-read the bundle file. Returns `Ok(true)` when the content changed and was swapped in,
-    /// `Ok(false)` when it is unchanged. A file that cannot be read or fails validation returns
-    /// `Err` and the previous bundle stays in place. A deleted file swaps in the fallback (the
-    /// same thing a fresh start would show).
+    /// `Ok(false)` when it is unchanged (detected by hashing the file, without decompressing
+    /// it). A file that cannot be read or fails validation returns `Err` and the previous bundle
+    /// stays in place. A deleted file swaps in the fallback (the same thing a fresh start would
+    /// show). Bundles are replaced by an atomic rename (D9), so a reader never sees a half
+    /// written file.
     pub fn reload(&self) -> anyhow::Result<bool> {
-        let candidate = match std::fs::metadata(&self.path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bundle::fallback(),
-            _ => Bundle::open(&self.path)
-                .context("keeping the previously loaded styles")?
-                .with_fallbacks(),
+        let keep = "keeping the previously loaded styles";
+        let gz = match std::fs::read(&self.path) {
+            Ok(gz) => gz,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self.replace(Bundle::fallback()));
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading style bundle {}", self.path.display()))
+                    .context(keep));
+            }
         };
+        let sha256 = sha256_hex(&gz);
+        if self.current.load().source_sha256.as_deref() == Some(sha256.as_str()) {
+            return Ok(false);
+        }
+        let candidate =
+            Bundle::from_tar_gz_bytes_hashed(&gz, sha256, BundleOrigin::File(self.path.clone()))
+                .with_context(|| format!("invalid style bundle {}", self.path.display()))
+                .context(keep)?
+                .with_fallbacks();
         Ok(self.replace(candidate))
     }
 

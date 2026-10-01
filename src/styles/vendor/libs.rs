@@ -101,14 +101,26 @@ pub(crate) fn packages(flavor: Flavor) -> Vec<Package> {
                 base: npm("mathjax", MATHJAX_VERSION, ""),
                 prefix: "github/lib/mathjax".into(),
                 files: vec![
-                    LibFile { rel: "es5/tex-chtml-full.js", script: script::MATHJAX, css: false },
-                    LibFile { rel: "es5/ui/safe.js", script: script::MATHJAX_SAFE, css: false },
+                    LibFile {
+                        rel: "es5/tex-chtml-full.js",
+                        script: script::MATHJAX,
+                        css: false,
+                    },
+                    LibFile {
+                        rel: "es5/ui/safe.js",
+                        script: script::MATHJAX_SAFE,
+                        css: false,
+                    },
                 ],
             },
             Package {
                 base: npm("mermaid", GITHUB_MERMAID_VERSION, "dist/"),
                 prefix: "github/lib/mermaid".into(),
-                files: vec![LibFile { rel: "mermaid.min.js", script: script::MERMAID, css: false }],
+                files: vec![LibFile {
+                    rel: "mermaid.min.js",
+                    script: script::MERMAID,
+                    css: false,
+                }],
             },
         ],
         Flavor::Gitlab => vec![
@@ -116,14 +128,26 @@ pub(crate) fn packages(flavor: Flavor) -> Vec<Package> {
                 base: npm("katex", KATEX_VERSION, "dist/"),
                 prefix: "gitlab/lib/katex".into(),
                 files: vec![
-                    LibFile { rel: "katex.min.js", script: script::KATEX, css: false },
-                    LibFile { rel: "katex.min.css", script: script::KATEX_CSS, css: true },
+                    LibFile {
+                        rel: "katex.min.js",
+                        script: script::KATEX,
+                        css: false,
+                    },
+                    LibFile {
+                        rel: "katex.min.css",
+                        script: script::KATEX_CSS,
+                        css: true,
+                    },
                 ],
             },
             Package {
                 base: npm("mermaid", GITLAB_MERMAID_VERSION, "dist/"),
                 prefix: "gitlab/lib/mermaid".into(),
-                files: vec![LibFile { rel: "mermaid.min.js", script: script::MERMAID, css: false }],
+                files: vec![LibFile {
+                    rel: "mermaid.min.js",
+                    script: script::MERMAID,
+                    css: false,
+                }],
             },
         ],
     }
@@ -165,9 +189,18 @@ mod tests {
             ]
         );
         let gl = packages(Flavor::Gitlab);
-        assert_eq!(gl[0].url(&gl[0].files[1]), "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.css");
-        assert_eq!(gl[0].path(&gl[0].files[1]), "gitlab/lib/katex/katex.min.css");
-        assert_eq!(gl[1].path(&gl[1].files[0]), "gitlab/lib/mermaid/mermaid.min.js");
+        assert_eq!(
+            gl[0].url(&gl[0].files[1]),
+            "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.css"
+        );
+        assert_eq!(
+            gl[0].path(&gl[0].files[1]),
+            "gitlab/lib/katex/katex.min.css"
+        );
+        assert_eq!(
+            gl[1].path(&gl[1].files[0]),
+            "gitlab/lib/mermaid/mermaid.min.js"
+        );
         assert!(gl[1].base.contains("mermaid@11.16.1"));
     }
 
@@ -183,8 +216,14 @@ mod tests {
 
     #[test]
     fn font_filter() {
-        assert!(want_lib_css_asset("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2"));
-        assert!(!want_lib_css_asset("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff"));
-        assert!(!want_lib_css_asset("gitlab/lib/katex/fonts/KaTeX_Main-Regular.TTF"));
+        assert!(want_lib_css_asset(
+            "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2"
+        ));
+        assert!(!want_lib_css_asset(
+            "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff"
+        ));
+        assert!(!want_lib_css_asset(
+            "gitlab/lib/katex/fonts/KaTeX_Main-Regular.TTF"
+        ));
     }
 }

@@ -38,7 +38,8 @@ fn is_ws(b: u8) -> bool {
 }
 
 fn starts_with_ci(b: &[u8], at: usize, pat: &[u8]) -> bool {
-    b.get(at..at + pat.len()).is_some_and(|s| s.eq_ignore_ascii_case(pat))
+    b.get(at..at + pat.len())
+        .is_some_and(|s| s.eq_ignore_ascii_case(pat))
 }
 
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
@@ -78,7 +79,10 @@ fn skip_escape(b: &[u8], i: usize) -> usize {
 }
 
 fn find(b: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
-    b.get(from..)?.windows(pat.len()).position(|w| w == pat).map(|p| p + from)
+    b.get(from..)?
+        .windows(pat.len())
+        .position(|w| w == pat)
+        .map(|p| p + from)
 }
 
 /// A string token starting at `start` (which holds the quote).
@@ -94,15 +98,31 @@ fn parse_string(b: &[u8], start: usize, quote: u8) -> StrTok {
     let mut i = start + 1;
     while i < b.len() {
         match b[i] {
-            c if c == quote => return StrTok { inner: start + 1..i, end: i + 1, closed: true },
+            c if c == quote => {
+                return StrTok {
+                    inner: start + 1..i,
+                    end: i + 1,
+                    closed: true,
+                };
+            }
             b'\\' => i += 2,
             // An unescaped newline ends a string as a "bad string" (CSS Syntax §4.3.5).
-            b'\n' | b'\r' | b'\x0c' => return StrTok { inner: start + 1..i, end: i, closed: false },
+            b'\n' | b'\r' | b'\x0c' => {
+                return StrTok {
+                    inner: start + 1..i,
+                    end: i,
+                    closed: false,
+                };
+            }
             _ => i += 1,
         }
     }
     let end = b.len();
-    StrTok { inner: start + 1..end.min(b.len()), end, closed: false }
+    StrTok {
+        inner: start + 1..end.min(b.len()),
+        end,
+        closed: false,
+    }
 }
 
 /// Parse `url(...)` whose `u` is at `start`. Returns the reference and the index after `)`, or
@@ -191,13 +211,15 @@ pub(crate) fn scan(css: &str) -> Vec<CssRef> {
                         }
                         i = s.end.max(j + 1);
                     }
-                    _ if starts_with_ci(b, j, b"url(") => match parse_url(css, j, RefKind::Import) {
-                        Some((r, end)) => {
-                            out.push(r);
-                            i = end;
+                    _ if starts_with_ci(b, j, b"url(") => {
+                        match parse_url(css, j, RefKind::Import) {
+                            Some((r, end)) => {
+                                out.push(r);
+                                i = end;
+                            }
+                            None => i = j + 4,
                         }
-                        None => i = j + 4,
-                    },
+                    }
                     _ => i = j.max(i + 1),
                 }
             }
@@ -324,7 +346,10 @@ mod tests {
     use super::*;
 
     fn values(css: &str) -> Vec<(RefKind, String, Option<char>)> {
-        scan(css).into_iter().map(|r| (r.kind, r.value, r.quote.map(char::from))).collect()
+        scan(css)
+            .into_iter()
+            .map(|r| (r.kind, r.value, r.quote.map(char::from)))
+            .collect()
     }
 
     #[test]
@@ -429,7 +454,11 @@ mod tests {
         let css = r#"a{b:url(x)}c{d:url("y")}"#;
         let refs = scan(css);
         let out = rewrite(css, &refs, |r| {
-            Some(if r.quote.is_some() { "q\"uote".into() } else { "p(a) r".into() })
+            Some(if r.quote.is_some() {
+                "q\"uote".into()
+            } else {
+                "p(a) r".into()
+            })
         });
         assert_eq!(out, r#"a{b:url(p\(a\)\20 r)}c{d:url("q\"uote")}"#);
         // And the result scans back to the intended values.

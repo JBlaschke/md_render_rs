@@ -18,11 +18,15 @@ struct Canned {
 
 impl Canned {
     fn add(&mut self, url: &str, ct: &str, body: &str) -> &mut Self {
-        self.map.insert(url.to_owned(), Response::ok(url, ct, body.as_bytes().to_vec()));
+        self.map.insert(
+            url.to_owned(),
+            Response::ok(url, ct, body.as_bytes().to_vec()),
+        );
         self
     }
     fn status(&mut self, url: &str, status: u16) -> &mut Self {
-        self.map.insert(url.to_owned(), Response::status(url, status));
+        self.map
+            .insert(url.to_owned(), Response::status(url, status));
         self
     }
     fn requests(&self) -> Vec<String> {
@@ -38,7 +42,11 @@ impl Fetch for Canned {
         if let Some(e) = self.errors.get(url) {
             anyhow::bail!("{e}");
         }
-        Ok(self.map.get(url).cloned().unwrap_or_else(|| Response::status(url, 404)))
+        Ok(self
+            .map
+            .get(url)
+            .cloned()
+            .unwrap_or_else(|| Response::status(url, 404)))
     }
     fn user_agent(&self) -> &str {
         "canned/1"
@@ -60,9 +68,17 @@ fn github_site() -> Canned {
     .iter()
     .map(|n| format!(r#"<link media="all" rel="stylesheet" href="{GH}{n}">"#))
     .collect();
-    c.add("https://github.com/o/r", "text/html; charset=utf-8", &format!("<head>{links}</head>"));
+    c.add(
+        "https://github.com/o/r",
+        "text/html; charset=utf-8",
+        &format!("<head>{links}</head>"),
+    );
     for n in ["light", "dark", "primer-primitives", "primer"] {
-        c.add(&format!("{GH}{n}-0123456789abcdef.css"), "text/css", &format!("/*{n}*/"));
+        c.add(
+            &format!("{GH}{n}-0123456789abcdef.css"),
+            "text/css",
+            &format!("/*{n}*/"),
+        );
     }
     c.add(
         &format!("{GH}global-0123456789abcdef.css"),
@@ -70,7 +86,11 @@ fn github_site() -> Canned {
         "a{background:url(/images/spinners/x.gif)}b{background:url(\"images/modules/missing.svg\")}\
          c{background:url(data:image/png;base64,AAAA)}d{filter:url(#f)}e{background:url('/images/spinners/x.gif#frag')}",
     );
-    c.add("https://github.githubassets.com/images/spinners/x.gif", "image/gif", "GIF89a");
+    c.add(
+        "https://github.githubassets.com/images/spinners/x.gif",
+        "image/gif",
+        "GIF89a",
+    );
     c
 }
 
@@ -98,8 +118,11 @@ fn github_flavor_pipeline() {
     let progress = Progress { quiet: true };
     let out = vendor_flavor(Flavor::Github, &o, &site, &progress).expect("vendor");
     let m = &out.manifest;
-    let roles: Vec<(&str, Option<&str>)> =
-        m.stylesheets.iter().map(|s| (s.role.as_str(), s.theme.as_deref())).collect();
+    let roles: Vec<(&str, Option<&str>)> = m
+        .stylesheets
+        .iter()
+        .map(|s| (s.role.as_str(), s.theme.as_deref()))
+        .collect();
     assert_eq!(
         roles,
         vec![
@@ -131,9 +154,15 @@ fn github_flavor_pipeline() {
     assert_eq!(&out.files["github/images/spinners/x.gif"][..], b"GIF89a");
     assert_eq!(m.failures.len(), 1);
     let f = &m.failures[0];
-    assert_eq!(f.url, "https://github.githubassets.com/assets/images/modules/missing.svg");
+    assert_eq!(
+        f.url,
+        "https://github.githubassets.com/assets/images/modules/missing.svg"
+    );
     assert_eq!(f.status, Some(404));
-    assert_eq!(f.referenced_by.as_deref(), Some("github/assets/global-0123456789abcdef.css"));
+    assert_eq!(
+        f.referenced_by.as_deref(),
+        Some("github/assets/global-0123456789abcdef.css")
+    );
     assert!(chrono_like(&m.fetched_at), "{}", m.fetched_at);
     let requests = site.requests();
     assert_eq!(requests.iter().filter(|r| r.ends_with("x.gif")).count(), 1);
@@ -156,12 +185,19 @@ fn stylesheet_failures_are_fatal() {
     assert!(format!("{e:#}").contains("HTTP 500"), "{e:#}");
 
     let mut site = github_site();
-    site.add(&format!("{GH}primer-0123456789abcdef.css"), "text/html", "<html>challenge</html>");
+    site.add(
+        &format!("{GH}primer-0123456789abcdef.css"),
+        "text/html",
+        "<html>challenge</html>",
+    );
     let e = vendor_flavor(Flavor::Github, &o, &site, &progress).expect_err("html");
     assert!(format!("{e:#}").contains("HTML page"), "{e:#}");
 
     let mut site = github_site();
-    site.errors.insert(format!("{GH}light-0123456789abcdef.css"), "connection reset".into());
+    site.errors.insert(
+        format!("{GH}light-0123456789abcdef.css"),
+        "connection reset".into(),
+    );
     let e = vendor_flavor(Flavor::Github, &o, &site, &progress).expect_err("transport");
     assert!(format!("{e:#}").contains("connection reset"), "{e:#}");
 
@@ -189,7 +225,10 @@ fn missing_required_roles_are_explained() {
     let o = opts(dir.path(), &[Flavor::Github]);
     let e = vendor_flavor(Flavor::Github, &o, &site, &Progress { quiet: true }).expect_err("roles");
     let msg = format!("{e:#}");
-    assert!(msg.contains("theme (dark)") && msg.contains("primer") && msg.contains("global"), "{msg}");
+    assert!(
+        msg.contains("theme (dark)") && msg.contains("primer") && msg.contains("global"),
+        "{msg}"
+    );
     assert!(msg.contains("1 stylesheet links"), "{msg}");
     let e = vendor_flavor(Flavor::Gitlab, &o, &site, &Progress { quiet: true }).expect_err("roles");
     assert!(format!("{e:#}").contains("HTTP 404"));
@@ -211,32 +250,68 @@ fn gitlab_site() -> Canned {
         "@import \"nested/one.css\";.md{background:url(./illustrations/x.svg)}",
     );
     // Imports: one.css -> two.css -> one.css (cycle), two.css also references an image.
-    c.add(&format!("{a}nested/one.css"), "text/css", "@import url(two.css);");
-    c.add(&format!("{a}nested/two.css"), "text/css", "@import 'one.css';x{y:url(../deep.png)}");
+    c.add(
+        &format!("{a}nested/one.css"),
+        "text/css",
+        "@import url(two.css);",
+    );
+    c.add(
+        &format!("{a}nested/two.css"),
+        "text/css",
+        "@import 'one.css';x{y:url(../deep.png)}",
+    );
     c.add(&format!("{a}deep.png"), "image/png", "PNG");
-    c.add(&format!("{a}application_dark-bbbbbbbbbbbbbbbb.css"), "text/css", "\u{feff}.md{}");
+    c.add(
+        &format!("{a}application_dark-bbbbbbbbbbbbbbbb.css"),
+        "text/css",
+        "\u{feff}.md{}",
+    );
     c.add(
         &format!("{a}fonts-cccccccccccccccc.css"),
         "text/css",
         "@font-face{src:url(./gitlab-sans/GitLabSans-1.woff2) format(\"woff2\")}",
     );
-    c.add(&format!("{a}gitlab-sans/GitLabSans-1.woff2"), "application/octet-stream", "wOF2");
+    c.add(
+        &format!("{a}gitlab-sans/GitLabSans-1.woff2"),
+        "application/octet-stream",
+        "wOF2",
+    );
     c.add(
         &format!("{a}highlight/themes/white-dddddddddddddddd.css"),
         "text/css",
         ".x{background:url(/assets/icons-stacked-1.svg#git)}",
     );
-    c.add(&format!("{a}icons-stacked-1.svg"), "image/svg+xml", "<svg/>");
-    c.add(&format!("{a}icons-eeeeeeeeeeeeeeee.svg"), "image/svg+xml", "<svg id=copy/>");
-    c.add(&format!("{a}illustrations/x.svg"), "image/svg+xml", "<svg/>");
+    c.add(
+        &format!("{a}icons-stacked-1.svg"),
+        "image/svg+xml",
+        "<svg/>",
+    );
+    c.add(
+        &format!("{a}icons-eeeeeeeeeeeeeeee.svg"),
+        "image/svg+xml",
+        "<svg id=copy/>",
+    );
+    c.add(
+        &format!("{a}illustrations/x.svg"),
+        "image/svg+xml",
+        "<svg/>",
+    );
     let k = "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/";
-    c.add(&format!("{k}katex.min.js"), "application/javascript", "katex");
+    c.add(
+        &format!("{k}katex.min.js"),
+        "application/javascript",
+        "katex",
+    );
     c.add(
         &format!("{k}katex.min.css"),
         "text/css",
         "@font-face{src:url(fonts/KaTeX_Main-Regular.woff2) format(\"woff2\"),url(fonts/KaTeX_Main-Regular.woff) format(\"woff\"),url(fonts/KaTeX_Main-Regular.ttf) format(\"truetype\")}",
     );
-    c.add(&format!("{k}fonts/KaTeX_Main-Regular.woff2"), "font/woff2", "wOF2k");
+    c.add(
+        &format!("{k}fonts/KaTeX_Main-Regular.woff2"),
+        "font/woff2",
+        "wOF2k",
+    );
     c.add(
         "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js",
         "application/javascript",
@@ -256,7 +331,14 @@ fn gitlab_flavor_pipeline() {
     let sheets: Vec<(&str, &str, Option<&str>, Option<&str>)> = m
         .stylesheets
         .iter()
-        .map(|s| (s.path.as_str(), s.role.as_str(), s.theme.as_deref(), s.media.as_deref()))
+        .map(|s| {
+            (
+                s.path.as_str(),
+                s.role.as_str(),
+                s.theme.as_deref(),
+                s.media.as_deref(),
+            )
+        })
         .collect();
     assert_eq!(
         sheets,
@@ -273,7 +355,12 @@ fn gitlab_flavor_pipeline() {
                 Some("dark"),
                 Some("(prefers-color-scheme: dark)")
             ),
-            ("gitlab/assets/fonts-cccccccccccccccc.css", "fonts", None, None),
+            (
+                "gitlab/assets/fonts-cccccccccccccccc.css",
+                "fonts",
+                None,
+                None
+            ),
             (
                 "gitlab/assets/highlight/themes/white-dddddddddddddddd.css",
                 "highlight",
@@ -288,22 +375,40 @@ fn gitlab_flavor_pipeline() {
         text("gitlab/assets/highlight/themes/white-dddddddddddddddd.css"),
         ".x{background:url(../../icons-stacked-1.svg#git)}"
     );
-    assert_eq!(text("gitlab/assets/application_dark-bbbbbbbbbbbbbbbb.css"), ".md{}", "BOM dropped");
+    assert_eq!(
+        text("gitlab/assets/application_dark-bbbbbbbbbbbbbbbb.css"),
+        ".md{}",
+        "BOM dropped"
+    );
     assert_eq!(
         text("gitlab/assets/application-aaaaaaaaaaaaaaaa.css"),
         "@import \"nested/one.css\";.md{background:url(illustrations/x.svg)}"
     );
-    assert_eq!(text("gitlab/assets/nested/two.css"), "@import 'one.css';x{y:url(../deep.png)}");
+    assert_eq!(
+        text("gitlab/assets/nested/two.css"),
+        "@import 'one.css';x{y:url(../deep.png)}"
+    );
     assert!(out.files.contains_key("gitlab/assets/deep.png"));
     // KaTeX: woff2 vendored, woff/ttf references kept (relative) but not downloaded.
     assert_eq!(
         text("gitlab/lib/katex/katex.min.css"),
         "@font-face{src:url(fonts/KaTeX_Main-Regular.woff2) format(\"woff2\"),url(fonts/KaTeX_Main-Regular.woff) format(\"woff\"),url(fonts/KaTeX_Main-Regular.ttf) format(\"truetype\")}"
     );
-    assert!(out.files.contains_key("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2"));
-    assert!(!site.requests().iter().any(|r| r.ends_with(".woff") || r.ends_with(".ttf")));
-    let scripts: Vec<(&str, &str)> =
-        m.scripts.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert!(
+        out.files
+            .contains_key("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2")
+    );
+    assert!(
+        !site
+            .requests()
+            .iter()
+            .any(|r| r.ends_with(".woff") || r.ends_with(".ttf"))
+    );
+    let scripts: Vec<(&str, &str)> = m
+        .scripts
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     assert_eq!(
         scripts,
         vec![
@@ -327,7 +432,13 @@ fn gitlab_flavor_pipeline() {
     // Every file is listed exactly once (stylesheets + assets).
     assert_eq!(out.files.len(), m.stylesheets.len() + m.assets.len());
     // Each import was fetched once despite the cycle.
-    assert_eq!(site.requests().iter().filter(|r| r.ends_with("one.css")).count(), 1);
+    assert_eq!(
+        site.requests()
+            .iter()
+            .filter(|r| r.ends_with("one.css"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -336,16 +447,31 @@ fn import_depth_is_limited() {
     let mut site = gitlab_site();
     let a = "https://gitlab.example/assets/";
     // application -> c0 -> c1 -> ... (an endless chain).
-    site.add(&format!("{a}application-aaaaaaaaaaaaaaaa.css"), "text/css", "@import 'c0.css';");
+    site.add(
+        &format!("{a}application-aaaaaaaaaaaaaaaa.css"),
+        "text/css",
+        "@import 'c0.css';",
+    );
     for i in 0..10 {
-        site.add(&format!("{a}c{i}.css"), "text/css", &format!("@import 'c{}.css';", i + 1));
+        site.add(
+            &format!("{a}c{i}.css"),
+            "text/css",
+            &format!("@import 'c{}.css';", i + 1),
+        );
     }
-    let out = vendor_flavor(Flavor::Gitlab, &opts(dir.path(), &[Flavor::Gitlab]), &site, &Progress {
-        quiet: true,
-    })
+    let out = vendor_flavor(
+        Flavor::Gitlab,
+        &opts(dir.path(), &[Flavor::Gitlab]),
+        &site,
+        &Progress { quiet: true },
+    )
     .expect("vendor");
-    let deep: Vec<&Failure> =
-        out.manifest.failures.iter().filter(|f| f.error.contains("nested")).collect();
+    let deep: Vec<&Failure> = out
+        .manifest
+        .failures
+        .iter()
+        .filter(|f| f.error.contains("nested"))
+        .collect();
     assert_eq!(deep.len(), 1, "{:?}", out.manifest.failures);
     assert_eq!(deep[0].url, format!("{a}c4.css"));
     assert!(out.files.contains_key("gitlab/assets/c3.css"));
@@ -356,18 +482,34 @@ fn import_depth_is_limited() {
 fn library_and_asset_failures_are_recorded() {
     let dir = tmp();
     let mut site = gitlab_site();
-    site.status("https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js", 503);
-    site.errors.insert("https://gitlab.example/assets/illustrations/x.svg".into(), "timed out".into());
+    site.status(
+        "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js",
+        503,
+    );
+    site.errors.insert(
+        "https://gitlab.example/assets/illustrations/x.svg".into(),
+        "timed out".into(),
+    );
     let mut o = opts(dir.path(), &[Flavor::Gitlab]);
     o.libs = true;
     let out = vendor_flavor(Flavor::Gitlab, &o, &site, &Progress { quiet: true }).expect("vendor");
     let m = &out.manifest;
-    assert!(!m.scripts.contains_key("mermaid"), "failed library is not advertised");
-    let f: Vec<(&str, Option<u16>)> = m.failures.iter().map(|f| (f.url.as_str(), f.status)).collect();
+    assert!(
+        !m.scripts.contains_key("mermaid"),
+        "failed library is not advertised"
+    );
+    let f: Vec<(&str, Option<u16>)> = m
+        .failures
+        .iter()
+        .map(|f| (f.url.as_str(), f.status))
+        .collect();
     assert_eq!(
         f,
         vec![
-            ("https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js", Some(503)),
+            (
+                "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js",
+                Some(503)
+            ),
             ("https://gitlab.example/assets/illustrations/x.svg", None),
         ]
     );
@@ -423,13 +565,20 @@ fn refuses_to_clobber_foreign_files() {
 
     let tar = dir.path().join("other.tar.gz");
     let mut fs = tarfs::InMemoryFileSystem::new();
-    fs.write_file("src/main.rs", b"fn main(){}".to_vec()).expect("write");
+    fs.write_file("src/main.rs", b"fn main(){}".to_vec())
+        .expect("write");
     fs.write_tarball_gz(&tar).expect("flush");
     let e = existing_source(&tar, &progress).expect_err("refuse");
     assert!(format!("{e:#}").contains("not an md-render style bundle"));
 
-    assert!(existing_source(dir.path(), &progress).is_err(), "directories are refused");
-    assert_eq!(existing_source(&dir.path().join("new.tar.gz"), &progress).expect("absent"), None);
+    assert!(
+        existing_source(dir.path(), &progress).is_err(),
+        "directories are refused"
+    );
+    assert_eq!(
+        existing_source(&dir.path().join("new.tar.gz"), &progress).expect("absent"),
+        None
+    );
 }
 
 #[test]
@@ -437,18 +586,26 @@ fn existing_manifest_policies() {
     let progress = Progress { quiet: true };
     let out = Path::new("x.tar.gz");
     let mut fs = tarfs::InMemoryFileSystem::new();
-    assert_eq!(existing_manifest(&mut fs, out, &progress).expect("empty"), Manifest::default());
+    assert_eq!(
+        existing_manifest(&mut fs, out, &progress).expect("empty"),
+        Manifest::default()
+    );
 
     let mut newer = Manifest::default();
     newer.schema = SCHEMA + 1;
-    fs.write_file(MANIFEST_PATH, serde_json::to_vec(&newer).expect("json")).expect("write");
+    fs.write_file(MANIFEST_PATH, serde_json::to_vec(&newer).expect("json"))
+        .expect("write");
     let e = existing_manifest(&mut fs, out, &progress).expect_err("newer");
     assert!(format!("{e:#}").contains("newer md-render"));
 
     let mut fs = tarfs::InMemoryFileSystem::new();
-    fs.write_file(MANIFEST_PATH, b"{broken".to_vec()).expect("write");
+    fs.write_file(MANIFEST_PATH, b"{broken".to_vec())
+        .expect("write");
     fs.write_file("github/a.css", b"a".to_vec()).expect("write");
-    assert_eq!(existing_manifest(&mut fs, out, &progress).expect("fresh"), Manifest::default());
+    assert_eq!(
+        existing_manifest(&mut fs, out, &progress).expect("fresh"),
+        Manifest::default()
+    );
     assert!(fs.is_empty(), "a broken bundle is replaced wholesale");
 }
 
