@@ -1,0 +1,79 @@
+[workspace]
+members = ["crates/tarfs"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+authors = ["Johannes Blaschke"]
+
+[workspace.dependencies]
+bytes = "1.12.1"
+thiserror = "2.0.21"
+
+[package]
+name = "md-render"
+version = "0.1.0"
+description = "Live-rendering Markdown previewer with GitHub and GitLab flavors and vendored site styles"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "md-render"
+path = "src/main.rs"
+
+[dependencies]
+# workspace
+tarfs = { path = "crates/tarfs", version = "0.1.0" }
+bytes.workspace = true
+thiserror.workspace = true
+
+# markdown, DOM, highlighting (pure Rust: no onig / C deps)
+comrak = { version = "=0.55.0", default-features = false, features = ["shortcodes"] }
+dom_query = "0.28.0"
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+yaml-rust2 = "0.13.0"
+
+# HTTP server + live reload
+arc-swap = "1.9.2"
+axum = "0.8.9"
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-std", "io-util"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+
+# HTTP client (vendor + --api): rustls + ring, no OpenSSL
+ureq = { version = "3.4.2", features = ["json", "platform-verifier"] }
+
+# text / html / css utilities
+askama = { version = "0.16.1", features = ["serde_json"] }
+base64 = "0.23.1"
+mime_guess = "2.0.5"
+percent-encoding = "2.3.2"
+regex = "1.13.1"
+sha2 = "0.11.0"
+url = "2.5.8"
+
+# CLI / misc
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+directories = "6.0.0"
+open = "5.4.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = "symbols"
