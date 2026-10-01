@@ -658,9 +658,12 @@ pub(super) struct UriParts<'a> {
 /// format, port digits, invalid host characters, missing hierarchical segment for IP-based
 /// schemes). `Err` means Addressable would raise `InvalidURIError`.
 pub(super) fn parse_uri(url: &str) -> Result<UriParts<'_>, ()> {
-    // URIREGEX = /^(([^:\/?#]+):)?(\/\/([^\/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$/ (line-anchored).
-    let line = url.split('\n').next().unwrap_or("");
-    let mut rest = line;
+    // URIREGEX = /^(([^:\/?#]+):)?(\/\/([^\/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$/. The negated
+    // classes of the scheme, authority, path and query groups match newlines too; only the
+    // fragment's `.` stops at one (and `$` then matches there), and the fragment is not
+    // validated. So the whole string is split: `jav\nascript:x` has the scheme `jav\nascript`,
+    // which fails the scheme format check, like Addressable's `InvalidURIError`.
+    let mut rest = url;
     let mut parts = UriParts::default();
     if let Some(i) = rest.find([':', '/', '?', '#']) {
         if rest.as_bytes()[i] == b':' && i > 0 {
@@ -899,5 +902,33 @@ mod tests {
         assert!(parse_uri("http://x:8a/").is_err());
         assert!(permit_url("mailto:x@y"));
         assert!(!permit_url("data:text/html,x"));
+    }
+
+    /// SEC-1: a newline inside the scheme is part of Addressable's scheme (which is then
+    /// invalid), not the end of the URL; browsers strip it and would see `javascript:`.
+    #[test]
+    fn newline_split_schemes_are_removed() {
+        assert!(!permit_url("jav\nascript:alert(1)"));
+        assert!(!permit_url("javascript\n:alert(1)"));
+        assert!(!permit_url("\njavascript:alert(1)"));
+        assert!(!permit_url("ht\ntp://x"));
+        assert!(!permit_url("http://x\ny/"));
+        // A newline after the scheme, in the path or query is fine for Addressable.
+        assert!(permit_url("http://x/a\nb"));
+        assert!(permit_url("http://x/?q=\nr"));
+        assert!(permit_url("rel\npath"));
+        for html in [
+            "<a href=\"jav&#10;ascript:alert(1)\">x</a>",
+            "<a href=\"jav&NewLine;ascript:alert(1)\">x</a>",
+            "<a href=\"javascript&#10;:alert(1)\">x</a>",
+            "<a href=\"jav&#x0A;ascript&#x0A;:alert(1)\">x</a>",
+        ] {
+            assert_eq!(run(html), "<a>x</a>", "{html}");
+        }
+        assert_eq!(
+            run("<img src=\"jav&#10;ascript:alert(1)\">"),
+            "<img>",
+            "src is checked the same way"
+        );
     }
 }
