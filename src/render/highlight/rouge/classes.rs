@@ -508,6 +508,81 @@ const MARKDOWN: &[(&str, Rule)] = &[
     ("comment", Span("c")),
 ];
 
+/// `Rouge::Lexers::TOML`: keys and table names `n`, `=` an operator, `[`/`]` keywords,
+/// strings `s`, comments `c`.
+const TOML: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("entity.name.tag", Span("n")),
+    ("entity.name.table", Span("n")),
+    ("punctuation.definition.key-value", Span("o")),
+    ("punctuation.definition.table", Span("k")),
+    ("string", Span("s")),
+];
+
+/// `Rouge::Lexers::Docker`: instruction arguments are strings.
+const DOCKER: &[(&str, Rule)] = &[
+    ("string.quoted.double", Span("s")),
+    ("entity.name.enum.tag-digest", Span("s")),
+    ("variable.stage-name", Span("s")),
+    ("keyword.operator", Span("k")),
+];
+
+/// `Rouge::Lexers::XML`: `<?xml …?>` and CDATA sections `cp` as a whole, values `s`, `=` `na`,
+/// namespace colons part of the name.
+const XML: &[(&str, Rule)] = &[
+    ("meta.tag.preprocessor", Span("cp")),
+    ("meta.tag.preprocessor entity", Span("cp")),
+    ("meta.tag.preprocessor punctuation", Span("cp")),
+    ("meta.tag.preprocessor string", Span("cp")),
+    ("meta.tag.sgml.cdata", Span("cp")),
+    ("meta.tag.sgml.cdata punctuation", Span("cp")),
+    ("meta.tag.sgml.cdata keyword", Span("cp")),
+    ("meta.tag.sgml.cdata string", Span("cp")),
+    ("string.quoted", Span("s")),
+    ("meta.tag punctuation.separator.key-value", Span("na")),
+    ("entity.name.tag punctuation.separator.namespace", Span("nt")),
+    ("entity.other.attribute-name punctuation.separator.namespace", Span("na")),
+    ("constant.character.entity", Span("ni")),
+    ("constant.character.entity punctuation", Span("ni")),
+];
+
+/// `Rouge::Lexers::SQL`: identifiers `n`, numbers `mi`, word operators and functions keywords,
+/// types `nb`, `*` an operator.
+const SQL: &[(&str, Rule)] = &[
+    ("constant.other.database-name", Span("n")),
+    ("constant.other.table-name", Span("n")),
+    ("constant.numeric", Span("mi")),
+    ("keyword.operator.logical", Span("k")),
+    ("keyword.operator.assignment.alias", Span("k")),
+    ("support.function", Span("k")),
+    ("variable.language.star", Span("o")),
+    ("storage.type", Span("nb")),
+    ("storage.modifier", Span("k")),
+    ("constant.language", Span("k")),
+    ("entity.name.function", Span("n")),
+];
+
+/// `Rouge::Lexers::Make`: variables `nv`, targets `nl`, `$(`/`)` punctuation, comments `c`;
+/// recipes are shell.
+const MAKE: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("variable.other", Span("nv")),
+    ("variable.language", Span("nv")),
+    ("entity.name.function", Span("nl")),
+    ("keyword.other.block", Span("p")),
+    ("variable.parameter", Plain),
+    ("string.unquoted", Plain),
+];
+
+/// `Rouge::Lexers::INI`: keys `py`, `[section]` `nn` as a whole, comments `c`.
+const INI: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("keyword.name", Span("py")),
+    ("meta.tag.section", Span("nn")),
+    ("meta.tag.section punctuation", Span("nn")),
+    ("entity.section", Span("nn")),
+];
+
 /// Per-Rouge-tag overlays ([`Variant::Improved`]): consulted before the shared table; they
 /// encode how a particular Rouge lexer tokenizes where its classes differ systematically from
 /// the shared mapping.
@@ -525,6 +600,12 @@ const OVERLAYS: &[(&str, &[(&str, Rule)])] = &[
     ("css", CSS),
     ("yaml", YAML),
     ("markdown", MARKDOWN),
+    ("toml", TOML),
+    ("docker", DOCKER),
+    ("xml", XML),
+    ("sql", SQL),
+    ("make", MAKE),
+    ("ini", INI),
 ];
 
 /// Embedded-language roots (syntect scope → Rouge tag): Rouge's HTML and Markdown lexers hand
@@ -541,6 +622,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("source.c++", "cpp"),
     ("source.java", "java"),
     ("source.shell.bash", "shell"),
+    ("source.shell", "shell"),
     ("source.yaml", "yaml"),
     ("text.html.basic", "html"),
 ];

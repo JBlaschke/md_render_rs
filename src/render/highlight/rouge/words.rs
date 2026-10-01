@@ -203,6 +203,7 @@ pub(super) fn for_tag(tag: &str) -> Option<&'static Words> {
         "go" => &GO,
         "shell" => &SHELL,
         "java" => &JAVA,
+        "sql" => &SQL,
         _ => return None,
     })
 }
@@ -335,6 +336,9 @@ static CPP: Words = Words {
 };
 
 const CPP_EXTRA_KEYWORDS: &[&str] = &["class", "template"];
+
+/// `Rouge::Lexers::SQL`: words the grammar leaves unscoped are names.
+static SQL: Words = Words { rules: &[], bare: Some("n"), dot_joins: &[] };
 
 /// `Rouge::Lexers::Java` root: keywords `k`, declarations `kd`, types `kt`, constants `kc`,
 /// `.id` → `na`, `id:` → `nl`, `CONST` → `no`, `Class` → `nc`, else `n`.
