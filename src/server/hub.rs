@@ -5,8 +5,9 @@
 //! might have changed the file (a page load, a new subscriber, a watcher event) calls
 //! [`DocEntry::trigger`]; the worker coalesces triggers, re-reads the file, and renders only
 //! when the SHA-256 of the bytes changed (so `touch` and duplicate events are free). The
-//! render runs in `spawn_blocking`; if another change arrived meanwhile and the file content
-//! differs again, the result is dropped as stale. The published state lives in a
+//! render runs in `spawn_blocking` and every finished render is published: it is never older
+//! than what clients show, and a change that arrived meanwhile left a wake-up permit, so the
+//! worker renders the newer bytes right after (LIVE-13). The published state lives in a
 //! `tokio::sync::watch` channel (page loads wait on it), events go out through a
 //! `tokio::sync::broadcast` channel shared by every subscriber, so all tabs showing the same
 //! document share one render.
@@ -37,10 +38,6 @@ const RECHECK_AFTER_WATCH: Duration = Duration::from_millis(750);
 /// How long a document that suddenly reads as empty gets to receive its new content before
 /// the empty render is published (truncate-then-write saves).
 const EMPTY_SETTLE: Duration = Duration::from_millis(250);
-
-/// After this many consecutive stale drops a render is published anyway (progress
-/// guarantee under continuous writes).
-const MAX_STALE_DROPS: u32 = 3;
 
 /// Capacity of each document's event channel (subscribers that lag get a state resync).
 const EVENT_CAPACITY: usize = 64;
@@ -853,13 +850,7 @@ fn source_deps(root: &Path, includes: &[PathBuf]) -> Vec<Dep> {
         .collect()
 }
 
-enum Outcome {
-    Done,
-    Stale,
-}
-
 async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::Receiver<bool>) {
-    let mut stale_drops = 0u32;
     loop {
         tokio::select! {
             biased;
@@ -872,15 +863,12 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
         if entry.refresh_doc_watch(&ctx) {
             recheck_after_watch(&entry, &ctx);
         }
-        match process(&entry, &ctx, stale_drops >= MAX_STALE_DROPS).await {
-            Outcome::Done => stale_drops = 0,
-            Outcome::Stale => stale_drops += 1,
-        }
+        process(&entry, &ctx).await;
     }
 }
 
 /// One worker iteration: re-read, dedup by hash, render, publish.
-async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
+async fn process(entry: &DocEntry, ctx: &RenderCtx) {
     let t0 = entry.triggers.load(Ordering::SeqCst);
     let snap = entry.snapshot();
     let mut read = read_contained(ctx, &entry.path).await;
@@ -916,7 +904,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
                 });
                 entry.broadcast(Arc::new(WireEvent::deleted(v, &entry.key)));
             }
-            return Outcome::Done;
+            return;
         }
         Err(e) => {
             let message = format!("cannot read {}: {e}", entry.key);
@@ -936,7 +924,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
                 });
                 entry.broadcast(Arc::new(WireEvent::error(v, ErrorKind::Read, &message)));
             }
-            return Outcome::Done;
+            return;
         }
     };
 
@@ -947,7 +935,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
             let v = entry.next_version();
             publish_failure(entry, t0, v, ErrorKind::Render, message);
-            return Outcome::Done;
+            return;
         }
     };
     let hash = inputs.hash;
@@ -956,7 +944,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
     {
         if snap.status == DocStatus::Ready {
             entry.publish(t0, |_| {}); // no-op save, `touch`, duplicate event
-            return Outcome::Done;
+            return;
         }
         // Same bytes as the last good render (recreated file, reverted error): reuse it.
         ctx.log(&format!("Change detected in {}, refreshing", entry.key));
@@ -969,7 +957,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             s.status = DocStatus::Ready;
         });
         entry.broadcast(ev);
-        return Outcome::Done;
+        return;
     }
 
     if snap.status != DocStatus::Pending {
@@ -999,20 +987,6 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
         (result, deps, decode_warning)
     })
     .await;
-
-    // Drop stale results: a newer change arrived while rendering and the file differs again.
-    if !force && entry.triggers.load(Ordering::SeqCst) != t0 {
-        let now = match read_contained(ctx, &entry.path).await {
-            Ok(b) => Inputs::gather(b, &entry.key, &ctx.options_for(&entry.path))
-                .await
-                .ok()
-                .map(|i| i.hash),
-            Err(_) => None,
-        };
-        if now != Some(hash) {
-            return Outcome::Stale;
-        }
-    }
 
     match joined {
         Ok((Ok(mut rendered), deps, decode_warning)) => {
@@ -1045,7 +1019,6 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             publish_failure(entry, t0, v, ErrorKind::Render, message);
         }
     }
-    Outcome::Done
 }
 
 /// Read a document, refusing files that (now) resolve outside the served root, e.g. a
@@ -1247,6 +1220,58 @@ mod tests {
             hub.current("d1.md").await.unwrap().status,
             DocStatus::Missing
         );
+    }
+
+    /// LIVE-13: while saves arrive faster than renders finish, every finished render is
+    /// published (about one update per render time, not one per four).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn renders_finished_during_rapid_saves_are_published() {
+        struct Slow;
+        impl Renderer for Slow {
+            fn render(&self, md: &str, _: &RenderOptions) -> anyhow::Result<Rendered> {
+                std::thread::sleep(Duration::from_millis(200));
+                Ok(Rendered {
+                    html: format!("<p>{md}</p>"),
+                    ..Default::default()
+                })
+            }
+            fn name(&self) -> &'static str {
+                "offline"
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("a.md"), "save 0").unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let ctx = RenderCtx {
+            renderer: Arc::new(Slow),
+            options: RenderOptions::new(Flavor::Github),
+            root: root.clone(),
+            follow_symlinks: false,
+            quiet: true,
+            watcher: None,
+        };
+        let hub = Hub::new(Arc::new(ctx), rx);
+        hub.current("a.md").await.unwrap();
+        let entry = hub.entry("a.md");
+        let mut events = entry.subscribe_events();
+        let started = std::time::Instant::now();
+        let mut i = 1;
+        while started.elapsed() < Duration::from_millis(1200) {
+            std::fs::write(root.join("a.md"), format!("save {i}")).unwrap();
+            entry.trigger();
+            i += 1;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut contents = 0;
+        while let Ok(ev) = events.try_recv() {
+            if ev.name == "content" {
+                contents += 1;
+            }
+        }
+        // 1.2 s of saves with 200 ms renders: about 5 renders finished. Dropping three of
+        // every four as stale published at most 2.
+        assert!(contents >= 3, "only {contents} content events");
     }
 
     /// LIVE-8: a document re-created after eviction continues above every version handed out
