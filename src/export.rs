@@ -39,18 +39,27 @@ pub enum ExportOutput {
 /// Options of one export.
 #[derive(Clone)]
 pub struct ExportConfig {
+    /// Markdown source.
     pub input: ExportInput,
+    /// Destination (the CLI decides the default file name).
     pub output: ExportOutput,
     /// Self-contained single file (default) vs. linked assets directory (`--no-inline`).
     pub inline: bool,
+    /// Site to reproduce.
     pub flavor: Flavor,
+    /// README/file view or comment rendering and chrome.
     pub mode: Mode,
+    /// Colour mode and theme ids.
     pub theme: ThemeSel,
+    /// Site-like box or content only.
     pub layout: Layout,
     /// `<title>`; defaults to the first `h1` of the document, then the file name.
     pub title: Option<String>,
+    /// `owner/repo` or `group/project`, passed to the renderer.
     pub context: Option<String>,
+    /// Style bundle; a missing or broken bundle falls back to the embedded CSS (with a warning).
     pub bundle_path: PathBuf,
+    /// Offline or API renderer.
     pub renderer: Arc<dyn Renderer>,
     /// Suppress the progress message and style warnings on stderr.
     pub quiet: bool,
@@ -70,7 +79,17 @@ const HREF_SET: &AsciiSet = &CONTROLS
     .add(b'}')
     .add(b'\'');
 
-/// Render and write a standalone HTML file.
+/// Render `cfg.input` with `cfg.renderer` and write a standalone HTML page.
+///
+/// The renderer gets `sourcepos: false` and a `bundle_url` that the page resolves inside the
+/// export (data URIs, or the `<stem>_files/` directory with `inline: false`). Styles come from
+/// [`crate::styles::load_or_fallback`]; falling back is reported on stderr unless `quiet`.
+/// A file is written atomically (temporary file + rename); with [`ExportOutput::Stdout`] the
+/// page is the only output on stdout.
+///
+/// # Errors
+/// Unreadable input, a renderer error, `inline: false` with stdout, or an I/O error while
+/// writing the page or its assets directory.
 pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
     let (markdown, source_path, display_name) = read_input(cfg)?;
 

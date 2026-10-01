@@ -80,14 +80,18 @@ pub struct LiveInfo {
 /// Severity of a [`Banner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BannerKind {
+    /// Something failed (GitHub `.flash-error`, GitLab `.gl-alert-danger`); `role="alert"`.
     Error,
+    /// Degraded output, e.g. renderer warnings (`.flash-warn`, `.gl-alert-warning`).
     Warning,
+    /// Neutral notice (`.flash`, `.gl-alert-info`); `role="status"`.
     Info,
 }
 
 /// A message shown above the content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Banner {
+    /// Severity, which selects the site's alert style.
     pub kind: BannerKind,
     /// Plain text (escaped when rendered).
     pub message: String,
@@ -95,9 +99,13 @@ pub struct Banner {
 
 /// Everything needed to build one page.
 pub struct PageInput<'a> {
+    /// Site whose chrome, stylesheets and client script are used.
     pub flavor: Flavor,
+    /// README/file view or comment wrapper (GH §9.A/§9.B; GitLab note body, DESIGN D16).
     pub mode: Mode,
+    /// Colour mode and theme ids (GitHub falls back to `light`/`dark` for ids not vendored).
     pub theme: &'a ThemeSel,
+    /// Site-like box or content only.
     pub layout: Layout,
     /// `<title>` text (plain text).
     pub title: &'a str,
@@ -106,9 +114,11 @@ pub struct PageInput<'a> {
     /// Rendered document; `content.html` is trusted HTML placed inside `#md-content`, and
     /// `content.warnings` are shown as warning banners (after `banners`, deduplicated).
     pub content: &'a Rendered,
+    /// How bundle files and client scripts are referenced (server, inline, directory).
     pub assets: &'a AssetMode,
     /// Live-update wiring; only used with [`AssetMode::Server`].
     pub live: Option<&'a LiveInfo>,
+    /// Messages shown above the content, in this order.
     pub banners: &'a [Banner],
     /// Extra stylesheet URLs (after the bundle CSS).
     pub extra_css: &'a [String],
@@ -339,6 +349,7 @@ pub struct ListingEntry {
     pub name: String,
     /// Link target (already URL-encoded by the caller).
     pub href: String,
+    /// Directory (folder icon, no size) or file.
     pub is_dir: bool,
     /// File size in bytes (shown for files).
     pub size: Option<u64>,

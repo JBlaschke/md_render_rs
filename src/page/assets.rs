@@ -535,6 +535,19 @@ mod tests {
     }
 
     #[test]
+    fn woff2_twins() {
+        assert_eq!(
+            woff2_sibling("k/fonts/KaTeX_Main-Regular.woff").as_deref(),
+            Some("k/fonts/KaTeX_Main-Regular.woff2")
+        );
+        assert_eq!(woff2_sibling("k/f.TTF").as_deref(), Some("k/f.woff2"));
+        assert_eq!(woff2_sibling("k/f.eot").as_deref(), Some("k/f.woff2"));
+        assert_eq!(woff2_sibling("k/f.woff2"), None);
+        assert_eq!(woff2_sibling("k/f.png"), None);
+        assert_eq!(woff2_sibling("noext"), None);
+    }
+
+    #[test]
     fn font_detection() {
         assert!(is_font(&mime_of("a/x.woff2"), "a/x.woff2"));
         assert!(is_font("application/octet-stream", "a/x.TTF"));
