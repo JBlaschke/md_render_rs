@@ -183,25 +183,33 @@
     mathTotalMs += Date.now() - start;
   }
 
+  // render_math.js's placeholder for one .js-render-math element: <div data-math-style> with the
+  // TeX as text and GitLab's layout class (.math-content-inline is display:inline-flex, so
+  // inline math stays inside its line).
+  function mathPlaceholder(el) {
+    var style = el.getAttribute('data-math-style') || (el.tagName === 'PRE' ? 'display' : 'inline');
+    var placeholder = document.createElement('div');
+    placeholder.setAttribute('data-math-style', style);
+    placeholder.className = style === 'inline' ? 'math-content-inline' : 'math-content-display';
+    if (el.hasAttribute('data-mdr-key')) placeholder.setAttribute('data-mdr-key', el.getAttribute('data-mdr-key'));
+    placeholder.setAttribute(DONE, '');
+    placeholder.textContent = el.textContent;
+    el.parentNode.replaceChild(placeholder, el);
+    return placeholder;
+  }
+
   function renderMath(nodes) {
+    // Claiming marks the elements, so nothing is rendered twice. The source markup is only
+    // replaced once KaTeX has loaded: without it (not vendored, failed download) the TeX keeps
+    // its <span>/<code>/<pre> styling and line breaks, as in the GitHub flavor.
     var elements = collect(nodes, '.js-render-math').filter(claim);
     if (!elements.length) return;
-    // Replace the markup first so nothing is rendered twice (render_math.js does the same).
-    var placeholders = elements.map(function (el) {
-      var placeholder = document.createElement('div');
-      var style = el.getAttribute('data-math-style') || (el.tagName === 'PRE' ? 'display' : 'inline');
-      placeholder.setAttribute('data-math-style', style);
-      if (el.hasAttribute('data-mdr-key')) placeholder.setAttribute('data-mdr-key', el.getAttribute('data-mdr-key'));
-      placeholder.setAttribute(DONE, '');
-      placeholder.textContent = el.textContent;
-      el.parentNode.replaceChild(placeholder, el);
-      return placeholder;
-    });
     ensureStylesheet('katex-css');
     loadLibrary('katex').then(function () {
       if (!window.katex) throw new Error('KaTeX did not initialize');
-      placeholders.forEach(function (placeholder) {
-        if (!placeholder.isConnected) return;
+      elements.forEach(function (el) {
+        if (!el.isConnected || !el.parentNode) return;
+        var placeholder = mathPlaceholder(el);
         var text = placeholder.textContent;
         if (text.length > MAX_MATH_CHARS || mathTotalMs >= MAX_RENDER_TIME_MS) {
           var message = text.length > MAX_MATH_CHARS
