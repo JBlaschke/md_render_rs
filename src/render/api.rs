@@ -156,11 +156,18 @@ pub struct UreqTransport {
 }
 
 impl UreqTransport {
+    /// An agent that never follows redirects: a 3xx is returned as an [`ApiResponse`].
+    ///
+    /// The render endpoints never redirect on a working instance, and following one is never
+    /// right: a 301/302/303 turns the `POST` into a `GET` (whose answer, e.g. a login page,
+    /// would be taken for the rendered document), and ureq strips only `Authorization` on the
+    /// hop, so GitLab's `PRIVATE-TOKEN` would reach whatever host the `Location` names.
     pub fn new() -> Self {
         use ureq::tls::{RootCerts, TlsConfig};
         let config = ureq::Agent::config_builder()
             .user_agent(USER_AGENT)
             .http_status_as_error(false)
+            .max_redirects(0)
             .timeout_global(Some(Duration::from_secs(30)))
             .timeout_connect(Some(Duration::from_secs(10)))
             .tls_config(
@@ -759,7 +766,12 @@ impl ApiRenderer {
             }),
             Ok(resp) => {
                 tracing::debug!(status = resp.status, "API render response");
-                interpret_response(site, &resp, self.token.is_some())
+                let exchange = Exchange {
+                    site,
+                    url: &request.url,
+                    had_token: self.token.is_some(),
+                };
+                interpret_response(&exchange, &resp)
             }
         };
         match result {
@@ -935,12 +947,17 @@ fn rid_seed(source: Option<&Path>) -> String {
     }
 }
 
-/// Turn a response into HTML or an [`ApiError`].
-fn interpret_response(
+/// What [`interpret_response`] needs to know about the request a response answers.
+struct Exchange<'a> {
     site: Flavor,
-    resp: &ApiResponse,
+    /// Where the request went (a redirect's relative `Location` is resolved against it).
+    url: &'a str,
     had_token: bool,
-) -> Result<String, ApiError> {
+}
+
+/// Turn a response into HTML or an [`ApiError`].
+fn interpret_response(exchange: &Exchange<'_>, resp: &ApiResponse) -> Result<String, ApiError> {
+    let site = exchange.site;
     if (200..300).contains(&resp.status) {
         return match site {
             Flavor::Github => Ok(resp.body.clone()),
@@ -961,10 +978,21 @@ fn interpret_response(
             }
         };
     }
-    Err(classify_error(site, resp, had_token))
+    Err(classify_error(exchange, resp))
 }
 
-fn classify_error(site: Flavor, resp: &ApiResponse, had_token: bool) -> ApiError {
+fn classify_error(exchange: &Exchange<'_>, resp: &ApiResponse) -> ApiError {
+    let Exchange {
+        site, had_token, ..
+    } = *exchange;
+    if (300..400).contains(&resp.status) {
+        // Redirects are never followed (see `UreqTransport::new`); say where it pointed.
+        return ApiError::Status {
+            site,
+            status: resp.status,
+            message: Some(redirect_note(site, resp, exchange.url)),
+        };
+    }
     let message = error_message(&resp.body);
     let num = |names: &[&str]| -> Option<u64> {
         names
@@ -1014,6 +1042,39 @@ fn classify_error(site: Flavor, resp: &ApiResponse, had_token: bool) -> ApiError
             status,
             message,
         },
+    }
+}
+
+/// "redirected to https://host/login; …" for a 3xx answer to a request sent to `request_url`.
+fn redirect_note(site: Flavor, resp: &ApiResponse, request_url: &str) -> String {
+    let target = resp.header("location").and_then(|location| {
+        let base = url::Url::parse(request_url).ok()?;
+        Some(redact_url(base.join(location.trim()).ok()?.as_str()))
+    });
+    let example = match site {
+        Flavor::Github => "https://HOST/api/v3 for GitHub Enterprise",
+        Flavor::Gitlab => "https://HOST for a self-hosted GitLab",
+    };
+    let target = target.map_or_else(|| "a redirect".to_owned(), |t| format!("redirected to {t}"));
+    format!("{target}, which is not followed; check --api-url, e.g. {example}")
+}
+
+/// `raw` (a URL, or what was meant as one) for messages and logs: credentials are replaced by
+/// `***`, the query and fragment by `…` (either may carry a token).
+pub(crate) fn redact_url(raw: &str) -> String {
+    let (main, tail) = match raw.find(['?', '#']) {
+        Some(i) if raw[i..].starts_with('?') => (&raw[..i], "?…"),
+        Some(i) => (&raw[..i], "#…"),
+        None => (raw, ""),
+    };
+    let (scheme, rest) = match main.find("://") {
+        Some(i) => main.split_at(i + 3),
+        None => ("", main),
+    };
+    let authority_end = rest.find(['/', '\\']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{scheme}***@{}{tail}", &rest[at + 1..]),
+        None => format!("{scheme}{rest}{tail}"),
     }
 }
 
@@ -2056,8 +2117,13 @@ mod tests {
 
     #[test]
     fn classification() {
+        let exchange = |site| Exchange {
+            site,
+            url: "https://api.github.com/markdown",
+            had_token: true,
+        };
         let gh = |code, h: &[(&str, &str)], b| {
-            classify_error(Flavor::Github, &status(code, h, b).unwrap(), true)
+            classify_error(&exchange(Flavor::Github), &status(code, h, b).unwrap())
         };
         assert!(matches!(gh(429, &[], ""), ApiError::RateLimited { .. }));
         assert!(matches!(
@@ -2103,14 +2169,16 @@ mod tests {
             ApiError::Status { status: 413, .. }
         ));
         let gl = classify_error(
-            Flavor::Gitlab,
+            &Exchange {
+                had_token: false,
+                ..exchange(Flavor::Gitlab)
+            },
             &status(
                 429,
                 &[("RateLimit-Reset", "100"), ("RateLimit-Limit", "5")],
                 "",
             )
             .unwrap(),
-            false,
         );
         assert_eq!(
             gl,
@@ -2123,7 +2191,7 @@ mod tests {
                 had_token: false
             }
         );
-        let bad = interpret_response(Flavor::Gitlab, &ok("{}").unwrap(), true).unwrap_err();
+        let bad = interpret_response(&exchange(Flavor::Gitlab), &ok("{}").unwrap()).unwrap_err();
         assert!(matches!(bad, ApiError::BadResponse { .. }));
         assert_eq!(
             error_message(&format!("{{\"message\":\"{}\"}}", "x".repeat(300)))
@@ -2132,6 +2200,67 @@ mod tests {
                 .count(),
             201
         );
+    }
+
+    #[test]
+    fn redirects_are_errors_that_name_a_redacted_target() {
+        let gitlab = Exchange {
+            site: Flavor::Gitlab,
+            url: "https://gl.example/api/v4/markdown",
+            had_token: true,
+        };
+        let err = classify_error(
+            &gitlab,
+            &status(302, &[("Location", "/users/sign_in?token=x")], "<html>").unwrap(),
+        );
+        assert!(matches!(err, ApiError::Status { status: 302, .. }));
+        assert_eq!(
+            err.to_string(),
+            "the GitLab API returned HTTP 302 (redirected to https://gl.example/users/sign_in?…, \
+             which is not followed; check --api-url, e.g. https://HOST for a self-hosted GitLab)"
+        );
+        let github = Exchange {
+            site: Flavor::Github,
+            ..gitlab
+        };
+        let err = classify_error(
+            &github,
+            &status(301, &[("location", "https://u:pw@sso.example/x#f")], "").unwrap(),
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("redirected to https://***@sso.example/x#…")
+                && msg.contains("https://HOST/api/v3")
+                && !msg.contains("pw"),
+            "{msg}"
+        );
+        let err = classify_error(&github, &status(307, &[], "").unwrap());
+        assert!(
+            err.to_string()
+                .contains("(a redirect, which is not followed")
+        );
+        // A redirect is not retried later: it is no reason to block the API.
+        assert!(block_for(&err).is_none());
+    }
+
+    #[test]
+    fn urls_are_redacted_for_display() {
+        for (raw, shown) in [
+            ("https://h.example/api/v3", "https://h.example/api/v3"),
+            (
+                "https://u:s3cr3t@h.example/api",
+                "https://***@h.example/api",
+            ),
+            ("https://u@h.example", "https://***@h.example"),
+            ("https://h.example/?private_token=x", "https://h.example/?…"),
+            ("https://h.example/a#tok", "https://h.example/a#…"),
+            ("http://u:p@w@h:99999/x?y", "http://***@h:99999/x?…"),
+            ("u:s3cr3t@h.example/x", "***@h.example/x"),
+            ("https://h.example/a@b", "https://h.example/a@b"),
+            ("not a url", "not a url"),
+        ] {
+            assert_eq!(redact_url(raw), shown, "{raw}");
+        }
     }
 
     #[test]
