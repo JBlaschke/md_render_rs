@@ -324,9 +324,11 @@
   // ------------------------------------------------------------------------------------------
   // <copy-code> (GL §10.4): GitLab's custom element appends a button that copies the <pre>.
 
+  // Used when no GitLab icon sprite is vendored: the Primer Octicons `copy` icon (MIT,
+  // (c) GitHub Inc., see THIRD_PARTY_NOTICES.md), drawn like a GitLab button icon.
   var COPY_ICON = '<svg class="s16 gl-icon gl-button-icon" aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="currentColor">' +
-    '<path d="M5 2.75C5 1.784 5.784 1 6.75 1h6.5c.966 0 1.75.784 1.75 1.75v6.5A1.75 1.75 0 0 1 13.25 11h-6.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v6.5c0 .138.112.25.25.25h6.5a.25.25 0 0 0 .25-.25v-6.5a.25.25 0 0 0-.25-.25Z"></path>' +
-    '<path d="M2.75 5A1.75 1.75 0 0 0 1 6.75v6.5c0 .966.784 1.75 1.75 1.75h6.5A1.75 1.75 0 0 0 11 13.25V12H9.5v1.25a.25.25 0 0 1-.25.25h-6.5a.25.25 0 0 1-.25-.25v-6.5a.25.25 0 0 1 .25-.25H4V5Z"></path></svg>';
+    '<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>' +
+    '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>';
   var codeSeq = 0;
 
   function iconMarkup() {

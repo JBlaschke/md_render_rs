@@ -110,6 +110,8 @@
   // github.com's JS moves the text onto a <clipboard-copy> cloned from the unpositioned
   // template. We do the same and implement the copy ourselves.
 
+  // Same markup as the page's <template> (icons: Primer Octicons, MIT, (c) GitHub Inc., see
+  // THIRD_PARTY_NOTICES.md); only used when the template is missing.
   var CLIPBOARD_FALLBACK =
     '<div class="zeroclipboard-container"><clipboard-copy aria-label="Copy code to clipboard" ' +
     'class="ClipboardButton btn btn-invisible js-clipboard-copy m-2 p-0 d-flex flex-justify-center flex-items-center" ' +

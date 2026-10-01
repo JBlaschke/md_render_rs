@@ -1,2 +1,357 @@
-/* Minimal fallback styles for the GitLab flavor (owner: page). MIT. */
-.md{font-family:"GitLab Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans",Ubuntu,Cantarell,"Helvetica Neue",sans-serif;font-size:14px;line-height:1.5;max-width:990px;margin:0 auto;padding:16px}
+/*
+ * md-render fallback styles for the GitLab flavor (owner: page).
+ *
+ * Hand-written for md-render (BSD-3-Clause, see LICENSE); no third-party CSS is included.
+ * Used only when no vendored bundle exists: run `md-render vendor --flavor gitlab` to get
+ * gitlab.com's real stylesheets. Colour tokens use GitLab's `--gl-*` names where md-render's
+ * chrome references them, and the light/dark switch follows the classes md-render puts on
+ * <html> (GL §11.3): gl-light, gl-dark, and gl-system (prefers-color-scheme; gitlab.js and the
+ * inline head script also add gl-dark there).
+ */
+
+/* ---- colour tokens: light (default) ---------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --gl-text-color-default: #3a383d;
+  --gl-text-color-subtle: #626168;
+  --gl-text-color-heading: #18171d;
+  --gl-text-color-link: #1068bf;
+  --gl-text-color-danger: #c91c00;
+  --gl-background-color-default: #ffffff;
+  --gl-background-color-subtle: #fbfafd;
+  --gl-background-color-strong: #ececef;
+  --gl-border-color-default: #dcdcde;
+  --gl-border-color-strong: #bfbfc3;
+  --mdr-info: #1f75cb;
+  --mdr-success: #108548;
+  --mdr-purple: #694cc0;
+  --mdr-danger: #dd2b0e;
+  --mdr-warning: #c17d10;
+  --mdr-info-bg: #e9f3fc;
+  --mdr-warning-bg: #fdf1dd;
+  --mdr-danger-bg: #fcf1ef;
+  --mdr-code-bg: #fbfafd;
+  --mdr-code-fg: #3a383d;
+  --mdr-hl-comment: #999988;
+  --mdr-hl-keyword: #3a383d;
+  --mdr-hl-type: #445588;
+  --mdr-hl-number: #009999;
+  --mdr-hl-string: #dd1144;
+  --mdr-hl-regex: #009926;
+  --mdr-hl-symbol: #990073;
+  --mdr-hl-name: #333333;
+  --mdr-hl-attr: #008080;
+  --mdr-hl-builtin: #0086b3;
+  --mdr-hl-function: #990000;
+  --mdr-hl-tag: #000080;
+  --mdr-hl-heading: #694cc0;
+  --mdr-hl-error: #a61717;
+  --mdr-hl-error-bg: #e3d2d2;
+  --mdr-hl-inserted-bg: #ddffdd;
+  --mdr-hl-deleted-bg: #ffdddd;
+  --mdr-hl-diff-fg: #050408;
+}
+
+/* ---- colour tokens: dark --------------------------------------------------------------- */
+/* Duplicated on purpose: once for html.gl-dark, once for system mode under a dark OS. */
+:root.gl-dark {
+  color-scheme: dark;
+  --gl-text-color-default: #ececef;
+  --gl-text-color-subtle: #bfbfc3;
+  --gl-text-color-heading: #ffffff;
+  --gl-text-color-link: #9dc7f1;
+  --gl-text-color-danger: #f57f6c;
+  --gl-background-color-default: #18171d;
+  --gl-background-color-subtle: #1f1e24;
+  --gl-background-color-strong: #333238;
+  --gl-border-color-default: #4c4b51;
+  --gl-border-color-strong: #626168;
+  --mdr-info: #428fdc;
+  --mdr-success: #2da160;
+  --mdr-purple: #9475db;
+  --mdr-danger: #ec5941;
+  --mdr-warning: #d99530;
+  --mdr-info-bg: #428fdc26;
+  --mdr-warning-bg: #d9953026;
+  --mdr-danger-bg: #ec594126;
+  --mdr-code-bg: #1d1f21;
+  --mdr-code-fg: #c5c8c6;
+  --mdr-hl-comment: #969896;
+  --mdr-hl-keyword: #b294bb;
+  --mdr-hl-type: #f0c674;
+  --mdr-hl-number: #de935f;
+  --mdr-hl-string: #b5bd68;
+  --mdr-hl-regex: #b5bd68;
+  --mdr-hl-symbol: #b5bd68;
+  --mdr-hl-name: #c5c8c6;
+  --mdr-hl-attr: #81a2be;
+  --mdr-hl-builtin: #c5c8c6;
+  --mdr-hl-function: #81a2be;
+  --mdr-hl-tag: #8abeb7;
+  --mdr-hl-heading: #8abeb7;
+  --mdr-hl-error: #cc6666;
+  --mdr-hl-error-bg: transparent;
+  --mdr-hl-inserted-bg: transparent;
+  --mdr-hl-deleted-bg: transparent;
+  --mdr-hl-diff-fg: #c5c8c6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not(.gl-light) {
+    color-scheme: dark;
+    --gl-text-color-default: #ececef;
+    --gl-text-color-subtle: #bfbfc3;
+    --gl-text-color-heading: #ffffff;
+    --gl-text-color-link: #9dc7f1;
+    --gl-text-color-danger: #f57f6c;
+    --gl-background-color-default: #18171d;
+    --gl-background-color-subtle: #1f1e24;
+    --gl-background-color-strong: #333238;
+    --gl-border-color-default: #4c4b51;
+    --gl-border-color-strong: #626168;
+    --mdr-info: #428fdc;
+    --mdr-success: #2da160;
+    --mdr-purple: #9475db;
+    --mdr-danger: #ec5941;
+    --mdr-warning: #d99530;
+    --mdr-info-bg: #428fdc26;
+    --mdr-warning-bg: #d9953026;
+    --mdr-danger-bg: #ec594126;
+    --mdr-code-bg: #1d1f21;
+    --mdr-code-fg: #c5c8c6;
+    --mdr-hl-comment: #969896;
+    --mdr-hl-keyword: #b294bb;
+    --mdr-hl-type: #f0c674;
+    --mdr-hl-number: #de935f;
+    --mdr-hl-string: #b5bd68;
+    --mdr-hl-regex: #b5bd68;
+    --mdr-hl-symbol: #b5bd68;
+    --mdr-hl-name: #c5c8c6;
+    --mdr-hl-attr: #81a2be;
+    --mdr-hl-builtin: #c5c8c6;
+    --mdr-hl-function: #81a2be;
+    --mdr-hl-tag: #8abeb7;
+    --mdr-hl-heading: #8abeb7;
+    --mdr-hl-error: #cc6666;
+    --mdr-hl-error-bg: transparent;
+    --mdr-hl-inserted-bg: transparent;
+    --mdr-hl-deleted-bg: transparent;
+    --mdr-hl-diff-fg: #c5c8c6;
+  }
+}
+
+/* ---- page ------------------------------------------------------------------------------ */
+*, *::before, *::after { box-sizing: border-box; }
+html { color: var(--gl-text-color-default); background-color: var(--gl-background-color-default); }
+body {
+  margin: 0;
+  font-family: "GitLab Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", Ubuntu, Cantarell, "Helvetica Neue", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--gl-text-color-default);
+  background-color: var(--gl-background-color-default);
+}
+.tab-width-8 { tab-size: 8; }
+a { color: var(--gl-text-color-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container-fluid { width: 100%; margin-right: auto; margin-left: auto; padding-right: 15px; padding-left: 15px; }
+.container-limited { max-width: 1296px; }
+.gl-pt-5 { padding-top: 16px; }
+.gl-px-4 { padding-right: 12px; padding-left: 12px; }
+.gl-py-3 { padding-top: 8px; padding-bottom: 8px; }
+.gl-mb-5 { margin-bottom: 16px; }
+.gl-my-5 { margin-top: 16px; margin-bottom: 16px; }
+.gl-relative { position: relative; }
+.gl-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+}
+.\!gl-block { display: block !important; }
+.\!gl-p-0 { padding: 0 !important; }
+.\!gl-border-none { border-style: none !important; }
+
+/* File box of the blob view (GL §12). */
+.file-holder { margin-bottom: 16px; border: 1px solid var(--gl-border-color-default); border-radius: .25rem; }
+.file-title-flex-parent {
+  display: flex; align-items: center; justify-content: space-between; min-height: 48px;
+  background-color: var(--gl-background-color-subtle); border-bottom: 1px solid var(--gl-border-color-default);
+  border-top-left-radius: .25rem; border-top-right-radius: .25rem;
+}
+.file-holder .file-content.md { padding: 16px; }
+@media (min-width: 768px) { .file-holder .file-content.md { padding: 32px; } }
+
+/* Alerts used for md-render's banners, errors and the client's performance warnings. */
+.gl-alert {
+  position: relative; display: flex; padding: 16px 16px 16px 48px; margin: 0; font-size: 14px; line-height: 1.5;
+  color: var(--gl-text-color-default); background-color: var(--mdr-info-bg); border-radius: .25rem;
+}
+.gl-alert-icon { position: absolute; top: 18px; left: 16px; }
+.gl-alert-content { flex: 1 1 auto; min-width: 0; }
+.gl-alert-title { margin-bottom: 8px; font-weight: 600; }
+.gl-alert-actions { margin-top: 16px; }
+.gl-alert-info .gl-alert-icon { color: var(--mdr-info); }
+.gl-alert-warning { background-color: var(--mdr-warning-bg); }
+.gl-alert-warning .gl-alert-icon { color: var(--mdr-warning); }
+.gl-alert-danger { background-color: var(--mdr-danger-bg); }
+.gl-alert-danger .gl-alert-icon { color: var(--mdr-danger); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; padding: 8px 12px; font: inherit;
+  font-size: 14px; line-height: 1rem; cursor: pointer; color: var(--gl-text-color-default);
+  background-color: var(--gl-background-color-default); border: 1px solid var(--gl-border-color-strong); border-radius: .25rem;
+}
+.btn:hover { background-color: var(--gl-background-color-strong); }
+.btn-confirm { color: #fff; background-color: var(--mdr-info); border-color: var(--mdr-info); }
+.btn-icon { width: 32px; height: 32px; padding: 0; }
+.gl-icon { fill: currentColor; flex-shrink: 0; }
+.s16 { width: 16px; height: 16px; }
+
+/* ---- markdown (.md) ------------------------------------------------------------------- */
+.md { position: relative; z-index: 1; color: var(--gl-text-color-default); word-wrap: break-word; }
+.md *:first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md [dir="auto"] { text-align: initial; }
+.md p { margin: 0 0 16px; }
+.md a { color: var(--gl-text-color-link); }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  position: relative; margin: 24px 0 16px; font-weight: 600; line-height: 1.25; color: var(--gl-text-color-heading);
+}
+.md h1 { font-size: 28px; padding-bottom: .3em; border-bottom: 1px solid var(--gl-border-color-default); }
+.md h2 { font-size: 21px; padding-bottom: .3em; border-bottom: 1px solid var(--gl-border-color-default); }
+.md h3 { font-size: 18px; }
+.md h4 { font-size: 16px; }
+.md h5, .md h6 { font-size: 14px; }
+.md h6 { color: var(--gl-text-color-subtle); }
+.md a.anchor { margin-left: 8px; color: var(--gl-text-color-subtle); text-decoration: none; }
+.md a.anchor::after { content: "#"; font-weight: 400; visibility: hidden; }
+.md h1:hover a.anchor::after, .md h2:hover a.anchor::after, .md h3:hover a.anchor::after,
+.md h4:hover a.anchor::after, .md h5:hover a.anchor::after, .md h6:hover a.anchor::after,
+.md a.anchor:focus::after { visibility: visible; }
+.md blockquote {
+  margin: 0 0 16px; padding: 8px 0 8px 16px; color: var(--gl-text-color-subtle);
+  border-left: 4px solid var(--gl-border-color-strong);
+}
+.md blockquote > :last-child { margin-bottom: 0; }
+.md ul, .md ol { margin: 0 0 16px; padding: 0; }
+.md li { margin-left: 25px; padding-left: 3px; line-height: 1.6em; }
+.md li > ul, .md li > ol { margin-bottom: 0; }
+.md > ul { list-style-type: disc; }
+.md > ul ul { list-style-type: circle; }
+.md > ul ul ul { list-style-type: square; }
+.md hr { margin: 24px 0; border: 0; border-top: 1px solid var(--gl-border-color-strong); }
+.md img, .md video { max-width: 100%; }
+.md dl dt { font-weight: 600; }
+.md dl dd { margin: 0 0 16px 16px; }
+.md details { margin-bottom: 16px; }
+.md details summary { font-weight: bold; cursor: pointer; }
+.md kbd {
+  display: inline-block; padding: 3px 5px; font-size: 11px; line-height: 10px; vertical-align: middle;
+  color: var(--gl-text-color-default); background-color: var(--gl-background-color-subtle);
+  border: 1px solid var(--gl-border-color-strong); border-radius: 3px; box-shadow: 0 -1px 0 var(--gl-border-color-strong) inset;
+}
+.md .glfm-float-left { float: left; margin-right: 16px; }
+.md .glfm-float-right { float: right; margin-left: 16px; }
+.md .idiff.addition { background-color: #c7f0d2; }
+.md .idiff.deletion { background-color: #fac5cd; }
+.gl-dark .md .idiff.addition { background-color: #1e5b3a; }
+.gl-dark .md .idiff.deletion { background-color: #6f1b23; }
+
+/* Code. */
+.md code, .md pre, .md kbd, .md samp {
+  font-family: "GitLab Mono", "JetBrains Mono", "Menlo", "DejaVu Sans Mono", "Liberation Mono", "Consolas", "Ubuntu Mono", "Courier New", monospace;
+}
+.md code {
+  padding: 2px 4px; font-size: 90%; white-space: pre-wrap; word-wrap: break-word;
+  color: var(--gl-text-color-default); background-color: var(--gl-background-color-strong); border-radius: .25rem;
+}
+.md pre {
+  margin: 0 0 16px; padding: 12px; overflow-x: auto; font-size: 90%; line-height: 1.6em;
+  color: var(--mdr-code-fg); background-color: var(--mdr-code-bg);
+  border: 1px solid var(--gl-border-color-default); border-radius: .25rem;
+}
+.md pre code { padding: 0; font-size: 100%; white-space: pre; background: none; border-radius: 0; }
+.markdown-code-block { position: relative; margin-bottom: 16px; }
+.markdown-code-block pre { margin-bottom: 0; }
+copy-code { position: absolute; top: .5rem; right: .5rem; opacity: 0; transition: opacity .1s; }
+.markdown-code-block:hover copy-code, copy-code:focus-within { opacity: 1; }
+insert-code-snippet { display: none; }
+
+/* Rouge short classes (GL §11.5); colours come from the tokens above. */
+.code .c, .code .c1, .code .cd, .code .cm, .code .ch, .code .cpf { color: var(--mdr-hl-comment); font-style: italic; }
+.code .cp, .code .cs { color: var(--mdr-hl-comment); font-weight: 600; }
+.code .err { color: var(--mdr-hl-error); background-color: var(--mdr-hl-error-bg); }
+.code .k, .code .kc, .code .kd, .code .kn, .code .kp, .code .kr, .code .kv, .code .o, .code .ow { color: var(--mdr-hl-keyword); font-weight: 600; }
+.code .kt, .code .nc { color: var(--mdr-hl-type); font-weight: 600; }
+.code .m, .code .mb, .code .mf, .code .mh, .code .mi, .code .mo, .code .mx, .code .il { color: var(--mdr-hl-number); }
+.code .s, .code .s1, .code .s2, .code .sa, .code .sb, .code .sc, .code .dl, .code .sd, .code .se, .code .sh, .code .si, .code .sx { color: var(--mdr-hl-string); }
+.code .sr { color: var(--mdr-hl-regex); }
+.code .ss { color: var(--mdr-hl-symbol); }
+.code .n, .code .nx, .code .nl, .code .py { color: var(--mdr-hl-name); }
+.code .na, .code .no, .code .nv, .code .vc, .code .vg, .code .vi, .code .vm { color: var(--mdr-hl-attr); }
+.code .nb, .code .bp { color: var(--mdr-hl-builtin); }
+.code .ne, .code .nf, .code .fm { color: var(--mdr-hl-function); font-weight: 600; }
+.code .nt, .code .nd { color: var(--mdr-hl-tag); }
+.code .nn, .code .ni { color: var(--mdr-hl-type); }
+.code .gh, .code .gu { color: var(--mdr-hl-heading); font-weight: 600; }
+.code .gd { color: var(--mdr-hl-diff-fg); background-color: var(--mdr-hl-deleted-bg); }
+.code .gi { color: var(--mdr-hl-diff-fg); background-color: var(--mdr-hl-inserted-bg); }
+.code .ge { font-style: italic; }
+.code .gs { font-weight: 600; }
+.code .gr, .code .gt { color: var(--mdr-hl-error); }
+.code .go, .code .gp, .code .w { color: var(--mdr-hl-comment); }
+
+/* Tables (with or without the client-side wrapper, GL §6.11). */
+.md table:not(.code) {
+  display: block; margin: 16px 0; overflow-x: auto; border-spacing: 0; border-collapse: collapse;
+  color: var(--gl-text-color-default);
+}
+.md .gl-table-shadow-overlay table:not(.code) { display: table; margin: 0; }
+.md table:not(.code) th, .md table:not(.code) td { padding: 8px 16px; border: 1px solid var(--gl-border-color-default); }
+.md table:not(.code) th { font-weight: 600; background-color: var(--gl-background-color-subtle); }
+.md table:not(.code) td > :last-child { margin-bottom: 0; }
+.gl-w-fit { width: fit-content; }
+.gl-max-w-full { max-width: 100%; }
+.gl-min-w-full { min-width: 100%; }
+.gl-overflow-x-auto { overflow-x: auto; }
+.gl-overflow-y-auto { overflow-y: auto; }
+.gl-overflow-y-hidden { overflow-y: hidden; }
+.gl-max-h-\[70vh\] { max-height: 70vh; }
+
+/* Task lists (GL §6.6). */
+.md .task-list-item { list-style-type: none; }
+.md .task-list-item .task-list-item-checkbox { margin: 0 6px 3px -22px; vertical-align: middle; }
+.md li.inapplicable s.inapplicable { color: var(--gl-text-color-subtle); }
+.md li.inapplicable > p { text-decoration: line-through; }
+
+/* Alerts (GL §6.7): coloured left border and title, no icon. */
+.md .markdown-alert { margin: 16px 0; padding: 4px 12px; border-left: 4px solid var(--mdr-info); }
+.md .markdown-alert > :last-child { margin-bottom: 0; }
+.md .markdown-alert .markdown-alert-title { margin-bottom: 4px; font-weight: 600; color: var(--mdr-info); }
+.md .markdown-alert-tip { border-left-color: var(--mdr-success); }
+.md .markdown-alert-tip .markdown-alert-title { color: var(--mdr-success); }
+.md .markdown-alert-important { border-left-color: var(--mdr-purple); }
+.md .markdown-alert-important .markdown-alert-title { color: var(--mdr-purple); }
+.md .markdown-alert-warning { border-left-color: var(--mdr-danger); }
+.md .markdown-alert-warning .markdown-alert-title { color: var(--mdr-danger); }
+.md .markdown-alert-caution { border-left-color: var(--mdr-warning); }
+.md .markdown-alert-caution .markdown-alert-title { color: var(--mdr-warning); }
+
+/* Footnotes (GL §6.13). */
+section.footnotes { margin-top: 2rem; padding-top: 1rem; font-size: 12px; color: var(--gl-text-color-subtle); }
+section.footnotes::before { content: ""; display: block; width: 16rem; margin-bottom: 1rem; border-top: 1px solid var(--gl-border-color-strong); }
+
+/* Emoji, colour chips (GL §6.15). */
+gl-emoji {
+  display: inline-flex; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  font-size: 1.2em; font-style: normal; line-height: 1; vertical-align: baseline;
+}
+.gfm-color_chip { display: inline-block; width: 12px; height: 12px; margin: 0 0 2px 4px; vertical-align: middle; border-radius: 3px; }
+.gfm-color_chip > span { display: inline-block; width: 100%; height: 100%; border: 1px solid var(--gl-border-color-strong); border-radius: 3px; }
+
+/* Math (GL §10.2). */
+.math-content-inline { display: inline-flex; max-width: 100%; overflow: hidden; }
+.math-content-display { display: block; overflow: auto; }
+.katex-error { color: var(--gl-text-color-danger); }
+
+@media print {
+  copy-code { display: none; }
+  .md pre { white-space: pre-wrap; }
+}
