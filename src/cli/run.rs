@@ -54,24 +54,62 @@ pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
     }
 }
 
-/// Install the global tracing subscriber (stderr). Safe to call more than once.
+/// Crates whose TRACE output contains request headers verbatim (ureq: "wire level debug. NOT
+/// REDACTED"), i.e. API tokens. Their TRACE events are always dropped (DEBUG redacts headers),
+/// so neither `-vv` nor `RUST_LOG=trace` can leak a token.
+pub const SECRET_BEARING_CRATES: [&str; 2] = ["ureq", "ureq_proto"];
+
+/// Whether an event of `level` from `target` must never be logged (see [`SECRET_BEARING_CRATES`]).
+pub fn is_secret_bearing(target: &str, level: tracing::Level) -> bool {
+    level == tracing::Level::TRACE
+        && SECRET_BEARING_CRATES.iter().any(|krate| {
+            target
+                .strip_prefix(krate)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+        })
+}
+
+/// The subscriber md-render logs through: filter `rust_log` (a `RUST_LOG` value) if given and
+/// valid, else [`log_filter`]; never events for which [`is_secret_bearing`] holds; plain
+/// messages by default, with time and target from `-v` on.
+pub fn log_subscriber<W>(
+    rust_log: Option<&str>,
+    quiet: bool,
+    verbose: u8,
+    writer: W,
+    ansi: bool,
+) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    use tracing_subscriber::filter::{EnvFilter, filter_fn};
+    use tracing_subscriber::layer::{Layer as _, SubscriberExt as _};
+
+    let env = rust_log
+        .filter(|spec| !spec.trim().is_empty())
+        .and_then(|spec| EnvFilter::try_new(spec).ok())
+        .unwrap_or_else(|| EnvFilter::new(log_filter(quiet, verbose)));
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        .with_ansi(ansi);
+    let fmt = if verbose == 0 {
+        fmt.without_time().with_target(false).boxed()
+    } else {
+        fmt.with_target(true).boxed()
+    };
+    let no_secrets = filter_fn(|meta| !is_secret_bearing(meta.target(), *meta.level()));
+    tracing_subscriber::registry().with(fmt.with_filter(env).with_filter(no_secrets))
+}
+
+/// Install [`log_subscriber`] for stderr as the global subscriber (also bridging `log` records).
+/// An already installed subscriber is kept.
 fn init_logging(quiet: bool, verbose: u8) {
     use std::io::IsTerminal as _;
-    use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_filter(quiet, verbose)));
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let rust_log = std::env::var("RUST_LOG").ok();
     let ansi =
         io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(io::stderr)
-        .with_ansi(ansi);
-    // A previously installed subscriber (tests, embedding) is kept.
-    let _ = if verbose == 0 {
-        builder.without_time().with_target(false).try_init()
-    } else {
-        builder.with_target(true).try_init()
-    };
+    let _ = log_subscriber(rust_log.as_deref(), quiet, verbose, io::stderr, ansi).try_init();
 }
 
 /// Execute a planned invocation.
@@ -209,6 +247,17 @@ mod tests {
         assert_eq!(log_filter(false, 0), "warn,md_render=info,tarfs=info");
         assert_eq!(log_filter(false, 1), "info,md_render=debug,tarfs=debug");
         assert_eq!(log_filter(false, 2), "trace");
+    }
+
+    #[test]
+    fn wire_traces_of_the_http_client_are_never_logged() {
+        use tracing::Level;
+        assert!(is_secret_bearing("ureq", Level::TRACE));
+        assert!(is_secret_bearing("ureq::run", Level::TRACE));
+        assert!(is_secret_bearing("ureq_proto::client::flow", Level::TRACE));
+        assert!(!is_secret_bearing("ureq::run", Level::DEBUG));
+        assert!(!is_secret_bearing("ureqx", Level::TRACE));
+        assert!(!is_secret_bearing("md_render::render::api", Level::TRACE));
     }
 
     #[test]
