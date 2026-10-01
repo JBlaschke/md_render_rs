@@ -148,7 +148,9 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let doc = Document::fragment(html);
     let raw = sanitize::run(&doc, &ctx);
     headings::run(&doc, &ctx);
-    autolink::run(&doc, &raw);
+    if !ctx.comment {
+        autolink::run(&doc, &raw);
+    }
     let mut enrichments = state.enrichments;
     let mut feats = (false, false);
     code::raw_pre(&doc, &ctx, &mut enrichments, &mut feats);

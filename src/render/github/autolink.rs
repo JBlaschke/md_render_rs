@@ -1,10 +1,11 @@
 //! Autolinking of URLs in raw-HTML text (GH §8.9).
 //!
-//! github.com also autolinks bare URLs that end up as text inside raw HTML (for example the
-//! text of a tag-filtered `<iframe>` block, `S/ctx/naskio_*`). Markdown text is autolinked by
-//! comrak already; this pass covers text nodes whose parent is raw HTML. The rules follow
-//! cmark-gfm's `autolink.c` (`www.` and `scheme://` matches, domain check, trailing
-//! punctuation trimming).
+//! In the README/file context github.com also autolinks bare URLs that end up as text inside
+//! raw HTML (for example the text of a tag-filtered `<iframe>` block, `S/ctx/naskio_*`); the
+//! comment context does not (`S/api_gfm_ctx.html`). Markdown text is autolinked by comrak
+//! already; this pass covers text nodes whose parent is raw HTML. The rules follow cmark-gfm's
+//! `autolink.c` (`www.` and `scheme://` matches, domain check, trailing punctuation trimming),
+//! additionally ending a link at `"` and `>` since the text is markup-like.
 
 use std::collections::HashSet;
 
@@ -53,7 +54,9 @@ fn check_domain(s: &str, start: usize, allow_short: bool) -> Option<usize> {
 /// unbalanced `)` and entity-like `&name;`.
 fn link_end(s: &str, start: usize, from: usize) -> usize {
     let b = s.as_bytes();
-    let mut end = s[from..].find(|c: char| c.is_whitespace() || c == '<').map_or(s.len(), |k| from + k);
+    let mut end = s[from..]
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+        .map_or(s.len(), |k| from + k);
     while end > start {
         let last = b[end - 1];
         if b"?!.,:*_~'\"".contains(&last) {

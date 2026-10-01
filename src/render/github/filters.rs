@@ -143,6 +143,14 @@ fn is_attachment(url: &str) -> bool {
 
 pub(super) fn images(doc: &Document) {
     let root = dom::root(doc);
+    // In README and comment contexts only user-attachment videos survive (GH §8.11;
+    // `S/api_gfm_ctx.html` drops `<video src="https://example.com/v.mp4">`).
+    for video in dom::elements_named(doc, "video") {
+        let src = video.attr("src").map(|s| s.to_string()).unwrap_or_default();
+        if !is_attachment(&src) {
+            dom::unwrap(&video);
+        }
+    }
     for source in dom::elements_named(doc, "source") {
         if let Some(set) = source.attr("srcset").map(|s| s.to_string()) {
             if let Some(r) = blob_to_raw(&set) {

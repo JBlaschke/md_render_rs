@@ -162,6 +162,19 @@ fn canon_children(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
             }
         }
     }
+    if norm.refs_as_text {
+        // GitHub shortens same-repo `owner/repo#N` references to `#N` (needs the context).
+        static REPO_REF: OnceLock<Regex> = OnceLock::new();
+        static SHA: OnceLock<Regex> = OnceLock::new();
+        let r = re(&REPO_REF, r"\b[\w.-]+/[\w.-]+(#\d+)");
+        let sha = re(&SHA, r"\b(?:[\w.-]+/[\w.-]+@)?[0-9a-f]{7,40}\b");
+        for k in &mut kids {
+            if let C::T(t) = k {
+                let shortened = r.replace_all(t, "$1");
+                *t = sha.replace_all(&shortened, "COMMIT").into_owned();
+            }
+        }
+    }
     let is_block = |c: Option<&C>| match c {
         None => true,
         Some(C::E { name, .. }) => BLOCKS.contains(&name.as_str()),
@@ -194,7 +207,16 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
     let has = |c: &str| class.split_ascii_whitespace().any(|x| x == c);
     match name.as_str() {
         "tool-tip" => return Vec::new(),
-        "a" if has("user-mention") || has("commit-link") => return vec![C::T(n.text().to_string())],
+        "a" if has("user-mention") => return vec![C::T(n.text().to_string())],
+        "a" if has("commit-link") => return vec![C::T("COMMIT".to_owned())],
+        // Without context the API keeps external videos; with one (our contexts) they go.
+        "video" if norm.probe => return canon_children(n, norm),
+        // Without context the API highlights mermaid/geojson/… instead of enriching them.
+        "section" if norm.probe && !norm.strict_code && has("js-render-needs-enrichment") => {
+            let pre = n.descendants().into_iter().find(|d| d.has_name("pre"));
+            let text = pre.map(|p| code_text(&p, false)).unwrap_or_default();
+            return vec![C::E { name: "mdr-code".into(), attrs: BTreeMap::new(), kids: vec![C::T(text)] }];
+        }
         "svg" if norm.probe => {
             let texts = n.children().into_iter().filter_map(|c| {
                 c.query(|t| match &t.data {
@@ -230,6 +252,15 @@ fn canon(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
                     attrs.insert("uuid".to_owned(), uuid);
                     return vec![C::E { name: "mdr-attachment".into(), attrs, kids: Vec::new() }];
                 }
+            }
+        }
+        // Comment context: a bare issue URL is shown as a `#N` reference by github.com.
+        "a" if norm.refs_as_text && !has("issue-link") => {
+            static ISSUE: OnceLock<Regex> = OnceLock::new();
+            let href = n.attr("href").map(|h| h.to_string()).unwrap_or_default();
+            let r = re(&ISSUE, r"^https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/(\d+)$");
+            if let Some(c) = r.captures(&href).filter(|_| n.text().trim() == href) {
+                return vec![C::T(format!("#{}", &c[1]))];
             }
         }
         "a" if has("IssueLabel") || has("issue-link") => {
@@ -420,13 +451,19 @@ fn cases(dir: &Path) -> Vec<Case> {
             add(format!("probes/{base}"), p.clone(), gh.join(format!("probes/{base}.gfm.html")), Mode::Comment, no_ctx);
         }
     }
+    // The research kitchen-sink document in comment context (API `mode=gfm` + context).
+    add("test.md (api_gfm_ctx)".into(), gh.join("test.md"), gh.join("api_gfm_ctx.html"), Mode::Comment, with_ctx);
+    add("test.md (api_gfm)".into(), gh.join("test.md"), gh.join("api_gfm.html"), Mode::Comment, no_ctx);
     out
 }
 
-/// Probes whose oracle is known to differ for documented reasons (GH §8.6 "do not emulate"
-/// GitHub's double escaping in math; highlight-only probes need the highlight module; the
-/// API without context highlights mermaid instead of enriching it).
-const KNOWN_PROBE_RESIDUALS: &[&str] = &["probes/math", "probes/math3", "probes/langs", "probes/langs2", "probes/multiline"];
+/// Probes whose oracle is known to differ for documented reasons: highlight-only probes
+/// need the highlight module (tree-sitter languages drop trailing blank lines from TOKENS).
+const KNOWN_PROBE_RESIDUALS: &[&str] = &["probes/langs2"];
+
+/// Oracles showing GitHub's double escaping around math (`$x<y$` -> `$x&amp;lt;y$`), which we
+/// deliberately do not copy (GH §8.6); undone before comparing.
+const DOUBLE_ESCAPED: &[&str] = &["probes/math", "probes/math3"];
 
 #[test]
 fn github_golden() {
@@ -445,6 +482,11 @@ fn github_golden() {
         opts.bundle_url = BUNDLE.into();
         opts.sourcepos = true;
         let ours = github::render(&src, &opts);
+        let oracle = if DOUBLE_ESCAPED.contains(&case.name.as_str()) {
+            oracle.replace("&amp;amp;", "&amp;").replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
+        } else {
+            oracle
+        };
         let theirs = canon_html(article(&oracle), case.norm);
         let mine = canon_html(&ours.html, case.norm);
         total += 1;
