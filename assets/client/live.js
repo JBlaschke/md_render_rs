@@ -55,12 +55,6 @@
   const activeErrors = new Set(); // slots whose banner is an error
   let statusDot = null;
 
-  if (root()) {
-    init();
-  } else {
-    document.addEventListener('DOMContentLoaded', init);
-  }
-
   // ---------------------------------------------------------------------------------------
   // Setup
 
@@ -390,13 +384,15 @@
     if (y <= 0) return { top: true };
     const max = maxScroll();
     if (max > 0 && y >= max - BOTTOM_SLACK_PX) return { bottom: true };
-    // The first top-level block reaching below the top of the viewport.
+    // The first top-level block reaching below the top of the viewport. Reconciliation
+    // usually keeps that very node (or at least its predecessor), which is the most precise
+    // anchor; its source line is the fallback (and what survives a page reload).
     const blocks = container.children;
     for (let i = 0; i < blocks.length; i++) {
       const r = blocks[i].getBoundingClientRect();
       if (r.bottom > 0) {
         const line = startLine(blocks[i]);
-        if (line !== null) return { line, offset: r.top };
+        if (line !== null) return { el: blocks[i], prev: blocks[i].previousElementSibling, line, offset: r.top };
         break;
       }
     }
@@ -420,7 +416,13 @@
     }
     let target = null;
     let offset = 0;
-    if (typeof a.line === 'number') {
+    if (a.el && a.el.parentNode === container) {
+      target = a.el; // kept by the reconciliation
+      offset = a.offset;
+    } else if (a.prev && a.prev.parentNode === container) {
+      target = a.prev.nextElementSibling || a.prev; // the anchor block itself was edited
+      offset = a.offset;
+    } else if (typeof a.line === 'number') {
       // The block starting at that line, else the nearest one before it.
       let best = -1;
       const blocks = container.children;
@@ -477,12 +479,27 @@
     try {
       const last = Number(sessionStorage.getItem(RELOAD_KEY + state.doc)) || 0;
       if (Date.now() - last < 5000) {
-        if (newServerId) state.serverId = newServerId;
+        // Reloading again would loop: adopt the new server instead. Its versions restart
+        // at 1, so forget ours and fetch its current state.
+        if (newServerId) {
+          state.serverId = newServerId;
+          state.version = 0;
+          state.contentVersion = 0;
+          state.errorVersion = 0;
+          state.lastResync = 0;
+          resync();
+        }
         return;
       }
       sessionStorage.setItem(RELOAD_KEY + state.doc, String(Date.now()));
       const container = root();
-      if (container) sessionStorage.setItem(ANCHOR_KEY + state.doc, JSON.stringify(captureAnchor(container)));
+      if (container) {
+        // Elements do not survive the reload: keep the source line (or the fallbacks).
+        const a = captureAnchor(container);
+        delete a.el;
+        delete a.prev;
+        sessionStorage.setItem(ANCHOR_KEY + state.doc, JSON.stringify(a));
+      }
     } catch (e) {
       // Storage unavailable: reload without remembering the position.
     }
@@ -608,11 +625,16 @@
     const style = document.createElement('style');
     style.id = 'mdr-live-style';
     style.textContent = [
-      '.mdr-live-banner{display:flex;align-items:flex-start;gap:8px;margin:0 0 16px;padding:8px 12px;',
-      'border:1px solid;border-radius:6px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",',
-      'Helvetica,Arial,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}',
-      '.mdr-live-banner-error{background:rgba(248,81,73,.12);border-color:rgba(248,81,73,.45)}',
-      '.mdr-live-banner-warning{background:rgba(210,153,34,.14);border-color:rgba(210,153,34,.45)}',
+      // Sticky, so it is seen wherever the reader is; opaque system colours (a matching
+      // pair from the page's color-scheme) under a tint, so it reads in light and dark.
+      '.mdr-live-banner{position:sticky;top:8px;z-index:100;display:flex;align-items:flex-start;gap:8px;',
+      'margin:0 0 16px;padding:8px 12px;border:1px solid;border-radius:6px;color:CanvasText;',
+      'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;',
+      'white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 1px 3px rgba(0,0,0,.12)}',
+      '.mdr-live-banner-error{background:linear-gradient(rgba(248,81,73,.15),rgba(248,81,73,.15)),Canvas;',
+      'border-color:rgba(248,81,73,.5)}',
+      '.mdr-live-banner-warning{background:linear-gradient(rgba(210,153,34,.18),rgba(210,153,34,.18)),Canvas;',
+      'border-color:rgba(210,153,34,.5)}',
       '.mdr-live-banner-text{flex:1}',
       '.mdr-live-banner-close{flex:none;border:0;background:none;color:inherit;font-size:18px;',
       'line-height:1;cursor:pointer;padding:0 2px;opacity:.7}',
@@ -643,7 +665,7 @@
       close.addEventListener('click', () => clearBanner(slot));
       b.appendChild(text);
       b.appendChild(close);
-      container.parentNode.insertBefore(b, container);
+      keepScroll(container, () => container.parentNode.insertBefore(b, container));
       banners.set(slot, b);
     }
     b.firstChild.textContent = message;
@@ -656,11 +678,20 @@
   function clearBanner(slot) {
     const b = banners.get(slot);
     if (b) {
-      b.remove();
+      const container = root();
+      if (container) keepScroll(container, () => b.remove());
+      else b.remove();
       banners.delete(slot);
     }
     activeErrors.delete(slot);
     updateTitle();
+  }
+
+  // Run a layout-changing DOM operation above the content without moving what is read.
+  function keepScroll(container, change) {
+    const anchor = captureAnchor(container);
+    change();
+    restoreAnchor(container, anchor);
   }
 
   function updateTitle() {
@@ -684,5 +715,12 @@
     }
     statusDot.setAttribute('data-state', name);
     statusDot.title = label;
+  }
+
+  // Start last: every `const` above must be initialised before `init` runs.
+  if (root()) {
+    init();
+  } else {
+    document.addEventListener('DOMContentLoaded', init);
   }
 })();
