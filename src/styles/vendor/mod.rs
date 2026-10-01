@@ -117,6 +117,10 @@ pub fn vendor_with(opts: &VendorOptions, fetcher: &dyn Fetch) -> anyhow::Result<
     if opts.output.as_os_str().is_empty() {
         bail!("no output file given for the style bundle");
     }
+    // Refuse an output file we would not overwrite before downloading anything (write_bundle
+    // checks again, in case the file changed during the downloads). Its warnings are printed
+    // there, once.
+    existing_source(&opts.output, &Progress { quiet: true })?;
 
     let mut outputs = Vec::new();
     for &flavor in &flavors {
@@ -685,9 +689,18 @@ fn fetch_all(fetcher: &dyn Fetch, urls: &[&str]) -> Vec<anyhow::Result<Response>
 // ------------------------------------------------------------------------------------------------
 // Writing the bundle
 
+/// Whether `md-render vendor -o output` would accept `output` (see [`existing_source`]): the
+/// file is absent, an md-render bundle this version can update, or an unreadable bundle at the
+/// default location. [`crate::styles::load_or_fallback`] uses it so that the command it suggests
+/// for an unusable bundle actually works.
+pub(crate) fn accepts_output(output: &Path) -> bool {
+    existing_source(output, &Progress { quiet: true }).is_ok()
+}
+
 /// Decide whether the existing `output` can be read-modify-written. Refuses to overwrite files
-/// that are not md-render bundles (a typo in `-o` must not destroy unrelated data), except a
-/// corrupt bundle at the default cache location, which is simply replaced.
+/// that are not md-render bundles (a typo in `-o` must not destroy unrelated data) and bundles
+/// written by a newer md-render, except a corrupt bundle at the default cache location, which is
+/// simply replaced.
 fn existing_source<'p>(output: &'p Path, progress: &Progress) -> anyhow::Result<Option<&'p Path>> {
     let meta = match std::fs::metadata(output) {
         Ok(m) => m,
@@ -698,7 +711,25 @@ fn existing_source<'p>(output: &'p Path, progress: &Progress) -> anyhow::Result<
         bail!("{} exists and is not a regular file", output.display());
     }
     match tarfs::InMemoryFileSystem::open(output) {
-        Ok(fs) if fs.contains(MANIFEST_PATH) || fs.is_empty() => Ok(Some(output)),
+        Ok(fs) if fs.is_empty() => Ok(Some(output)),
+        Ok(fs) if fs.contains(MANIFEST_PATH) => {
+            /// Just the schema, which every version's manifest has.
+            #[derive(serde::Deserialize)]
+            struct Schema {
+                schema: u32,
+            }
+            let raw = fs.get(MANIFEST_PATH).unwrap_or_default();
+            match serde_json::from_slice::<Schema>(raw) {
+                Ok(m) if m.schema > SCHEMA => bail!(
+                    "{} was written by a newer md-render (bundle schema {}, this version writes \
+                     schema {SCHEMA}); refusing to downgrade it",
+                    output.display(),
+                    m.schema
+                ),
+                // Older or unreadable manifests are replaced (see existing_manifest).
+                _ => Ok(Some(output)),
+            }
+        }
         Ok(_) => bail!(
             "refusing to overwrite {}: it is a tar.gz archive but not an md-render style bundle \
              (no {MANIFEST_PATH}); delete it or choose another output file",

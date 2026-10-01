@@ -411,13 +411,23 @@ pub fn load_or_fallback(path: &Path) -> (Bundle, Option<String>) {
                 vendor_command(None, path)
             )),
         ),
-        Err(e) => (
-            Bundle::fallback(),
-            Some(format!(
-                "{e:#}; using minimal fallback styles (run `{}` to download them again)",
-                vendor_command(None, path)
-            )),
-        ),
+        Err(e) => {
+            // Suggest only what `md-render vendor` will do: it refuses to overwrite a file it
+            // cannot read as an md-render bundle, except at the default location.
+            let cmd = vendor_command(None, path);
+            let fix = if vendor::accepts_output(path) {
+                format!("run `{cmd}` to download them again")
+            } else if path.is_file() {
+                format!("delete it, then run `{cmd}` to download them again")
+            } else {
+                // A directory, or a path we cannot even stat: deleting it is not the answer.
+                "choose another bundle file; `md-render vendor -o FILE` creates one".to_owned()
+            };
+            (
+                Bundle::fallback(),
+                Some(format!("{e:#}; using minimal fallback styles ({fix})")),
+            )
+        }
     }
 }
 
