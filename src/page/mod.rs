@@ -180,14 +180,18 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     }
     head.push_str(&format!("<title>{}</title>\n", html::text(input.title)));
     assets.favicon(&mut head)?;
+    // `data-mdr-style="bundle"` marks the links live.js re-requests on a `styles` event.
     const BUNDLE_ATTR: &str = " data-mdr-style=\"bundle\"";
-    match &selection {
-        Some(sel) => {
-            for s in &sel.sheets {
-                assets.stylesheet(&mut head, s.path, s.media.as_deref(), BUNDLE_ATTR)?;
-            }
+    let mut linked = 0usize;
+    for s in selection.iter().flat_map(|sel| &sel.sheets) {
+        if assets.stylesheet(&mut head, s.path, s.media.as_deref(), BUNDLE_ATTR)? {
+            linked += 1;
         }
-        None => assets.embedded_stylesheet(&mut head, &format!("fallback-{}.css", input.flavor), BUNDLE_ATTR)?,
+    }
+    if linked == 0 {
+        // The flavor is missing from the bundle, or its manifest lists no readable stylesheet:
+        // the embedded fallback keeps the page readable (DESIGN D11).
+        assets.embedded_stylesheet(&mut head, &format!("fallback-{}.css", input.flavor), BUNDLE_ATTR)?;
     }
 
     // Client libraries: only what the content needs; a live page may gain math or diagrams

@@ -211,6 +211,7 @@
     'mathchoice', 'unicode', 'mmlToken'];
   var GENERIC_MATH_ERROR = 'Unable to render expression.';
   var MAX_BRACES = 1000;
+  var MAX_TOTAL_BRACES = 2000;
   // Largest allowed explicit spacing per unit (DoS guard for huge \hspace etc.).
   var MAX_LENGTH = { em: 2, pt: 20, pc: 0.75, ex: 2.5 };
   var SPACING_RE = /\\(hskip|hspace|raise|mspace|mskip|kern|lower|above|mkern|moveleft|moveright|rule|Rule|space|Space)((?:\{\s*-?\d+(?:\.\d*)?\s*(?:em|pt|pc|ex)\s*\})+)/g;
@@ -361,9 +362,24 @@
     el.replaceChildren.apply(el, nodes);
   }
 
+  // github.com's DoS guard: at most MAX_BRACES per expression and MAX_TOTAL_BRACES over all
+  // math on the page (counted as `split('{').length`, like the math-renderer element does).
+  var braceUsage = new Map();
+
+  function totalBraces() {
+    var total = 0;
+    braceUsage.forEach(function (count, el) {
+      if (el.isConnected) total += count;
+      else braceUsage.delete(el); // removed by a live update
+    });
+    return total;
+  }
+
   function renderMathElement(el) {
     var raw = el.textContent || '';
-    if (raw.split('{').length - 1 > MAX_BRACES) {
+    var braces = raw.split('{').length;
+    braceUsage.set(el, braces);
+    if (braces > MAX_BRACES || totalBraces() > MAX_TOTAL_BRACES) {
       showMathError(el, GENERIC_MATH_ERROR, raw);
       return;
     }

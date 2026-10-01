@@ -86,6 +86,14 @@ fn is_font(mime: &str, path: &str) -> bool {
         || path.rsplit_once('.').is_some_and(|(_, e)| ["woff", "woff2", "ttf", "otf", "eot"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// For a legacy web-font file (`.woff`, `.ttf`, `.otf`, `.eot`), the bundle path of the `.woff2`
+/// file with the same stem; `None` for anything else.
+fn woff2_sibling(path: &str) -> Option<String> {
+    let (stem, ext) = path.rsplit_once('.')?;
+    let legacy = ["woff", "ttf", "otf", "eot"].iter().any(|e| ext.eq_ignore_ascii_case(e));
+    (legacy && !stem.is_empty()).then(|| format!("{stem}.woff2"))
+}
+
 fn data_uri(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
@@ -218,9 +226,26 @@ impl<'a> Assets<'a> {
     }
 
     fn inline_css_at(&mut self, path: &str, text: &str, depth: usize) -> String {
+        // Bundle files this stylesheet references, to spot `@font-face` source lists that offer
+        // a woff2 next to legacy formats (KaTeX: woff2, woff, ttf for every face).
+        let referenced: HashSet<String> = css::references(text)
+            .into_iter()
+            .filter_map(|(_, r)| match css::resolve(path, &r) {
+                Target::Bundle { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect();
         css::rewrite(text, |kind, reference| match css::resolve(path, reference) {
             Target::Keep => None,
             Target::Bundle { path: dep, fragment } => {
+                // Every browser that runs the client scripts supports woff2 and picks the first
+                // usable `src`, so inlining the legacy twins would only bloat the export.
+                if let Some(woff2) = woff2_sibling(&dep)
+                    && referenced.contains(&woff2)
+                    && self.has(&woff2)
+                {
+                    return Some(EMPTY_DATA_URI.to_owned());
+                }
                 let uri = self.data_uri_at(&dep, depth);
                 Some(match (uri, fragment) {
                     (Some(uri), Some(f)) if kind == RefKind::Url => format!("{uri}#{f}"),
@@ -238,13 +263,14 @@ impl<'a> Assets<'a> {
     }
 
     /// Emit a bundle stylesheet: `<link>` (Server / Directory) or `<style>` (Inline).
-    /// Missing files are skipped. `attrs` are extra attributes (already escaped, leading space).
-    pub(crate) fn stylesheet(&mut self, out: &mut String, path: &str, media: Option<&str>, attrs: &str) -> anyhow::Result<()> {
+    /// Missing files are skipped; returns whether anything was written. `attrs` are extra
+    /// attributes (already escaped, leading space).
+    pub(crate) fn stylesheet(&mut self, out: &mut String, path: &str, media: Option<&str>, attrs: &str) -> anyhow::Result<bool> {
         let media_attr = media.filter(|m| !m.is_empty()).map(|m| format!(" media=\"{}\"", html::attr(m))).unwrap_or_default();
         if self.is_inline() {
             let Some(bytes) = self.bundle.read(path) else {
                 tracing::warn!(path, "stylesheet missing from bundle; skipped");
-                return Ok(());
+                return Ok(false);
             };
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let inlined = self.inline_css(path, &text);
@@ -253,12 +279,14 @@ impl<'a> Assets<'a> {
                 html::attr(path),
                 html::inline_style(&inlined)
             ));
+            Ok(true)
         } else if let Some(url) = self.bundle_url(path)? {
             out.push_str(&format!("<link rel=\"stylesheet\" href=\"{}\"{media_attr}{attrs}>\n", html::attr(&url)));
+            Ok(true)
         } else {
             tracing::warn!(path, "stylesheet missing from bundle; skipped");
+            Ok(false)
         }
-        Ok(())
     }
 
     /// Emit an embedded stylesheet from `crate::assets` (the fallback CSS when the bundle has

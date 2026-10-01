@@ -370,6 +370,10 @@
         var target = this.parentNode && this.parentNode.querySelector('pre');
         if (!target || this.closest('.md-suggestion')) return;
         if (!target.id) target.id = 'code-' + (++codeSeq);
+        // Math rendering replaces a ```math <pre> by the KaTeX output; keep its source so the
+        // button still copies the TeX (a hidden mermaid <pre> stays in place and is re-read).
+        var source = target.textContent;
+        var self = this;
         var button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-default btn-md gl-button btn-icon has-tooltip';
@@ -379,9 +383,8 @@
         button.setAttribute('data-clipboard-target', 'pre#' + target.id);
         button.innerHTML = iconMarkup();
         button.addEventListener('click', function () {
-          // The math/mermaid source may have been replaced; copy the original text when known.
-          var code = target.isConnected ? target : null;
-          var text = code ? code.textContent : '';
+          var pre = self.parentNode && self.parentNode.querySelector('pre');
+          var text = pre ? pre.textContent : source;
           writeClipboard(text).then(function () {
             button.setAttribute('title', 'Copied');
             button.setAttribute('aria-label', 'Copied');
