@@ -690,7 +690,8 @@ impl ApiRenderer {
                 };
                 let html = self.fetch(body, opts)?;
                 let seed = rid_seed(opts.source_path.as_deref());
-                let mut rendered = postprocess_github(&html, opts.mode, &seed);
+                let hints = SourceHints::from_markdown(body);
+                let mut rendered = postprocess_github(&html, opts.mode, &seed, &hints);
                 if let Some(front) = front {
                     let mut fm_opts = opts.clone();
                     fm_opts.sourcepos = false;
@@ -940,6 +941,132 @@ fn split_front_matter(text: &str) -> (Option<&str>, &str) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Source hints: what the API HTML lost but the Markdown still has
+// ------------------------------------------------------------------------------------------------
+
+/// Facts taken from the Markdown source that `POST /markdown` output no longer carries.
+///
+/// Each hint is matched to its DOM counterpart individually (by comparing contents), so a hint
+/// that cannot be placed is ignored and the DOM-derived value is used instead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceHints {
+    /// Heading texts in document order as GitHub's slugger sees them (GH §6.2 "heading text
+    /// source"): emoji shortcodes literal (`:rocket:`), image alt text skipped, footnote numbers
+    /// and `$math$` included; raw HTML headings with their exact text.
+    headings: Vec<String>,
+    /// Code block contents in document order (the API drops leading blank lines, the clipboard
+    /// text of the README view keeps them, GH §2.4).
+    code: Vec<String>,
+}
+
+impl SourceHints {
+    /// Collect the hints of `markdown` (front matter already removed).
+    pub(crate) fn from_markdown(markdown: &str) -> SourceHints {
+        use comrak::nodes::NodeValue;
+        let arena = comrak::Arena::new();
+        let mut options = comrak::Options::default();
+        let ext = &mut options.extension;
+        ext.strikethrough = true;
+        ext.table = true;
+        ext.autolink = true;
+        ext.tasklist = true;
+        ext.footnotes = true;
+        ext.math_dollars = true;
+        ext.math_code = true;
+        ext.shortcodes = true;
+        let root = comrak::parse_document(&arena, markdown, &options);
+        let mut hints = SourceHints::default();
+        for node in root.descendants() {
+            match &node.data().value {
+                NodeValue::Heading(_) => {
+                    let mut text = String::new();
+                    heading_source_text(node, &mut text);
+                    hints.headings.push(text);
+                }
+                NodeValue::HtmlBlock(block) => {
+                    let fragment = Document::fragment(block.literal.as_str());
+                    for h in fragment.select("h1, h2, h3, h4, h5, h6").nodes().iter() {
+                        hints.headings.push(h.text().to_string());
+                    }
+                }
+                NodeValue::CodeBlock(block) => hints.code.push(block.literal.clone()),
+                _ => {}
+            }
+        }
+        hints
+    }
+}
+
+/// Append the slug source text of a heading's inlines (GH §6.2).
+fn heading_source_text<'a>(node: &'a comrak::nodes::AstNode<'a>, out: &mut String) {
+    use comrak::nodes::NodeValue;
+    for child in node.children() {
+        match &child.data().value {
+            NodeValue::Text(t) => out.push_str(t),
+            NodeValue::Code(c) => out.push_str(&c.literal),
+            NodeValue::ShortCode(sc) => {
+                out.push(':');
+                out.push_str(&sc.code);
+                out.push(':');
+            }
+            NodeValue::FootnoteReference(r) => out.push_str(&r.ix.to_string()),
+            NodeValue::Math(m) => {
+                let fence = if m.display_math { "$$" } else { "$" };
+                out.push_str(fence);
+                out.push_str(&m.literal);
+                out.push_str(fence);
+            }
+            NodeValue::Image(_) | NodeValue::HtmlInline(_) | NodeValue::SoftBreak | NodeValue::LineBreak => {}
+            _ => heading_source_text(child, out),
+        }
+    }
+}
+
+/// Comparison key that is equal for a heading's source text and its rendered DOM text: emoji
+/// shortcodes and every non-alphanumeric character (emoji, punctuation, spaces) removed.
+fn heading_key(text: &str) -> String {
+    static SHORTCODE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = SHORTCODE.get_or_init(|| Regex::new(r":[a-z0-9_+-]+:").expect("valid shortcode regex"));
+    re.replace_all(text, "").chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Hands out hints in document order to the DOM items that match them.
+struct HintCursor<'h> {
+    hints: &'h [String],
+    next: usize,
+}
+
+impl<'h> HintCursor<'h> {
+    fn new(hints: &'h [String]) -> Self {
+        HintCursor { hints, next: 0 }
+    }
+
+    /// The first unused hint (from the current position) for which `matches` holds; hints that
+    /// are skipped over stay unused. With `adjacent_only`, only the hint at the current position
+    /// is considered.
+    fn take(&mut self, adjacent_only: bool, matches: impl Fn(&str) -> bool) -> Option<&'h str> {
+        let end = if adjacent_only { (self.next + 1).min(self.hints.len()) } else { self.hints.len() };
+        let found = (self.next..end).find(|&i| matches(&self.hints[i]))?;
+        self.next = found + 1;
+        Some(&self.hints[found])
+    }
+
+    /// The source text of a DOM heading whose text is `dom_text`.
+    fn heading(&mut self, dom_text: &str) -> Option<&'h str> {
+        let key = heading_key(dom_text);
+        // An empty key (`# ???`, emoji only) would match any such heading: only accept the
+        // next hint in order then.
+        self.take(key.is_empty(), |h| heading_key(h) == key)
+    }
+
+    /// The source literal of a code block whose DOM text is `dom_text`.
+    fn code(&mut self, dom_text: &str) -> Option<&'h str> {
+        let want = dom_text.trim_matches(['\n', '\r']);
+        self.take(false, |literal| literal.trim_matches(['\n', '\r']) == want)
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 // Post-processing (D15)
 // ------------------------------------------------------------------------------------------------
 
@@ -974,12 +1101,44 @@ fn escape_attr(s: &str) -> String {
 }
 
 /// Parse an HTML fragment for post-processing.
+///
+/// The HTML parser drops a newline that directly follows a `<pre>` start tag (HTML §13.2.6.4.7),
+/// but GitHub's clipboard text keeps it (a code block that starts with a blank line). Such `pre`s
+/// are marked with [`PRE_LF_ATTR`] so the clipboard text can be rebuilt exactly.
 fn parse_fragment(html: &str) -> Document {
-    Document::fragment(html)
+    static PRE_START: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = PRE_START.get_or_init(|| Regex::new(r"(?i)<pre\b[^>]*>(\r?\n)?").expect("valid pre regex"));
+    let leading_lf: Vec<bool> = re.captures_iter(html).map(|c| c.get(1).is_some()).collect();
+    let doc = Document::fragment(html);
+    if leading_lf.iter().any(|&lf| lf) {
+        let pres = doc.select("pre");
+        let nodes = pres.nodes();
+        // Only trust the mapping when every `<pre` tag became exactly one element.
+        if nodes.len() == leading_lf.len() {
+            for (pre, &lf) in nodes.iter().zip(&leading_lf) {
+                if lf {
+                    pre.set_attr(PRE_LF_ATTR, "");
+                }
+            }
+        }
+    }
+    doc
 }
 
-/// Serialize a fragment parsed with [`parse_fragment`].
+/// Temporary marker: this `pre`'s text started with a newline in the API HTML.
+const PRE_LF_ATTR: &str = "data-mdr-pre-lf";
+
+/// Text of a `pre` as the API emitted it (see [`parse_fragment`]).
+fn pre_text(pre: &NodeRef) -> String {
+    let text = pre.text().to_string();
+    if pre.has_attr(PRE_LF_ATTR) { format!("\n{text}") } else { text }
+}
+
+/// Serialize a fragment parsed with [`parse_fragment`] (dropping its temporary markers).
 fn serialize_fragment(doc: &Document) -> String {
+    for pre in doc.select("pre[data-mdr-pre-lf]").nodes().iter() {
+        pre.remove_attr(PRE_LF_ATTR);
+    }
     doc.html_root().inner_html().to_string()
 }
 
@@ -1114,10 +1273,15 @@ impl Slugger {
     }
 }
 
-/// Post-process `POST /markdown` HTML (D15, GH §2.5, §9).
-pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str) -> Rendered {
+/// Post-process `POST /markdown` HTML (D15, GH §2.5, §9). `hints` come from the Markdown that
+/// was sent ([`SourceHints::default`] when unknown).
+pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str, hints: &SourceHints) -> Rendered {
     let html = stabilize_run_id(html, rid_seed);
     let doc = parse_fragment(&html);
+
+    // `mode=gfm` without `context` emits no `dir`; the README and comment views have it on these
+    // blocks (task lists excepted). Runs before any wrapper of ours is added.
+    set_direction(&doc);
 
     // Anchor icons: the API's empty `span.octicon-link` renders nothing (GH §5.1).
     for span in doc.select("span.octicon-link").nodes().iter() {
@@ -1146,8 +1310,10 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str) -> Rend
     }
 
     // Mermaid: plain highlighted blocks (no context) become enrichment sections (GH §8.7).
+    let mut mermaid_hints = HintCursor::new(&hints.code);
     for div in doc.select("div.highlight-source-mermaid").nodes().iter() {
-        let mut code = div.text().to_string();
+        let dom = code_text(div);
+        let mut code = mermaid_hints.code(&dom).map_or(dom, str::to_owned);
         if !code.ends_with('\n') {
             code.push('\n');
         }
@@ -1157,7 +1323,7 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str) -> Rend
         if has_ancestor(pre, |a| a.has_class("render-plaintext-hidden")) {
             continue;
         }
-        let code = pre.text().to_string();
+        let code = pre_text(pre);
         pre.replace_with_html(mermaid_section(&code));
     }
     for section in doc.select("section[data-identity]").nodes().iter() {
@@ -1169,21 +1335,32 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str) -> Rend
     }
 
     if mode == Mode::Readme {
-        readme_headings(&doc);
-        // README view: no `notranslate` on code, none on `pre` inside `.highlight`, no
-        // `role="table"` (GH §2.2, §9.A).
+        readme_headings(&doc, hints);
+        // README view: no `notranslate` on code, none on `pre` inside `.highlight` or in an
+        // enrichment's plain-text copy, no `role="table"` (GH §2.2, §9.A).
         for code in doc.select("code.notranslate").nodes().iter() {
             remove_class(code, "notranslate");
         }
-        for pre in doc.select("div.highlight > pre.notranslate").nodes().iter() {
-            remove_class(pre, "notranslate");
+        for pre in doc.select("pre.notranslate").nodes().iter() {
+            // Kept only on plain code blocks (`pre > code`); raw HTML `<pre>`s lose it too.
+            let in_code_view = has_ancestor(pre, |a| a.has_class("highlight") || a.has_class("render-plaintext-hidden"));
+            if in_code_view || !has_code_child(pre) {
+                remove_class(pre, "notranslate");
+            }
+        }
+        // Absolute `github.com/O/R/blob/…` image URLs are shown through `/raw/` (GH §2.3).
+        for img in doc.select("img[src]").nodes().iter() {
+            rewrite_blob_url(img, "src");
+        }
+        for source in doc.select("source[srcset]").nodes().iter() {
+            rewrite_blob_url(source, "srcset");
         }
         for table in doc.select(r#"table[role="table"]"#).nodes().iter() {
             table.remove_attr("role");
         }
     }
 
-    clipboard_wrappers(&doc);
+    clipboard_wrappers(&doc, hints);
 
     set_mdr_keys(
         &doc,
@@ -1197,9 +1374,53 @@ pub(crate) fn postprocess_github(html: &str, mode: Mode, rid_seed: &str) -> Rend
     Rendered { html: serialize_fragment(&doc), title, features, warnings: Vec::new() }
 }
 
-/// Wrap every heading as the README view does (GH §6.1).
-fn readme_headings(doc: &Document) {
+/// `dir="auto"` where GitHub's views put it (GH §9 `D`): every `p`, `h1`–`h6`, `div`, `ul` and
+/// `ol`, except task lists, empty headings (`<h1></h1>`) and the clipboard wrappers added later
+/// (GH §2.4); an existing `dir` is kept.
+fn set_direction(doc: &Document) {
+    for node in doc.select("p, h1, h2, h3, h4, h5, h6, div, ul, ol").nodes().iter() {
+        let empty_heading = node.is("h1, h2, h3, h4, h5, h6") && node.inner_html().trim().is_empty();
+        let excluded = node.has_class("contains-task-list") || node.has_class("snippet-clipboard-content");
+        if !node.has_attr("dir") && !excluded && !empty_heading {
+            node.set_attr("dir", "auto");
+        }
+    }
+}
+
+/// Whether `pre` holds a code block (`pre > code`) rather than raw HTML preformatted text.
+fn has_code_child(pre: &NodeRef) -> bool {
+    pre.element_children().iter().any(|c| c.has_name("code"))
+}
+
+/// `https://github.com/O/R/blob/REF/x.png` → `https://github.com/O/R/raw/REF/x.png` in `attr`.
+fn rewrite_blob_url(node: &NodeRef, attr: &str) {
+    static BLOB: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = BLOB.get_or_init(|| {
+        Regex::new(r"(https://github\.com/[^/\s]+/[^/\s]+)/blob/").expect("valid blob-url regex")
+    });
+    if let Some(value) = node.attr(attr) {
+        if let std::borrow::Cow::Owned(rewritten) = re.replace_all(&value, "$1/raw/") {
+            node.set_attr(attr, &rewritten);
+        }
+    }
+}
+
+/// Text of a code container (`div.highlight` or `pre`) as the API emitted it.
+fn code_text(node: &NodeRef) -> String {
+    if node.has_name("pre") {
+        return pre_text(node);
+    }
+    match node.descendants_it().find(|n| n.has_name("pre")) {
+        Some(pre) => pre_text(&pre),
+        None => node.text().to_string(),
+    }
+}
+
+/// Wrap every heading as the README view does (GH §6.1). Slug and label come from the source
+/// text when a heading hint matches (emoji shortcodes, raw HTML headings), else from the DOM.
+fn readme_headings(doc: &Document, hints: &SourceHints) {
     let mut slugger = Slugger::default();
+    let mut cursor = HintCursor::new(&hints.headings);
     for h in doc.select("h1, h2, h3, h4, h5, h6").nodes().iter() {
         if h.parent().is_some_and(|p| p.has_class("markdown-heading")) {
             continue;
@@ -1208,57 +1429,75 @@ fn readme_headings(doc: &Document) {
             continue;
         }
         if h.inner_html().trim().is_empty() {
+            // An empty heading (`#` alone) gets no wrapper; consume its (empty) hint.
+            cursor.take(true, |hint| hint.trim().is_empty());
             continue;
         }
-        let text = h.text().to_string();
+        let dom_text = h.text().to_string();
+        let text = cursor.heading(&dom_text).map_or(dom_text, str::to_owned);
         let slug = slugger.slug(&text);
+        // GitHub's attribute order: existing attributes, then `class`, then `dir` (GH §6.1).
+        let dir = h.attr("dir").map_or_else(|| "auto".to_owned(), |d| d.to_string());
+        h.remove_attr("dir");
         add_classes(h, &["heading-element"]);
-        if !h.has_attr("dir") {
-            h.set_attr("dir", "auto");
-        }
+        h.set_attr("dir", &dir);
         let (id, href) = if slug.is_empty() {
             (String::new(), "#".to_owned())
         } else {
             (format!("user-content-{slug}"), format!("#{slug}"))
         };
+        // The label keeps the heading text as is, surrounding whitespace included (GH §6.3).
         let wrapper = format!(
             r#"<div class="markdown-heading" dir="auto">{}<a id="{}" class="anchor" aria-label="Permalink: {}" href="{}">{OCTICON_LINK}</a></div>"#,
             h.html(),
             escape_attr(&id),
-            escape_attr(text.trim()),
+            escape_attr(&text),
             escape_attr(&href),
         );
         h.replace_with_html(wrapper);
     }
 }
 
+/// Clipboard text: the source literal when a code hint matches, else the DOM text; without the
+/// final newline (GH §9 `RAW`).
+fn clipboard_text(cursor: &mut HintCursor<'_>, node: &NodeRef) -> String {
+    let dom = code_text(node);
+    let mut raw = cursor.code(&dom).map_or(dom, str::to_owned);
+    if raw.ends_with('\n') {
+        raw.pop();
+    }
+    raw
+}
+
 /// Clipboard wrappers as stored by GitHub (GH §2.4, §5.3).
-fn clipboard_wrappers(doc: &Document) {
+fn clipboard_wrappers(doc: &Document, hints: &SourceHints) {
+    let mut cursor = HintCursor::new(&hints.code);
     for div in doc.select("div.highlight").nodes().iter() {
         if div.has_attr("data-snippet-clipboard-copy-content") {
             continue;
         }
-        let raw = div.text().to_string();
-        let raw = raw.strip_suffix('\n').unwrap_or(&raw).to_owned();
+        let raw = clipboard_text(&mut cursor, div);
         add_classes(div, &["notranslate", "position-relative", "overflow-auto"]);
         div.set_attr("data-snippet-clipboard-copy-content", &raw);
     }
+    let mut cursor = HintCursor::new(&hints.code);
     for pre in doc.select("pre").nodes().iter() {
-        let skip = has_ancestor(pre, |a| {
-            a.has_class("highlight")
-                || a.has_class("snippet-clipboard-content")
-                || a.has_class("render-plaintext-hidden")
-                || a.has_class("js-render-needs-enrichment")
-                || a.has_name("math-renderer")
-        });
+        // Only code blocks get a copy button; raw HTML `<pre>` text does not.
+        let skip = !has_code_child(pre)
+            || has_ancestor(pre, |a| {
+                a.has_class("highlight")
+                    || a.has_class("snippet-clipboard-content")
+                    || a.has_class("render-plaintext-hidden")
+                    || a.has_class("js-render-needs-enrichment")
+                    || a.has_name("math-renderer")
+            });
         if skip {
             continue;
         }
-        let raw = pre.text().to_string();
-        let raw = raw.strip_suffix('\n').unwrap_or(&raw);
+        let raw = clipboard_text(&mut cursor, pre);
         let wrapper = format!(
             r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="{}">{}</div>"#,
-            escape_attr(raw),
+            escape_attr(&raw),
             pre.html()
         );
         pre.replace_with_html(wrapper);
@@ -1279,12 +1518,17 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
         }
     };
 
-    // Un-lazy images (what GitLab's lazy loader does client-side, GL §6.12).
+    // Un-lazy images: what GitLab's lazy loader does client-side (GL §6.12, §9): `src` from
+    // `data-src`, class `lazy` → `js-lazy-loaded` (no placeholder size/background), native
+    // `loading="lazy"`.
     for img in doc.select("img").nodes().iter() {
         if let Some(src) = img.attr("data-src").filter(|s| !s.is_empty()) {
             img.set_attr("src", &src);
             img.remove_attr("data-src");
-            remove_class(img, "lazy");
+            if img.has_class("lazy") {
+                remove_class(img, "lazy");
+                add_classes(img, &["js-lazy-loaded"]);
+            }
             if !img.has_attr("loading") {
                 img.set_attr("loading", "lazy");
             }
@@ -1437,12 +1681,12 @@ mod tests {
         let fake = Fake::with(vec![ok("<p>a</p>"), ok("<p>b</p>"), ok("<p>c</p>")]);
         let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone()).unwrap();
         let o = opts(Flavor::Github, Mode::Comment, None);
-        assert_eq!(r.render("t", &o).unwrap().html, "<p>a</p>");
-        assert_eq!(r.render("t", &o).unwrap().html, "<p>a</p>");
+        assert_eq!(r.render("t", &o).unwrap().html, "<p dir=\"auto\">a</p>");
+        assert_eq!(r.render("t", &o).unwrap().html, "<p dir=\"auto\">a</p>");
         assert_eq!(fake.requests().len(), 1);
         let o2 = opts(Flavor::Github, Mode::Comment, Some("o/r"));
-        assert_eq!(r.render("t", &o2).unwrap().html, "<p>b</p>");
-        assert_eq!(r.render("u", &o).unwrap().html, "<p>c</p>");
+        assert_eq!(r.render("t", &o2).unwrap().html, "<p dir=\"auto\">b</p>");
+        assert_eq!(r.render("u", &o).unwrap().html, "<p dir=\"auto\">c</p>");
         assert_eq!(fake.requests().len(), 3);
         assert_ne!(
             cache_key(Flavor::Github, Mode::Readme, None, "t"),
@@ -1653,19 +1897,19 @@ mod tests {
             "<section data-footnotes=\"\" class=\"footnotes\"><h2 id=\"footnote-label\" class=\"sr-only\">Footnotes</h2>\n<ol><li id=\"user-content-fn-1-0123456789abcdef0123456789abcdef\"><p>n</p></li></ol></section>\n",
             "<p><math-renderer class=\"js-inline-math\" style=\"display: inline-block\" data-run-id=\"0123456789abcdef0123456789abcdef\">$x$</math-renderer></p>\n",
         );
-        let out = postprocess_github(api, Mode::Readme, "path:/a/README.md");
+        let out = postprocess_github(api, Mode::Readme, "path:/a/README.md", &SourceHints::default());
         let html = &out.html;
         assert_eq!(out.title.as_deref(), Some("Title x"));
         assert!(html.contains(r##"<div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Title <code>x</code></h1><a id="user-content-title-x" class="anchor" aria-label="Permalink: Title x" href="#title-x"><svg data-component="Octicon" class="octicon octicon-link""##), "{html}");
         assert!(html.contains(r##"<h2 class="heading-element" dir="auto">Title</h2><a id="user-content-title" class="anchor" aria-label="Permalink: Title" href="#title">"##), "{html}");
-        assert!(html.contains(r##"<h2 id="user-content-raw" dir="auto" class="heading-element">Raw</h2><a id="user-content-raw" class="anchor""##), "{html}");
+        assert!(html.contains(r##"<h2 id="user-content-raw" class="heading-element" dir="auto">Raw</h2><a id="user-content-raw" class="anchor""##), "{html}");
         assert!(html.contains("<h3></h3>"), "{html}");
         assert!(html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##), "{html}");
-        assert!(html.contains(r#"<h2 id="footnote-label" class="sr-only">Footnotes</h2>"#), "{html}");
+        assert!(html.contains(r#"<h2 id="footnote-label" class="sr-only" dir="auto">Footnotes</h2>"#), "{html}");
         assert!(html.contains(r#"href="https://e.org/a.png"><img src="https://e.org/a.png" alt="A" style="max-width: 100%;">"#), "{html}");
         assert!(!html.contains("camo") && !html.contains("data-canonical-src"), "{html}");
         assert!(html.contains("<table><tbody><tr><td>c</td></tr></tbody></table>"), "{html}");
-        assert!(html.contains(r#"<div class="highlight highlight-source-rust notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="fn a&lt;b&gt;()" data-mdr-key=""#), "{html}");
+        assert!(html.contains(r#"<div class="highlight highlight-source-rust notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="fn a&lt;b&gt;()" data-mdr-key=""#), "{html}");
         assert!(html.contains(r#"><pre><span class="pl-k">fn</span>"#), "{html}");
         assert!(html.contains(r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="plain &quot;q&quot;" data-mdr-key=""#), "{html}");
         assert!(html.contains(r#"<pre class="notranslate"><code>plain "q""#), "{html}");
@@ -1674,14 +1918,96 @@ mod tests {
         assert!(html.contains(&format!("user-content-fn-1-{stable}")) && html.contains(&format!("data-run-id=\"{stable}\"")), "{html}");
         assert!(out.features.math && !out.features.mermaid);
         // Idempotent on its own output.
-        let again = postprocess_github(html, Mode::Readme, "path:/a/README.md");
-        assert_eq!(&again.html, html);
+        let again = postprocess_github(html, Mode::Readme, "path:/a/README.md", &SourceHints::default());
+        assert_same(&again.html, html);
+    }
+
+    /// `assert_eq!` for long HTML: shows the neighbourhood of the first difference.
+    fn assert_same(got: &str, want: &str) {
+        if got == want {
+            return;
+        }
+        let at = got.bytes().zip(want.bytes()).take_while(|(a, b)| a == b).count();
+        let from = at.saturating_sub(80);
+        let window = |s: &str| s.get(from..(at + 120).min(s.len())).unwrap_or(s).to_owned();
+        panic!("outputs differ at byte {at}:\n got: {}\nwant: {}", window(got), window(want));
+    }
+
+    #[test]
+    fn source_hints_collect_heading_texts_and_code() {
+        let md = concat!(
+            "# :rocket: Launch ![logo](x.png) `code` $x^2$[^1]\n\n",
+            "<h1 align=\"center\">\n  :black_circle: Raw :black_circle:\n</h1>\n\n",
+            "Setext\n======\n\n",
+            "```md\n\n> quoted\n```\n\n",
+            "    indented\n\n",
+            "[^1]: note\n",
+        );
+        let hints = SourceHints::from_markdown(md);
+        assert_eq!(
+            hints.headings,
+            [":rocket: Launch  code $x^2$1", "\n  :black_circle: Raw :black_circle:\n", "Setext"]
+        );
+        assert_eq!(hints.code, ["\n> quoted\n", "indented\n"]);
+        assert_eq!(heading_key(":rocket: Launch  code $x^2$1"), heading_key("🚀 Launch  code $x^2$1"));
+        assert_eq!(heading_key("Ünï :x: 日本"), "ünï日本");
+    }
+
+    #[test]
+    fn github_headings_and_code_use_source_hints() {
+        let md = concat!(
+            "## :rocket: Launch\n\n",
+            "<h2 align=\"center\">\n  :black_circle: Raw\n</h2>\n\n",
+            "#\n\n",
+            "## ???\n\n",
+            "```md\n\n> [!WARNING]\n```\n\n",
+            "```\n\nplain\n```\n",
+        );
+        let api = concat!(
+            "<h2>🚀 Launch</h2>\n",
+            "<h2 align=\"center\">\n  ⚫ Raw\n</h2>\n",
+            "<h1></h1>\n",
+            "<h2>???</h2>\n",
+            "<div class=\"highlight highlight-text-md\"><pre class=\"notranslate\"><span class=\"pl-ent\">&gt; [!WARNING]</span></pre></div>\n",
+            "<pre class=\"notranslate\"><code class=\"notranslate\">\nplain\n</code></pre>\n",
+            "<pre class=\"notranslate\">raw <b>pre</b></pre>\n",
+            "<p><img src=\"https://github.com/o/r/blob/main/a.png\"></p>\n",
+        );
+        let out = postprocess_github(api, Mode::Readme, "stdin", &SourceHints::from_markdown(md));
+        let html = &out.html;
+        assert!(html.contains(r##"<h2 class="heading-element" dir="auto">🚀 Launch</h2><a id="user-content-rocket-launch" class="anchor" aria-label="Permalink: :rocket: Launch" href="#rocket-launch">"##), "{html}");
+        assert!(html.contains(r##"<h2 align="center" class="heading-element" dir="auto">"##), "{html}");
+        assert!(html.contains("id=\"user-content---black_circle-raw\""), "{html}");
+        assert!(html.contains("aria-label=\"Permalink: \n  :black_circle: Raw\n\""), "{html}");
+        assert!(html.contains("<h1></h1>"), "{html}");
+        assert!(html.contains(r##"<a id="" class="anchor" aria-label="Permalink: ???" href="#">"##), "{html}");
+        assert!(html.contains("data-snippet-clipboard-copy-content=\"\n&gt; [!WARNING]\""), "{html}");
+        // The leading newline of `<pre>\n` survives HTML parsing for the clipboard text.
+        assert!(html.contains("data-snippet-clipboard-copy-content=\"\nplain\""), "{html}");
+        // Raw HTML `<pre>`: no copy button, no `notranslate` in the README view.
+        assert!(html.contains("<pre>raw <b>pre</b></pre>") && !html.contains("data-mdr-pre-lf"), "{html}");
+        assert!(html.contains(r#"src="https://github.com/o/r/raw/main/a.png""#), "{html}");
+        // Without hints the DOM text is used.
+        let plain = postprocess_github(api, Mode::Readme, "stdin", &SourceHints::default());
+        assert!(plain.html.contains("id=\"user-content--launch\""), "{}", plain.html);
+        assert!(plain.html.contains("aria-label=\"Permalink: 🚀 Launch\""), "{}", plain.html);
+    }
+
+    #[test]
+    fn misaligned_hints_fall_back_to_the_dom() {
+        // A hint list that does not correspond to the document must not mislabel headings.
+        let hints = SourceHints::from_markdown("# Alpha\n\n# Beta\n");
+        let out = postprocess_github("<h1>Gamma</h1><h1>Beta</h1><h1>Alpha</h1>", Mode::Readme, "s", &hints);
+        assert!(out.html.contains("id=\"user-content-gamma\""), "{}", out.html);
+        assert!(out.html.contains("id=\"user-content-beta\""), "{}", out.html);
+        // `Alpha` was skipped over when `Beta` matched; it is not reused out of order.
+        assert!(out.html.contains("id=\"user-content-alpha\""), "{}", out.html);
     }
 
     #[test]
     fn github_comment_mode_keeps_api_markup() {
         let api = "<h2 dir=\"auto\">T</h2>\n<p dir=\"auto\"><code class=\"notranslate\">x</code> <span aria-hidden=\"true\" class=\"octicon octicon-link\"></span></p>\n<table role=\"table\"><tr><td>c</td></tr></table>";
-        let out = postprocess_github(api, Mode::Comment, "stdin");
+        let out = postprocess_github(api, Mode::Comment, "stdin", &SourceHints::default());
         assert!(out.html.starts_with("<h2 dir=\"auto\">T</h2>"), "{}", out.html);
         assert!(out.html.contains("<code class=\"notranslate\">x</code>"));
         assert!(out.html.contains("role=\"table\""));
@@ -1692,7 +2018,7 @@ mod tests {
     #[test]
     fn github_mermaid_becomes_enrichment_section() {
         let api = "<div class=\"highlight highlight-source-mermaid\"><pre class=\"notranslate\">graph TD\n  A --&gt; B</pre></div>";
-        let out = postprocess_github(api, Mode::Readme, "stdin");
+        let out = postprocess_github(api, Mode::Readme, "stdin", &SourceHints::default());
         let html = &out.html;
         assert!(out.features.mermaid);
         assert!(html.contains(r#"data-type="mermaid""#), "{html}");
@@ -1705,7 +2031,7 @@ mod tests {
         let id = stable_identity("graph TD\n  A --> B\n");
         assert!(html.contains(&format!("data-identity=\"{id}\"")), "{html}");
         // An API section with a random identity gets the same deterministic one.
-        let again = postprocess_github(&html.replace(&id, "11111111-2222-4333-a444-555555555555"), Mode::Readme, "stdin");
+        let again = postprocess_github(&html.replace(&id, "11111111-2222-4333-a444-555555555555"), Mode::Readme, "stdin", &SourceHints::default());
         assert!(again.html.contains(&id));
     }
 
@@ -1722,8 +2048,8 @@ mod tests {
         let html = &out.html;
         assert_eq!(out.title.as_deref(), Some("T"));
         assert!(html.contains(r#"href="https://gitlab.com/-/project/1/uploads/a/i.png""#), "{html}");
-        assert!(html.contains(r#"<img src="https://gitlab.com/-/project/1/uploads/a/i.png" alt="i" decoding="async" class="gfm" loading="lazy">"#), "{html}");
-        assert!(html.contains(r#"<img src="https://e.org/x.png" loading="lazy">"#), "{html}");
+        assert!(html.contains(r#"<img src="https://gitlab.com/-/project/1/uploads/a/i.png" alt="i" decoding="async" class="gfm js-lazy-loaded" loading="lazy">"#), "{html}");
+        assert!(html.contains(r#"<img src="https://e.org/x.png" class="js-lazy-loaded" loading="lazy">"#), "{html}");
         assert!(html.contains(r#"class="code highlight js-syntax-highlight language-rust code-syntax-highlight-theme""#), "{html}");
         assert!(html.contains(r#"class="gl-relative markdown-code-block js-markdown-code" data-mdr-key=""#), "{html}");
         assert!(out.features.math && !out.features.mermaid);
@@ -1736,8 +2062,8 @@ mod tests {
     #[test]
     fn postprocessing_never_panics_on_odd_input() {
         for input in ["", "<", "<h1>", "</div></div>", "<pre>", "<img data-src>", "<svg><h1>x</h1></svg>", "\u{0}"] {
-            postprocess_github(input, Mode::Readme, "s");
-            postprocess_github(input, Mode::Comment, "s");
+            postprocess_github(input, Mode::Readme, "s", &SourceHints::default());
+            postprocess_github(input, Mode::Comment, "s", &SourceHints::default());
             postprocess_gitlab(input, "https://gitlab.com", "");
         }
     }
