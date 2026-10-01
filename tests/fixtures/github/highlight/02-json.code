@@ -1,0 +1,7 @@
+{
+  "name": "md-render",
+  "keywords": ["markdown", "preview"],
+  "private": true,
+  "version": 2,
+  "config": {"port": 6419, "host": null}
+}

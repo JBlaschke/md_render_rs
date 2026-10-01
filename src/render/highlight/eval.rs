@@ -242,6 +242,38 @@ fn gitlab_dump() {
     }
 }
 
+/// Debug aid: `MDR_HL_COMPARE=out.gfm.html:in.md` compares every highlighted block of a GitHub
+/// API output with ours (exact match, or the differing lines).
+#[test]
+fn github_compare_files() {
+    let Ok(spec) = std::env::var("MDR_HL_COMPARE") else {
+        return;
+    };
+    let Some((html, md)) = spec.split_once(':') else {
+        return;
+    };
+    let html = std::fs::read_to_string(html).unwrap();
+    let md = std::fs::read_to_string(md).unwrap();
+    for block in github_blocks(&html, &md) {
+        let (Some(lang), Some(code)) = (&block.lang, &block.code) else {
+            continue;
+        };
+        let ours = pl::highlight_with(code, lang, pl::DEFAULT_VARIANT)
+            .html
+            .unwrap_or_default();
+        if ours == block.html {
+            println!("SAME {lang}");
+            continue;
+        }
+        println!("DIFF {lang} {:?}", score_github(&block.html, &ours));
+        for (a, b) in block.html.split('\n').zip(ours.split('\n')) {
+            if a != b {
+                println!("  G {a}\n  O {b}");
+            }
+        }
+    }
+}
+
 /// Where the time goes: syntect alone vs. the full GitHub/GitLab rendering
 /// (`cargo test --release --lib highlight::eval::overhead -- --ignored --nocapture`).
 #[test]

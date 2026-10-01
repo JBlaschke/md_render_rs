@@ -1,0 +1,8 @@
+# server settings
+server:
+  host: localhost
+  port: 6419
+  paths:
+    - /docs
+    - "/api"
+  enabled: true

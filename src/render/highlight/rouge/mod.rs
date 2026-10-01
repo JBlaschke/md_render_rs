@@ -106,10 +106,18 @@ pub(crate) fn segments_for(code: &str, lang: &str, variant: Variant) -> (String,
                 }
             };
             match result {
-                Ok(()) => match words::for_tag(lexer) {
-                    Some(words) if scheme.words => words.refine(&code, out),
-                    _ => out,
-                },
+                Ok(()) if scheme.words => {
+                    let out = match words::for_tag(lexer) {
+                        Some(words) => words.refine(&code, out),
+                        None => out,
+                    };
+                    if words::WHITESPACE_TAGS.contains(&tag) {
+                        words::mark_whitespace(&code, out)
+                    } else {
+                        out
+                    }
+                }
+                Ok(()) => out,
                 Err(engine::Error) => plain(&code),
             }
         }

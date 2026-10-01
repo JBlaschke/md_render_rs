@@ -1,0 +1,9 @@
+interface User {
+  id: number;
+  name?: string;
+}
+
+export function greet(user: User): string {
+  const greeting = `Hello, ${user.name ?? "anonymous"}`;
+  return greeting;
+}

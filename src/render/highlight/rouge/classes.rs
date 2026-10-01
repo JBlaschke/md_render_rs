@@ -282,16 +282,14 @@ const RUST: &[(&str, Rule)] = &[
     ("constant.numeric.integer.hexadecimal", Span("mi")),
 ];
 
-/// `Rouge::Lexers::Python`: string delimiters (and prefixes) `sh`, contents `s`, docstrings
-/// alike; `def`/`class` plain keywords; interpolations lexed as code; `self` and calls `n`.
+/// `Rouge::Lexers::Python`: string delimiters (and prefixes) `sh`, contents `s`; docstrings
+/// (after a `def`/`class` line) `sd` as a whole; `def`/`class` plain keywords; interpolations
+/// lexed as code; `self` and calls `n`; annotation colons punctuation, `->` an operator.
 const PYTHON: &[(&str, Rule)] = &[
     ("string", Span("s")),
     ("punctuation.definition.string", Span("sh")),
-    ("comment.block.documentation", Span("s")),
-    (
-        "comment.block.documentation punctuation.definition.comment",
-        Span("sh"),
-    ),
+    ("comment.block.documentation", Span("sd")),
+    ("entity.name.function support", Inherit),
     ("storage.type.function", Span("k")),
     ("storage.type.class", Span("k")),
     ("keyword.declaration", Span("k")),
@@ -303,7 +301,8 @@ const PYTHON: &[(&str, Rule)] = &[
     ("variable.function", Plain),
     ("variable.annotation", Span("nd")),
     ("entity.other.inherited-class", Plain),
-    ("punctuation.separator.annotation", Span("o")),
+    ("punctuation.separator.annotation", Span("p")),
+    ("punctuation.separator.annotation.return", Span("o")),
     ("punctuation.definition.numeric", Inherit),
     ("source.regexp constant", Span("s")),
     ("source.regexp keyword", Span("s")),
@@ -320,7 +319,7 @@ const JAVASCRIPT: &[(&str, Rule)] = &[
         Span("s2"),
     ),
     ("string.template", Span("s2")),
-    ("string.template punctuation.definition.string", Span("s2")),
+    ("punctuation.definition.string.template", Span("s2")),
     ("punctuation.section.interpolation", Span("p")),
     ("punctuation.definition.template-expression", Span("p")),
     ("meta.interpolation", Plain),
@@ -424,11 +423,16 @@ const SHELL: &[(&str, Rule)] = &[
         Span("nv"),
     ),
     ("punctuation.section.expansion.parameter", Span("k")),
-    ("meta.group.expansion.parameter keyword.operator", Span("k")),
+    ("meta.group.expansion.parameter", Span("p")),
+    ("meta.group.expansion.parameter keyword.operator", Span("p")),
+    (
+        "meta.group.expansion.parameter keyword.operator.assignment",
+        Span("k"),
+    ),
     ("variable.other.readwrite.assignment", Span("nv")),
     ("keyword.operator.logical.continue", Span("p")),
     ("keyword.operator.logical.pipe", Plain),
-    ("keyword.operator.assignment.redirection", Plain),
+    ("keyword.operator.assignment.redirection", Span("o")),
     ("constant.numeric.integer.decimal.file-descriptor", Plain),
     ("keyword.operator.regexp.quantifier", Span("k")),
     ("support.function.test", Span("o")),

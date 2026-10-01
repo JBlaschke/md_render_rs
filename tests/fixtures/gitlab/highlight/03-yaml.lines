@@ -1,0 +1,9 @@
+yaml
+<span class="c1"># server settings</span>
+<span class="na">server</span><span class="pi">:</span>
+  <span class="na">host</span><span class="pi">:</span> <span class="s">localhost</span>
+  <span class="na">port</span><span class="pi">:</span> <span class="m">6419</span>
+  <span class="na">paths</span><span class="pi">:</span>
+    <span class="pi">-</span> <span class="s">/docs</span>
+    <span class="pi">-</span> <span class="s2">"</span><span class="s">/api"</span>
+  <span class="na">enabled</span><span class="pi">:</span> <span class="kc">true</span>

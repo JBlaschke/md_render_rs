@@ -113,6 +113,148 @@ pub(super) struct Words {
     pub(super) bare: Option<&'static str>,
     /// Classes whose span also takes a directly preceding `.` (Rouge's `[.]\s*id` rules).
     pub(super) dot_joins: &'static [&'static str],
+    /// A word matched by a rule also takes the blanks after it when a word follows them
+    /// (the shell lexer's `(KEYWORDS)\s*\b` rules).
+    pub(super) trailing_blanks: bool,
+}
+
+/// The shell lexer's whitespace and option conventions:
+/// * `(KEYWORDS|BUILTINS)\s*\b`: a keyword or builtin takes the whitespace (newlines included)
+///   up to a following word;
+/// * `--?[\w-]+` (in the `data` state, i.e. after whitespace) is `Name.Tag` (`nt`) even where
+///   the grammar has no option scope (`set -euo`);
+/// * an option token never includes the blank before it (Sublime's option scope does).
+fn shell_fixups(code: &str, segs: Vec<Segment>) -> Vec<Segment> {
+    // Coalesce adjacent unclassified segments (the word pass splits them at identifiers).
+    let mut merged: Vec<Segment> = Vec::with_capacity(segs.len());
+    for seg in segs {
+        match merged.last_mut() {
+            Some(last)
+                if last.class.is_none()
+                    && seg.class.is_none()
+                    && last.range.end == seg.range.start =>
+            {
+                last.range.end = seg.range.end;
+            }
+            _ => merged.push(seg),
+        }
+    }
+    // Split unclassified text at options and strip blanks off option segments.
+    let mut out: Vec<Segment> = Vec::with_capacity(merged.len());
+    for seg in merged {
+        let text = code.get(seg.range.clone()).unwrap_or("");
+        match seg.class {
+            Some("nt") => {
+                let lead = text.len() - text.trim_start_matches([' ', '\t']).len();
+                if lead > 0 {
+                    out.push(Segment::new(None, seg.range.start..seg.range.start + lead));
+                }
+                if lead < text.len() {
+                    out.push(Segment::new(
+                        Some("nt"),
+                        seg.range.start + lead..seg.range.end,
+                    ));
+                }
+            }
+            None => {
+                let base = seg.range.start;
+                let mut plain = 0;
+                let bytes = text.as_bytes();
+                let mut i = 0;
+                while i < bytes.len() {
+                    let at_start = if i == 0 {
+                        base == 0 || code.as_bytes()[base - 1].is_ascii_whitespace()
+                    } else {
+                        bytes[i - 1].is_ascii_whitespace()
+                    };
+                    let dashes = bytes[i..]
+                        .iter()
+                        .take(2)
+                        .take_while(|&&b| b == b'-')
+                        .count();
+                    let word = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-';
+                    if at_start && dashes > 0 && bytes.get(i + dashes).is_some_and(word) {
+                        let end = i + bytes[i..].iter().take_while(|b| word(b)).count();
+                        if plain < i {
+                            out.push(Segment::new(None, base + plain..base + i));
+                        }
+                        out.push(Segment::new(Some("nt"), base + i..base + end));
+                        plain = end;
+                        i = end;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if plain < bytes.len() {
+                    out.push(Segment::new(None, base + plain..seg.range.end));
+                }
+            }
+            _ => out.push(seg),
+        }
+    }
+    // `${` is one keyword token (the grammar scopes `$` as the variable sigil).
+    for k in 0..out.len().saturating_sub(1) {
+        if out[k].class == Some("nv")
+            && code.get(out[k].range.clone()) == Some("$")
+            && out[k + 1].class == Some("k")
+            && code[out[k].range.end..].starts_with('{')
+        {
+            out[k].class = Some("k");
+        }
+    }
+    // Keywords and builtins take the blanks before a following word.
+    for k in 0..out.len().saturating_sub(1) {
+        if !matches!(out[k].class, Some("k" | "nb")) || out[k].range.end != out[k + 1].range.start {
+            continue;
+        }
+        let next = code.get(out[k + 1].range.clone()).unwrap_or("");
+        let after = next.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let blanks = next.len() - after.len();
+        let word_follows = if after.is_empty() {
+            code[out[k + 1].range.end..].starts_with(is_ident_continue)
+        } else {
+            after.starts_with(is_ident_continue)
+        };
+        if blanks > 0 && word_follows && out[k + 1].class.is_none() {
+            out[k].range.end += blanks;
+            out[k + 1].range.start += blanks;
+        }
+    }
+    out.retain(|s| !s.range.is_empty());
+    out
+}
+
+/// Lexers that emit `Text.Whitespace` (`w`) for whitespace between tokens.
+pub(super) const WHITESPACE_TAGS: &[&str] = &["json", "json-doc", "toml", "docker"];
+
+/// Give unclassified whitespace runs the class `w` (Rouge's `\s+` → `Text::Whitespace`).
+pub(super) fn mark_whitespace(code: &str, segments: Vec<Segment>) -> Vec<Segment> {
+    let mut out = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let Some(text) = code.get(seg.range.clone()).filter(|_| seg.class.is_none()) else {
+            out.push(seg);
+            continue;
+        };
+        let base = seg.range.start;
+        let mut start = 0;
+        let mut blank = None;
+        for (i, c) in text.char_indices() {
+            let b = c.is_whitespace();
+            if blank != Some(b) {
+                if i > start {
+                    let class = if blank == Some(true) { Some("w") } else { None };
+                    out.push(Segment::new(class, base + start..base + i));
+                }
+                start = i;
+                blank = Some(b);
+            }
+        }
+        if start < text.len() {
+            let class = if blank == Some(true) { Some("w") } else { None };
+            out.push(Segment::new(class, base + start..base + text.len()));
+        }
+    }
+    out
 }
 
 /// Classes that come from tokens Rouge never re-reads as words: strings, comments, numbers,
@@ -167,15 +309,22 @@ impl Words {
                 let word = &text[i..end];
                 let next = &code[base + end..];
                 let after_dot = code[..base + i].ends_with('.');
-                let class = self
+                let rule = self
                     .rules
                     .iter()
-                    .find(|(when, _)| when.holds(word, next, after_dot))
-                    .map(|&(_, class)| Some(class))
-                    .unwrap_or(match seg.class {
-                        None => self.bare,
-                        class => class,
-                    });
+                    .find(|(when, _)| when.holds(word, next, after_dot));
+                let class = match (rule, seg.class) {
+                    (Some(&(_, class)), _) => Some(class),
+                    (None, None) => self.bare,
+                    (None, class) => class,
+                };
+                if rule.is_some() && self.trailing_blanks {
+                    let rest = &text[end..];
+                    let after = rest.trim_start_matches([' ', '\t']);
+                    if after.len() < rest.len() && after.starts_with(is_ident_continue) {
+                        end += rest.len() - after.len();
+                    }
+                }
                 if plain_start < i {
                     out.push(Segment::new(seg.class, base + plain_start..base + i));
                 }
@@ -188,6 +337,9 @@ impl Words {
                     base + plain_start..base + text.len(),
                 ));
             }
+        }
+        if self.trailing_blanks {
+            out = shell_fixups(code, out);
         }
         if !self.dot_joins.is_empty() {
             for k in 1..out.len() {
@@ -234,6 +386,7 @@ static SHELL: Words = Words {
     ],
     bare: None,
     dot_joins: &[],
+    trailing_blanks: true,
 };
 
 const SHELL_KEYWORDS: &[&str] = &[
@@ -417,6 +570,7 @@ static RUST: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &["nf", "py"],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::Python`: after a `.`: `Capitalized(` → `nc`, `id(` → `nf`, else `n`;
@@ -434,6 +588,7 @@ static PYTHON: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::Javascript` statement rules: `Capitalized(` → `nc`, `id(` → keyword or
@@ -451,6 +606,7 @@ static JAVASCRIPT: Words = Words {
     ],
     bare: Some("nx"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::Typescript` (the JavaScript rules with TypeScript's tables).
@@ -466,6 +622,7 @@ static TYPESCRIPT: Words = Words {
     ],
     bare: Some("nx"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::C` statements: `true|false|NULL|nullptr` → `nb`, keywords `k`, types `kt`,
@@ -480,6 +637,7 @@ static C: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::Cpp` (the C rules with C++'s tables, plus its `class`/`template` rules).
@@ -494,6 +652,7 @@ static CPP: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 const CPP_EXTRA_KEYWORDS: &[&str] = &["class", "template"];
@@ -503,6 +662,7 @@ static SQL: Words = Words {
     rules: &[],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 /// `Rouge::Lexers::Java` root: keywords `k`, declarations `kd`, types `kt`, constants `kc`,
@@ -524,6 +684,7 @@ static JAVA: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 const JAVA_KEYWORDS: &[&str] = &[
@@ -587,6 +748,7 @@ static GO: Words = Words {
     ],
     bare: Some("n"),
     dot_joins: &[],
+    trailing_blanks: false,
 };
 
 const C_BUILTIN_CONSTANTS: &[&str] = &["NULL", "false", "nullptr", "true"];

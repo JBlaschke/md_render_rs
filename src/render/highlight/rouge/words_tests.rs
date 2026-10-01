@@ -104,11 +104,25 @@ fn python_after_dot() {
 
 #[test]
 fn shell_builtins() {
-    let code = "ls -la; ls-files";
+    let code = "ls -la; ls-files\nfor f in x";
     let out = SHELL.refine(code, vec![seg(None, 0..code.len())]);
-    assert_eq!(out[0], seg(Some("nb"), 0..2));
-    assert!(
-        out.contains(&seg(None, 8..10)),
+    let class_at = |i: usize| {
+        out.iter()
+            .find(|s| s.range.contains(&i))
+            .and_then(|s| s.class)
+    };
+    assert_eq!(out[0], seg(Some("nb"), 0..2), "{out:?}");
+    assert_eq!(class_at(3), Some("nt"), "options are Name.Tag: {out:?}");
+    assert_eq!(class_at(2), None, "the blank before an option is text");
+    assert_eq!(
+        class_at(8),
+        None,
         "a builtin followed by '-' is text: {out:?}"
+    );
+    assert_eq!(class_at(17), Some("k"));
+    assert_eq!(
+        class_at(20),
+        Some("k"),
+        "keywords take the blank before a word: {out:?}"
     );
 }

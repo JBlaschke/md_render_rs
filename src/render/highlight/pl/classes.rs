@@ -398,6 +398,12 @@ const GO: &[(&str, Class)] = &[
     ("variable.function", Some("pl-c1")),
     ("variable.function support.function", None),
     ("constant.other.placeholder", None),
+    ("entity.name.function", Some("pl-s1")),
+    (
+        "meta.function.declaration entity.name.function",
+        Some("pl-c1"),
+    ),
+    ("keyword.other.package + variable.other", None),
 ];
 
 /// CSS (tree-sitter on github.com): property names, selector names and pseudo-classes
