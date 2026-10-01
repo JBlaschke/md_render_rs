@@ -13,34 +13,71 @@ const REPORT_PATH: &str = "M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 
 const ALERT_PATH: &str = "M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z";
 const STOP_PATH: &str = "M4.47.22A.749.749 0 0 1 5 0h6c.199 0 .389.079.53.22l4.25 4.25c.141.14.22.331.22.53v6a.749.749 0 0 1-.22.53l-4.25 4.25A.749.749 0 0 1 11 16H5a.749.749 0 0 1-.53-.22L.22 11.53A.749.749 0 0 1 0 11V5c0-.199.079-.389.22-.53Zm.84 1.28L1.5 5.31v5.38l3.81 3.81h5.38l3.81-3.81V5.31L10.69 1.5ZM8 4a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z";
 
-/// Placeholder element for the heading-anchor octicon. DOM filters insert this tiny element
-/// and the final serialization swaps it for [`link_svg`] (cheaper than building SVG nodes).
-/// Raw HTML can never produce it: the sanitizer unwraps unknown elements.
-pub(super) const LINK_PLACEHOLDER: &str = "mdr-octicon-link";
+/// Prefix of the placeholder elements DOM filters insert instead of SVG markup; the final
+/// serialization swaps `<mdr-octicon-NAME></mdr-octicon-NAME>` for the icon ([`expand`]).
+/// Raw HTML can never produce them: the sanitizer unwraps unknown elements.
+const PLACEHOLDER_PREFIX: &str = "mdr-octicon-";
 
-/// The serialized form of [`LINK_PLACEHOLDER`] (an empty element).
-pub(super) const LINK_PLACEHOLDER_HTML: &str = "<mdr-octicon-link></mdr-octicon-link>";
+/// Placeholder element name for octicon `name` (`link`, `info`, `light-bulb`, `report`,
+/// `alert`, `stop`).
+pub(super) fn placeholder(name: &str) -> String {
+    format!("{PLACEHOLDER_PREFIX}{name}")
+}
 
 /// `octicon-link` exactly as in github.com README/file views (GH §5.1).
-pub(super) fn link_svg() -> String {
+fn link_svg() -> String {
     format!(
         r#"<svg data-component="Octicon" class="octicon octicon-link" {ATTRS}><path d="{LINK_PATH}"></path></svg>"#
     )
 }
 
-/// Alert icon (GH §5.2), with `extra` inserted into the `<svg>` start tag (the sanitizer
-/// marker attribute).
-pub(super) fn alert_svg(name: &str, extra: &str) -> String {
+/// Alert icon `name` (GH §5.2).
+fn alert_svg(name: &str) -> Option<String> {
     let path = match name {
         "info" => INFO_PATH,
         "light-bulb" => LIGHT_BULB_PATH,
         "report" => REPORT_PATH,
         "alert" => ALERT_PATH,
-        _ => STOP_PATH,
+        "stop" => STOP_PATH,
+        _ => return None,
     };
-    format!(
-        r#"<svg{extra} data-component="Octicon" class="octicon octicon-{name} mr-2" {ATTRS}><path d="{path}"></path></svg>"#
-    )
+    Some(format!(
+        r#"<svg data-component="Octicon" class="octicon octicon-{name} mr-2" {ATTRS}><path d="{path}"></path></svg>"#
+    ))
+}
+
+/// Replaces every serialized placeholder in `html` by its SVG.
+pub(super) fn expand(html: &str) -> String {
+    let open = format!("<{PLACEHOLDER_PREFIX}");
+    if !html.contains(&open) {
+        return html.to_owned();
+    }
+    let mut out = String::with_capacity(html.len() + 4096);
+    let mut rest = html;
+    while let Some(i) = rest.find(&open) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + open.len()..];
+        let name_end = after.find('>').unwrap_or(after.len());
+        let name = &after[..name_end];
+        let close = format!("></{PLACEHOLDER_PREFIX}{name}>");
+        let svg = if name == "link" {
+            Some(link_svg())
+        } else {
+            alert_svg(name)
+        };
+        match (svg, after[name_end..].starts_with(&close)) {
+            (Some(svg), true) => {
+                out.push_str(&svg);
+                rest = &after[name_end + close.len()..];
+            }
+            _ => {
+                out.push_str(&open);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The loading spinner inside an enrichment section (GH §8.7), verbatim.
@@ -58,16 +95,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icons_are_well_formed() {
-        let s = link_svg();
-        assert!(
-            s.starts_with(r#"<svg data-component="Octicon" class="octicon octicon-link" viewBox"#)
+    fn placeholders_expand() {
+        let html = format!(
+            "<a><{0}></{0}></a> <p><{1}></{1}>Note</p>",
+            placeholder("link"),
+            placeholder("info")
         );
-        assert!(s.ends_with("</path></svg>"));
-        for n in ["info", "light-bulb", "report", "alert", "stop"] {
-            let s = alert_svg(n, "");
-            assert!(s.contains(&format!("octicon-{n} mr-2")));
+        let out = expand(&html);
+        assert!(out.starts_with(
+            r#"<a><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16""#
+        ));
+        assert!(
+            out.contains(r#"<p><svg data-component="Octicon" class="octicon octicon-info mr-2""#)
+        );
+        assert!(out.ends_with("</path></svg>Note</p>"));
+        for n in ["light-bulb", "report", "alert", "stop"] {
+            assert!(
+                expand(&format!("<{0}></{0}>", placeholder(n)))
+                    .contains(&format!("octicon-{n} mr-2"))
+            );
         }
-        assert!(alert_svg("info", " x").starts_with("<svg x data-component"));
+        assert_eq!(
+            expand("<mdr-octicon-unknown></mdr-octicon-unknown>"),
+            "<mdr-octicon-unknown></mdr-octicon-unknown>"
+        );
+        assert_eq!(expand("plain"), "plain");
     }
 }

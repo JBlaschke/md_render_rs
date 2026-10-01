@@ -6,10 +6,11 @@
 //! 2. comrak 0.55 parse with GitHub's GFM options (GH §10) and AST passes ([`ast`]),
 //! 3. neutral formatter output with sanitizer markers ([`formatter`]),
 //! 4. `dom_query` DOM, sanitized with GitHub's raw-HTML allowlist ([`sanitize`]),
-//! 5. DOM filters in CQ §3.1 order: headings, raw `<pre>`, emoji, tables, images, links,
-//!    details, comment-mode code classes, `dir="auto"`,
+//! 5. DOM filters in CQ §3.1 order: alerts, dollar math, headings, raw-text autolinks, raw `<pre>`, emoji,
+//!    tables, images, links, details, comment-mode code classes, `dir="auto"`,
 //! 6. top-level `data-sourcepos` bookkeeping and serialization.
 
+mod alerts;
 mod ast;
 mod autolink;
 mod code;
@@ -19,6 +20,7 @@ mod filters;
 mod formatter;
 mod frontmatter;
 mod headings;
+mod math;
 mod octicons;
 mod sanitize;
 mod slug;
@@ -145,17 +147,19 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let options = ast::options();
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, &body, &options);
-    let info = ast::transform(&arena, root, &ctx);
-    let state = formatter::FmtState::new(&ctx, info.alert_inline);
+    ast::transform(&arena, root);
+    let state = formatter::FmtState::new(&ctx);
     let (html, state) = formatter::format(root, &options, state);
     let mut features = Features {
-        math: info.math || state.math,
+        math: state.math,
         mermaid: state.mermaid,
     };
 
     // 4.–5. DOM stage.
     let doc = Document::fragment(html);
     let raw = sanitize::run(&doc, &ctx);
+    alerts::run(&doc);
+    features.math |= math::run(&doc, &ctx);
     headings::run(&doc, &ctx);
     if !ctx.comment {
         autolink::run(&doc, &raw);
@@ -195,7 +199,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         }
     }
     let inner = dom::root(&doc).inner_html();
-    out.push_str(&inner.replace(octicons::LINK_PLACEHOLDER_HTML, &octicons::link_svg()));
+    out.push_str(&octicons::expand(&inner));
 
     Rendered {
         html: out,

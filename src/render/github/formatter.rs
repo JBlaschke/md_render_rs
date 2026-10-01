@@ -1,23 +1,21 @@
 //! The neutral HTML formatter (CQ §3.1 step 3, CR §1.6 `create_formatter!`).
 //!
 //! Emits comrak-like markup in GitHub's shapes where the construct is purely generated
-//! (footnotes GH §8.4, task lists GH §8.1, alerts GH §8.2, code blocks GH §7.1, math GH §8.6,
-//! enrichment GH §8.7). Every element it writes carries the sanitizer marker
+//! (footnotes GH §8.4, task lists GH §8.1, code blocks GH §7.1, math GH §8.6, enrichment
+//! GH §8.7). Every element it writes carries the sanitizer marker
 //! ([`Ctx::mark`] / [`Ctx::mark_tree`]) so the raw-HTML allowlist (GH §8.11) applies to raw
 //! HTML only. Only top-level blocks get `data-sourcepos` (DESIGN §5).
 
-use std::collections::HashSet;
 use std::fmt::{self, Write as _};
 use std::rc::Rc;
 
 use comrak::html::{ChildRendering, Context, format_node_default};
-use comrak::nodes::{AlertType, AstNode, ListType, NodeValue, TableAlignment};
+use comrak::nodes::{AstNode, ListType, NodeValue, TableAlignment};
 use comrak::{Options, create_formatter};
 
 use super::Ctx;
-use super::ast::{addr, math_html};
 use super::code;
-use super::octicons;
+use super::math::math_html;
 
 /// Formatter state (comrak hands it back after formatting).
 #[derive(Default)]
@@ -26,23 +24,20 @@ pub(super) struct FmtState {
     ctx: Rc<Ctx>,
     /// The sanitizer marker attribute (cloned per element, hence `Rc`).
     mark: Rc<str>,
-    alert_inline: HashSet<usize>,
     /// Feature flags for [`crate::render::Features`].
     pub math: bool,
     pub mermaid: bool,
     /// Number of enrichment sections so far (for distinct `data-identity`s).
     pub enrichments: usize,
-    suppress_cr: bool,
     pending_checkbox: Option<&'static str>,
     footnote_ix: u32,
 }
 
 impl FmtState {
-    pub(super) fn new(ctx: &Ctx, alert_inline: HashSet<usize>) -> Self {
+    pub(super) fn new(ctx: &Ctx) -> Self {
         FmtState {
             mark: Rc::from(ctx.mark.as_str()),
             ctx: Rc::new(ctx.clone()),
-            alert_inline,
             ..FmtState::default()
         }
     }
@@ -107,16 +102,6 @@ fn write_checkbox(context: &mut Ctxt<'_, '_>, body: &str) -> fmt::Result {
     write!(context, "<input{mark} {body}")
 }
 
-fn alert_meta(t: AlertType) -> (&'static str, &'static str, &'static str) {
-    match t {
-        AlertType::Note => ("note", "info", "Note"),
-        AlertType::Tip => ("tip", "light-bulb", "Tip"),
-        AlertType::Important => ("important", "report", "Important"),
-        AlertType::Warning => ("warning", "alert", "Warning"),
-        AlertType::Caution => ("caution", "stop", "Caution"),
-    }
-}
-
 fn footnote_label(name: &str) -> String {
     let mut s = String::with_capacity(name.len());
     // cmark-gfm `houdini_escape_href` (GH §8.4: labels are percent-encoded UTF-8).
@@ -143,24 +128,6 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             } else {
                 context.cr()?;
                 context.write_str("</blockquote>\n")?;
-            }
-        }
-        NodeValue::Alert(a) => {
-            if entering {
-                let (kind, icon, title) = alert_meta(a.alert_type);
-                context.cr()?;
-                let sp = sourcepos_attr(&context.user, node);
-                let svg = octicons::alert_svg(icon, &context.user.ctx.mark_tree);
-                write!(
-                    context,
-                    r#"<div{mark} class="markdown-alert markdown-alert-{kind}"{sp}><p{mark} class="markdown-alert-title">{svg}{title}</p>"#
-                )?;
-                if context.user.alert_inline.contains(&addr(node)) {
-                    context.user.suppress_cr = true;
-                }
-            } else {
-                context.cr()?;
-                context.write_str("</div>\n")?;
             }
         }
         NodeValue::List(l) => {
@@ -222,11 +189,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
             let tight = tight_paragraph(node);
             if entering {
                 if !tight {
-                    if context.user.suppress_cr {
-                        context.user.suppress_cr = false;
-                    } else {
-                        context.cr()?;
-                    }
+                    context.cr()?;
                     let sp = sourcepos_attr(&context.user, node);
                     write!(context, "<p{mark}{sp}>")?;
                 }

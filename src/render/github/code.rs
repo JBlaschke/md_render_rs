@@ -4,8 +4,8 @@
 use dom_query::Document;
 
 use super::Ctx;
-use super::ast::math_html;
 use super::dom;
+use super::math::math_html;
 use super::octicons;
 use super::util::{mdr_key, push_attr, push_text, uuid_like};
 use crate::render::highlight;

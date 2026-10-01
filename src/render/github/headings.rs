@@ -7,7 +7,7 @@
 
 use dom_query::{Document, NodeRef};
 
-use super::octicons::LINK_PLACEHOLDER;
+use super::octicons;
 use super::slug::Slugger;
 use super::{Ctx, dom};
 
@@ -72,7 +72,7 @@ pub(super) fn run(doc: &Document, ctx: &Ctx) {
         anchor.set_attr("class", "anchor");
         anchor.set_attr("aria-label", &format!("Permalink: {label}"));
         anchor.set_attr("href", &format!("#{slug}"));
-        anchor.append_child(&doc.tree.new_element(LINK_PLACEHOLDER));
+        anchor.append_child(&doc.tree.new_element(&octicons::placeholder("link")));
 
         dom::wrap(&h, &wrapper);
         wrapper.append_child(&anchor);
