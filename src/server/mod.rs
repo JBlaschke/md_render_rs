@@ -369,7 +369,7 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
 
     let styles = Arc::new(Styles::new(cfg.flavor, cfg.bundle_path.clone(), bundle, css, global.clone(), cfg.quiet));
     if let Some(w) = &watcher {
-        styles.watch(w);
+        styles.watch(w.clone());
     }
 
     let app = Arc::new(App {

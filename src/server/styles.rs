@@ -9,8 +9,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use arc_swap::ArcSwap;
 use tokio::sync::{Notify, broadcast, watch};
@@ -21,6 +21,10 @@ use super::watcher::FsWatcher;
 use crate::PREFIX;
 use crate::flavor::Flavor;
 use crate::styles::Bundle;
+
+/// How often the server checks whether an unwatchable bundle directory (e.g. the cache
+/// directory before the first `md-render vendor`) has appeared, or a watched one vanished.
+const REWATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Size and modification time of the bundle file: a cheap change detector that works
 /// whatever the bundle's own ETag scheme is.
@@ -180,6 +184,8 @@ pub struct Styles {
     bundle: ArcSwap<Bundle>,
     version: AtomicU64,
     fingerprint: Mutex<Option<Fingerprint>>,
+    /// The watcher, once [`Styles::watch`] was called.
+    watcher: OnceLock<Arc<FsWatcher>>,
     /// Canonical (dir, file) of the bundle while it is watched.
     watched: Mutex<Option<(PathBuf, PathBuf)>>,
     css: Vec<ExtraCss>,
@@ -212,6 +218,7 @@ impl Styles {
             bundle: ArcSwap::from_pointee(bundle),
             version: AtomicU64::new(0),
             fingerprint: Mutex::new(fp),
+            watcher: OnceLock::new(),
             watched: Mutex::new(None),
             css,
             css_watched: Mutex::new(Vec::new()),
@@ -253,13 +260,9 @@ impl Styles {
     }
 
     /// Start watching the bundle file and local `--css` files.
-    pub fn watch(&self, watcher: &FsWatcher) {
-        if let Some((dir, file)) = paths::watch_target(&self.path) {
-            match watcher.add(&dir) {
-                Ok(()) => *lock(&self.watched) = Some((dir, file)),
-                Err(e) => tracing::debug!("not watching the style bundle directory {}: {e}", dir.display()),
-            }
-        }
+    pub fn watch(&self, watcher: Arc<FsWatcher>) {
+        let watcher = self.watcher.get_or_init(|| watcher);
+        self.ensure_bundle_watched();
         let mut css = lock(&self.css_watched);
         for c in &self.css {
             if let Some(f) = &c.file
@@ -267,6 +270,34 @@ impl Styles {
                 && watcher.add(&dir).is_ok()
             {
                 css.push((dir, file));
+            }
+        }
+    }
+
+    /// Make sure the bundle's directory is watched: (re-)establish the watch when the
+    /// directory did not exist before (no bundle vendored yet) or was removed and re-created.
+    /// Returns true when a new watch was set up, i.e. changes may have been missed.
+    fn ensure_bundle_watched(&self) -> bool {
+        let Some(watcher) = self.watcher.get() else { return false };
+        let mut watched = lock(&self.watched);
+        if let Some((dir, _)) = watched.as_ref() {
+            if dir.is_dir() {
+                return false;
+            }
+            // The directory went away; its watch is dead (inotify drops it), start over.
+            watcher.remove(dir);
+            *watched = None;
+        }
+        let Some((dir, file)) = paths::watch_target(&self.path) else { return false };
+        match watcher.add(&dir) {
+            Ok(()) => {
+                tracing::debug!("watching the style bundle directory {}", dir.display());
+                *watched = Some((dir, file));
+                true
+            }
+            Err(e) => {
+                tracing::debug!("not watching the style bundle directory {}: {e}", dir.display());
+                false
             }
         }
     }
@@ -299,11 +330,18 @@ impl Styles {
 
     /// Reload loop: runs until shutdown.
     pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
+        let mut rewatch = tokio::time::interval(REWATCH_INTERVAL);
+        rewatch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.wait_for(|stop| *stop) => break,
                 _ = self.wake.notified() => {}
+                _ = rewatch.tick() => {
+                    if !self.ensure_bundle_watched() {
+                        continue;
+                    }
+                }
             }
             self.reload().await;
         }
@@ -415,6 +453,36 @@ mod tests {
         write_bundle(&path, "a{}");
         assert!(matches!(Initial::open(&path, Flavor::Github), Initial::Ready(_)));
         assert!(matches!(Initial::open(&path, Flavor::Gitlab), Initial::NoFlavor(_)));
+    }
+
+    #[tokio::test]
+    async fn bundle_directory_created_later_is_picked_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache/md-render/styles.tar.gz");
+        let (tx, _rx) = broadcast::channel(8);
+        let styles = Styles::new(Flavor::Github, path.clone(), Bundle::fallback(), vec![], tx, true);
+        let (wtx, _wrx) = tokio::sync::mpsc::unbounded_channel();
+        let (watcher, _) = FsWatcher::new(Some(std::time::Duration::from_millis(50)), wtx).unwrap();
+        let watcher = Arc::new(watcher);
+        styles.watch(watcher.clone());
+        assert!(lock(&styles.watched).is_none());
+        assert!(!styles.ensure_bundle_watched());
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_bundle(&path, "a{}");
+        assert!(styles.ensure_bundle_watched());
+        let canon_dir = std::fs::canonicalize(path.parent().unwrap()).unwrap();
+        assert!(watcher.is_watched(&canon_dir));
+        styles.reload().await;
+        assert_eq!(styles.version(), 1);
+        assert_eq!(&styles.bundle().read("github/a.css").unwrap()[..], b"a{}");
+
+        // The directory vanishes: the dead watch is dropped and re-made once it is back.
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        assert!(!styles.ensure_bundle_watched());
+        assert!(!watcher.is_watched(&canon_dir));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(styles.ensure_bundle_watched());
     }
 
     #[tokio::test]

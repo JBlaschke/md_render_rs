@@ -64,7 +64,9 @@ async fn static_asset(UrlPath(name): UrlPath<String>, headers: HeaderMap) -> Res
     let Some((bytes, mime)) = crate::assets::get(&name) else {
         return not_found_text();
     };
-    let etag = format!("\"{}\"", crate::TOOL.replace(' ', "-"));
+    // Content-based, so a rebuilt binary with changed client code is never served from a
+    // stale browser cache (`no-cache` revalidates on every load).
+    let etag = static_etag(bytes);
     if if_none_match(&headers, &etag) {
         return not_modified(&etag);
     }
@@ -401,6 +403,13 @@ fn redirect(status: StatusCode, location: &str, query: Option<&str>) -> Response
         Ok(v) => (status, [(header::LOCATION, v)]).into_response(),
         Err(_) => plain_error("invalid redirect target"),
     }
+}
+
+/// Strong ETag of an embedded asset: a truncated SHA-256 of its bytes.
+fn static_etag(bytes: &[u8]) -> String {
+    let digest = super::hub::sha256(bytes);
+    let hex: String = digest[..12].iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
 }
 
 fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
