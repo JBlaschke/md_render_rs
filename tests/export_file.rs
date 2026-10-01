@@ -226,8 +226,8 @@ fn directory_export() {
 
     let (_, opts) = seen(&renderer).remove(0);
     assert_eq!(
-        opts.bundle_url, "My%20Doc_files",
-        "bundle references point into the assets directory"
+        opts.bundle_url, "/__/md-render/bundle",
+        "the page maps bundle references into the assets directory"
     );
     let files = s.path("site/My Doc_files");
     assert_eq!(
@@ -376,5 +376,79 @@ fn offline_renderer_end_to_end() {
                 .contains("Some text with code."),
             "{flavor}"
         );
+    }
+}
+
+/// EXP-1: an export written to another directory than its source rebases the document's
+/// relative image and link URLs onto the source directory; absolute URLs, fragments and
+/// exports next to the source keep them as written. (Stdout exports never rebase; see the
+/// unit tests in src/export.rs.)
+#[test]
+fn relative_document_urls_follow_the_output_directory() {
+    let s = Setup::new();
+    let md = s.markdown(
+        "docs/e.md",
+        "# E\n\n![local](img/pic.png) ![remote](https://example.com/r.png)\n\n\
+         [sibling](other.md#part) [top](#e) [mail](mailto:a@example.com)\n\n\
+         <picture><source srcset=\"img/b.png 1x, img/b@2x.png 2x\"><img src=\"img/b.png\" alt=\"b\"></picture>\n",
+    );
+    std::fs::create_dir_all(s.path("docs/img")).unwrap();
+    std::fs::write(s.path("docs/img/pic.png"), PNG).unwrap();
+    std::fs::create_dir_all(s.path("out")).unwrap();
+    for flavor in [Flavor::Github, Flavor::Gitlab] {
+        for (out, prefix) in [
+            (s.path(&format!("out/{flavor}.html")), "../docs/"),
+            (s.path(&format!("docs/{flavor}.html")), ""),
+        ] {
+            for inline in [true, false] {
+                let mut cfg = s.config(
+                    ExportInput::File(md.clone()),
+                    ExportOutput::File(out.clone()),
+                    Arc::new(OfflineRenderer),
+                );
+                cfg.flavor = flavor;
+                cfg.inline = inline;
+                export(&cfg).unwrap();
+                let html = std::fs::read_to_string(&out).unwrap();
+                let doc = Document::from(html.as_str());
+                let ctx = format!("{flavor} -> {} (inline: {inline})", out.display());
+                let local = attr(&doc, "#md-content img[alt=local]", "src");
+                assert_eq!(local, Some(format!("{prefix}img/pic.png")), "{ctx}");
+                assert!(
+                    out.parent().unwrap().join(local.unwrap()).is_file(),
+                    "{ctx}: the image resolves"
+                );
+                assert_eq!(
+                    attr(&doc, "#md-content img[alt=remote]", "src").as_deref(),
+                    Some("https://example.com/r.png"),
+                    "{ctx}"
+                );
+                let hrefs: Vec<String> = doc
+                    .select("#md-content a")
+                    .nodes()
+                    .iter()
+                    .filter_map(|n| n.attr("href").map(|h| h.to_string()))
+                    .collect();
+                assert!(
+                    hrefs.contains(&format!("{prefix}other.md#part")),
+                    "{ctx}: {hrefs:?}"
+                );
+                assert!(hrefs.iter().any(|h| h == "mailto:a@example.com"), "{ctx}");
+                assert!(hrefs.iter().any(|h| h == "#e"), "{ctx}: {hrefs:?}");
+                assert_eq!(
+                    attr(&doc, "#md-content img[alt=b]", "src"),
+                    Some(format!("{prefix}img/b.png")),
+                    "{ctx}"
+                );
+                // (GitLab's sanitizer drops <source srcset>.)
+                if flavor == Flavor::Github {
+                    assert_eq!(
+                        attr(&doc, "#md-content source", "srcset"),
+                        Some(format!("{prefix}img/b.png 1x, {prefix}img/b@2x.png 2x")),
+                        "{ctx}"
+                    );
+                }
+            }
+        }
     }
 }

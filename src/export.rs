@@ -1,13 +1,16 @@
 //! `md-render export` (owner: page). Contract: docs/DESIGN.md §3.9.
 //!
-//! Renders one document with the configured renderer and writes a standalone HTML page:
-//! self-contained by default (all CSS, fonts, images and needed client libraries inlined), or
-//! with a `<stem>_files/` directory next to the output (`--no-inline`). Diagnostics go to
-//! stderr; with [`ExportOutput::Stdout`] the page is the only thing written to stdout.
+//! Renders one document with the configured renderer and writes a standalone HTML page: by
+//! default the site's CSS (with its fonts and images), md-render's scripts and the client
+//! libraries the document needs are inlined; with `--no-inline` they are copied into a
+//! `<stem>_files/` directory next to the output. Images and links of the document itself are
+//! not embedded: they stay relative references, rebased when the output is written to another
+//! directory than the source (like grip, GRIP §2.6). Diagnostics go to stderr; with
+//! [`ExportOutput::Stdout`] the page is the only thing written to stdout.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -79,10 +82,15 @@ const HREF_SET: &AsciiSet = &CONTROLS
     .add(b'}')
     .add(b'\'');
 
+/// Path segments in a rebased document URL: [`HREF_SET`] plus `\\` (a separator for browsers).
+const SEGMENT_SET: &AsciiSet = &HREF_SET.add(b'\\');
+
 /// Render `cfg.input` with `cfg.renderer` and write a standalone HTML page.
 ///
-/// The renderer gets `sourcepos: false` and a `bundle_url` that the page resolves inside the
-/// export (data URIs, or the `<stem>_files/` directory with `inline: false`). Styles come from
+/// The renderer gets `sourcepos: false` and the default `bundle_url` (`/__/md-render/bundle`),
+/// which the page resolves inside the export (data URIs, or the `<stem>_files/` directory with
+/// `inline: false`). Document-relative URLs (`img/a.png`) are rebased onto the source
+/// directory when the output file is written elsewhere. Styles come from
 /// [`crate::styles::load_or_fallback`]; falling back is reported on stderr unless `quiet`.
 /// A file is written atomically (temporary file + rename); with [`ExportOutput::Stdout`] the
 /// page is the only output on stdout.
@@ -114,19 +122,19 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         }),
         source_path,
         sourcepos: false,
-        // Inline: the default bundle route, rewritten to data URIs by the page. Directory:
-        // references point straight into the copied assets directory.
-        bundle_url: match &assets {
-            AssetMode::Directory { href, .. } => href.clone(),
-            _ => format!("{}/bundle", crate::PREFIX),
-        },
+        // The default bundle route: the page turns these references into data URIs or into
+        // copies in the assets directory (and never mistakes a document URL for one).
+        bundle_url: format!("{}/bundle", crate::PREFIX),
     };
-    let rendered = cfg.renderer.render(&markdown, &opts).with_context(|| {
+    let mut rendered = cfg.renderer.render(&markdown, &opts).with_context(|| {
         format!(
             "rendering {display_name} with the {} renderer",
             cfg.renderer.name()
         )
     })?;
+    if let Some(prefix) = source_prefix(opts.source_path.as_deref(), &cfg.output) {
+        rendered.html = crate::page::content::rebase_relative_urls(&rendered.html, &prefix);
+    }
 
     let (bundle, warning) = crate::styles::load_or_fallback(&cfg.bundle_path);
     if !cfg.quiet {
@@ -216,6 +224,65 @@ fn read_input(cfg: &ExportConfig) -> anyhow::Result<(String, Option<PathBuf>, St
 
 fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
+/// The directory of `file`, absolute and lexically normalized (`.`/`..` resolved without
+/// following symlinks, as a browser resolves relative `file:` URLs).
+fn lexical_dir(file: &Path) -> Option<PathBuf> {
+    let abs = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(file)
+    };
+    let mut out = PathBuf::new();
+    for c in abs.parent()?.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    Some(out)
+}
+
+/// URL path from directory `from` to directory `to` (`../docs`; `""` when they are the same),
+/// percent-encoded; `None` when there is no relative path (different drives on Windows).
+fn relative_url_path(from: &Path, to: &Path) -> Option<String> {
+    let from: Vec<Component> = from.components().collect();
+    let to: Vec<Component> = to.components().collect();
+    if from.first() != to.first() {
+        return None;
+    }
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut segs: Vec<String> = Vec::new();
+    for c in &from[common..] {
+        match c {
+            Component::Normal(_) => segs.push("..".to_owned()),
+            _ => return None,
+        }
+    }
+    for c in &to[common..] {
+        match c {
+            Component::Normal(s) => {
+                segs.push(utf8_percent_encode(s.to_str()?, SEGMENT_SET).to_string())
+            }
+            _ => return None,
+        }
+    }
+    Some(segs.join("/"))
+}
+
+/// Prefix for the document-relative URLs of an export of `source` to `output`: the URL path
+/// from the output directory to the source directory, when they differ. `None` for stdin and
+/// stdout (relative to the current directory either way) and for the same directory.
+fn source_prefix(source: Option<&Path>, output: &ExportOutput) -> Option<String> {
+    let ExportOutput::File(out) = output else {
+        return None;
+    };
+    let prefix = relative_url_path(&lexical_dir(out)?, &lexical_dir(source?)?)?;
+    (!prefix.is_empty()).then_some(prefix)
 }
 
 /// `--no-inline`: assets go to `<dir of out>/<stem>_files/`, linked relatively.
@@ -334,6 +401,33 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = write_atomic(&tmp.path().join("missing/a.html"), b"x").unwrap_err();
         assert!(format!("{err:#}").contains("temporary file"));
+    }
+
+    #[test]
+    fn relative_url_paths() {
+        let p = |from: &str, to: &str| relative_url_path(Path::new(from), Path::new(to));
+        assert_eq!(p("/a/out", "/a/docs").as_deref(), Some("../docs"));
+        assert_eq!(p("/a", "/a/docs/sub").as_deref(), Some("docs/sub"));
+        assert_eq!(p("/a/b/c", "/a").as_deref(), Some("../.."));
+        assert_eq!(p("/a", "/a").as_deref(), Some(""));
+        assert_eq!(p("/a/out", "/a/My Docs").as_deref(), Some("../My%20Docs"));
+        assert_eq!(
+            lexical_dir(Path::new("/a/./b/../c/x.html")),
+            Some(PathBuf::from("/a/c"))
+        );
+    }
+
+    #[test]
+    fn source_prefixes() {
+        let out = |p: &str| ExportOutput::File(PathBuf::from(p));
+        let src = Path::new("/w/docs/e.md");
+        assert_eq!(
+            source_prefix(Some(src), &out("/w/out/e.html")).as_deref(),
+            Some("../docs")
+        );
+        assert_eq!(source_prefix(Some(src), &out("/w/docs/e.html")), None);
+        assert_eq!(source_prefix(Some(src), &ExportOutput::Stdout), None);
+        assert_eq!(source_prefix(None, &out("/w/out/e.html")), None);
     }
 
     #[test]

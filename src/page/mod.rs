@@ -21,7 +21,7 @@ use crate::render::Rendered;
 use crate::styles::Bundle;
 
 mod assets;
-mod content;
+pub(crate) mod content;
 mod css;
 mod github;
 mod gitlab;
