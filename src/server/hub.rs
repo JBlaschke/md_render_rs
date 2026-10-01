@@ -60,11 +60,18 @@ pub struct RenderCtx {
 
 impl RenderCtx {
     fn options_for(&self, path: &Path) -> RenderOptions {
-        RenderOptions { source_path: Some(path.to_path_buf()), ..self.options.clone() }
+        RenderOptions {
+            source_path: Some(path.to_path_buf()),
+            ..self.options.clone()
+        }
     }
 
     fn render_error_kind(&self) -> ErrorKind {
-        if self.renderer.name() == "offline" { ErrorKind::Render } else { ErrorKind::Api }
+        if self.renderer.name() == "offline" {
+            ErrorKind::Render
+        } else {
+            ErrorKind::Api
+        }
     }
 
     fn log(&self, msg: &str) {
@@ -88,7 +95,12 @@ pub struct Content {
 impl Content {
     fn new(version: u64, hash: [u8; 32], rendered: Arc<Rendered>) -> Content {
         let event = Arc::new(WireEvent::content(version, &rendered));
-        Content { version, hash, rendered, event }
+        Content {
+            version,
+            hash,
+            rendered,
+            event,
+        }
     }
 }
 
@@ -182,7 +194,9 @@ pub struct DocEntry {
 
 impl std::fmt::Debug for DocEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DocEntry").field("key", &self.key).finish_non_exhaustive()
+        f.debug_struct("DocEntry")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
     }
 }
 
@@ -318,9 +332,15 @@ impl DocEntry {
             return (false, Vec::new());
         }
         // A directory-level event (rescan) re-checks the document; the hash makes it cheap.
-        let doc = changed.iter().any(|p| t.doc_file.as_ref() == Some(p) || t.doc_dir.as_ref() == Some(p));
-        let mut urls: Vec<String> =
-            t.deps.iter().filter(|d| changed.contains(&d.file)).map(|d| d.url.clone()).collect();
+        let doc = changed
+            .iter()
+            .any(|p| t.doc_file.as_ref() == Some(p) || t.doc_dir.as_ref() == Some(p));
+        let mut urls: Vec<String> = t
+            .deps
+            .iter()
+            .filter(|d| changed.contains(&d.file))
+            .map(|d| d.url.clone())
+            .collect();
         urls.sort();
         urls.dedup();
         (doc, urls)
@@ -354,7 +374,11 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(ctx: Arc<RenderCtx>, shutdown: watch::Receiver<bool>) -> Hub {
-        Hub { ctx, docs: Mutex::new(HashMap::new()), shutdown }
+        Hub {
+            ctx,
+            docs: Mutex::new(HashMap::new()),
+            shutdown,
+        }
     }
 
     /// The entry for root-relative `key`, created (with its worker) on first use.
@@ -367,7 +391,11 @@ impl Hub {
             evict_idle(&mut docs);
         }
         let entry = Arc::new(DocEntry::new(key, paths::join_rel(&self.ctx.root, key)));
-        tokio::spawn(worker(entry.clone(), self.ctx.clone(), self.shutdown.clone()));
+        tokio::spawn(worker(
+            entry.clone(),
+            self.ctx.clone(),
+            self.shutdown.clone(),
+        ));
         docs.insert(key.to_owned(), entry.clone());
         entry
     }
@@ -396,13 +424,21 @@ impl Hub {
                 e.trigger();
             });
         }
-        Subscription { entry, watcher: self.ctx.watcher.clone() }
+        Subscription {
+            entry,
+            watcher: self.ctx.watcher.clone(),
+        }
     }
 
     /// Dispatch a batch of changed (canonical) paths from the watcher.
     pub fn on_paths_changed(&self, changed: &[PathBuf]) {
-        let entries: Vec<Arc<DocEntry>> =
-            self.docs.lock().unwrap_or_else(|p| p.into_inner()).values().cloned().collect();
+        let entries: Vec<Arc<DocEntry>> = self
+            .docs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
         let token = cache_token();
         for e in entries {
             let (doc, urls) = e.match_paths(changed);
@@ -411,7 +447,10 @@ impl Hub {
             }
             if !urls.is_empty() {
                 for u in &urls {
-                    self.ctx.log(&format!("Change detected in {}, refreshing images", u.trim_start_matches('/')));
+                    self.ctx.log(&format!(
+                        "Change detected in {}, refreshing images",
+                        u.trim_start_matches('/')
+                    ));
                 }
                 e.broadcast(Arc::new(WireEvent::assets(&urls, &token)));
             }
@@ -421,7 +460,11 @@ impl Hub {
     /// Entry for `key` if it exists.
     #[cfg(test)]
     pub fn get(&self, key: &str) -> Option<Arc<DocEntry>> {
-        self.docs.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned()
+        self.docs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(key)
+            .cloned()
     }
 
     /// Number of documents in the registry.
@@ -474,8 +517,9 @@ pub fn decode_markdown(mut bytes: Vec<u8>, name: &str) -> (String, Option<String
         Err(e) => {
             let offset = e.utf8_error().valid_up_to() + if bom { 3 } else { 0 };
             let text = String::from_utf8_lossy(e.as_bytes()).into_owned();
-            let warning =
-                format!("{name} is not valid UTF-8 (first invalid byte at offset {offset}); showing a lossy decoding");
+            let warning = format!(
+                "{name} is not valid UTF-8 (first invalid byte at offset {offset}); showing a lossy decoding"
+            );
             (text, Some(warning))
         }
     }
@@ -515,7 +559,10 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
                 entry.publish(t0, |_| {});
             } else {
                 if snap.status != DocStatus::Pending {
-                    ctx.log(&format!("{} was deleted; waiting for it to reappear", entry.key));
+                    ctx.log(&format!(
+                        "{} was deleted; waiting for it to reappear",
+                        entry.key
+                    ));
                 }
                 let v = entry.next_version();
                 entry.publish(t0, |s| {
@@ -537,7 +584,10 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
                 let msg = message.clone();
                 entry.publish(t0, |s| {
                     s.version = v;
-                    s.status = DocStatus::Failed { kind: ErrorKind::Read, message: msg };
+                    s.status = DocStatus::Failed {
+                        kind: ErrorKind::Read,
+                        message: msg,
+                    };
                 });
                 entry.broadcast(Arc::new(WireEvent::error(v, ErrorKind::Read, &message)));
             }
@@ -554,6 +604,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             return Outcome::Done;
         }
         // Same bytes as the last good render (recreated file, reverted error): reuse it.
+        ctx.log(&format!("Change detected in {}, refreshing", entry.key));
         let v = entry.next_version();
         let content = Arc::new(Content::new(v, hash, c.rendered.clone()));
         let ev = content.event.clone();
@@ -590,7 +641,10 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
 
     // Drop stale results: a newer change arrived while rendering and the file differs again.
     if !force && entry.triggers.load(Ordering::SeqCst) != t0 {
-        let now = read_contained(ctx, &entry.path).await.ok().map(|b| sha256(&b));
+        let now = read_contained(ctx, &entry.path)
+            .await
+            .ok()
+            .map(|b| sha256(&b));
         if now != Some(hash) {
             return Outcome::Stale;
         }
@@ -618,7 +672,11 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
             publish_failure(entry, t0, v, kind, message);
         }
         Err(join) => {
-            let message = if join.is_panic() { "the renderer panicked".to_owned() } else { join.to_string() };
+            let message = if join.is_panic() {
+                "the renderer panicked".to_owned()
+            } else {
+                join.to_string()
+            };
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
             publish_failure(entry, t0, v, ErrorKind::Render, message);
         }
@@ -631,7 +689,10 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx, force: bool) -> Outcome {
 async fn read_contained(ctx: &RenderCtx, path: &Path) -> std::io::Result<Vec<u8>> {
     let canon = tokio::fs::canonicalize(path).await?;
     if let Err(e) = paths::check_contained(&ctx.root, &canon, ctx.follow_symlinks) {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string()));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            e.to_string(),
+        ));
     }
     tokio::fs::read(&canon).await
 }
@@ -652,7 +713,11 @@ fn resolve_deps(root: &Path, follow_symlinks: bool, refs: Vec<deps::DepRef>) -> 
             let (dir, file) = paths::watch_target(&paths::join_rel(root, &r.rel))?;
             paths::check_contained(root, &dir, follow_symlinks).ok()?;
             paths::check_contained(root, &file, follow_symlinks).ok()?;
-            Some(Dep { url: r.url, dir, file })
+            Some(Dep {
+                url: r.url,
+                dir,
+                file,
+            })
         })
         .collect()
 }
@@ -670,7 +735,10 @@ mod tests {
             if md.contains("FAIL") {
                 anyhow::bail!("cannot render this");
             }
-            Ok(Rendered { html: format!("<p>{}</p>", md.trim()), ..Default::default() })
+            Ok(Rendered {
+                html: format!("<p>{}</p>", md.trim()),
+                ..Default::default()
+            })
         }
         fn name(&self) -> &'static str {
             "offline"
@@ -692,7 +760,10 @@ mod tests {
 
     #[test]
     fn decoding() {
-        assert_eq!(decode_markdown(b"\xEF\xBB\xBF# x".to_vec(), "a.md"), ("# x".into(), None));
+        assert_eq!(
+            decode_markdown(b"\xEF\xBB\xBF# x".to_vec(), "a.md"),
+            ("# x".into(), None)
+        );
         let (text, w) = decode_markdown(b"caf\xe9".to_vec(), "a.md");
         assert_eq!(text, "caf\u{FFFD}");
         assert!(w.unwrap().contains("offset 3"));
@@ -715,7 +786,12 @@ mod tests {
             content: Some(Arc::new(Content::new(3, [0; 32], r))),
             status: DocStatus::Missing,
         };
-        let names = |since| snap.catch_up("a.md", since).iter().map(|e| e.name).collect::<Vec<_>>();
+        let names = |since| {
+            snap.catch_up("a.md", since)
+                .iter()
+                .map(|e| e.name)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(0), ["content", "deleted"]);
         assert_eq!(names(3), ["deleted"]);
         assert!(names(5).is_empty());
@@ -756,7 +832,9 @@ mod tests {
         // A render failure keeps the last good content.
         std::fs::write(root.join("a.md"), "FAIL").unwrap();
         let s = hub.current("a.md").await.unwrap();
-        assert!(matches!(&s.status, DocStatus::Failed { kind: ErrorKind::Render, message } if message.contains("cannot render")));
+        assert!(
+            matches!(&s.status, DocStatus::Failed { kind: ErrorKind::Render, message } if message.contains("cannot render"))
+        );
         assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>hello</p>");
         assert_eq!(s.version, 5);
     }
@@ -778,7 +856,10 @@ mod tests {
         assert!(hub.get("d0.md").is_some());
         drop(sub);
         // An evicted document is simply re-created on its next use.
-        assert_eq!(hub.current("d1.md").await.unwrap().status, DocStatus::Missing);
+        assert_eq!(
+            hub.current("d1.md").await.unwrap().status,
+            DocStatus::Missing
+        );
     }
 
     #[tokio::test]
@@ -792,7 +873,10 @@ mod tests {
         assert_eq!(sub.entry.subscribers(), 1);
         let mut names = Vec::new();
         while names.last() != Some(&"content") {
-            let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+            let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             names.push(ev.name);
         }
         assert_eq!(names, ["rendering", "content"]);
@@ -809,7 +893,10 @@ mod tests {
         struct Img;
         impl Renderer for Img {
             fn render(&self, _: &str, _: &RenderOptions) -> anyhow::Result<Rendered> {
-                Ok(Rendered { html: r#"<img src="img/a.png"><img src="https://x/y.png">"#.into(), ..Default::default() })
+                Ok(Rendered {
+                    html: r#"<img src="img/a.png"><img src="https://x/y.png">"#.into(),
+                    ..Default::default()
+                })
             }
             fn name(&self) -> &'static str {
                 "test"

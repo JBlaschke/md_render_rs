@@ -18,9 +18,16 @@ async fn stream_starts_with_retry_and_hello() {
 
     let mut sse = s.events("README.md", "", &[]).await;
     assert_eq!(sse.status, 200);
-    let ctype = sse.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|(_, v)| v.clone());
+    let ctype = sse
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone());
     assert_eq!(ctype.as_deref(), Some("text/event-stream"));
-    assert_eq!(sse.next_item(EVENT_TIMEOUT).await, Some(SseItem::Retry(1000)));
+    assert_eq!(
+        sse.next_item(EVENT_TIMEOUT).await,
+        Some(SseItem::Retry(1000))
+    );
     let hello = sse.next_event(EVENT_TIMEOUT).await.expect("hello");
     assert_eq!(hello.event, "hello");
     let data = hello.json();
@@ -55,11 +62,18 @@ async fn atomic_rename_saves_push_new_content() {
     let content = sse.wait_for("content").await.json();
     assert!(content["version"].as_u64().unwrap() > v0);
     assert_eq!(rendering.json()["version"], content["version"]);
-    assert!(content["html"].as_str().unwrap().contains("two"), "{content}");
+    assert!(
+        content["html"].as_str().unwrap().contains("two"),
+        "{content}"
+    );
 
     // In-place writes work too.
     write(&s.path("doc.md"), "three");
-    let content = sse.wait_until("content", |c| c["html"].as_str().is_some_and(|h| h.contains("three"))).await;
+    let content = sse
+        .wait_until("content", |c| {
+            c["html"].as_str().is_some_and(|h| h.contains("three"))
+        })
+        .await;
     assert!(content.json()["version"].as_u64().unwrap() > v0 + 1);
 }
 
@@ -71,7 +85,8 @@ async fn unchanged_saves_do_not_rerender() {
     let (mut sse, _) = s.subscribe("doc.md").await;
     let before = s.renders();
     write_atomic(&s.path("doc.md"), "same"); // `touch`-like save: identical bytes
-    sse.expect_none("content", Duration::from_millis(1500)).await;
+    sse.expect_none("content", Duration::from_millis(1500))
+        .await;
     assert_eq!(s.renders(), before);
 }
 
@@ -160,7 +175,10 @@ async fn reconnecting_clients_catch_up() {
     let last = format!("{sid}:1");
     let mut sse = s.events("doc.md", "", &[("Last-Event-ID", &last)]).await;
     sse.wait_for("hello").await;
-    let content = sse.next_event(EVENT_TIMEOUT).await.expect("replayed content");
+    let content = sse
+        .next_event(EVENT_TIMEOUT)
+        .await
+        .expect("replayed content");
     assert_eq!(content.event, "content");
     assert!(content.json()["html"].as_str().unwrap().contains("second"));
     drop(sse);
@@ -175,7 +193,13 @@ async fn reconnecting_clients_catch_up() {
     sse.expect_none("content", Duration::from_millis(300)).await;
 
     // Ids and versions of another server process mean nothing here.
-    let mut sse = s.events("doc.md", "&v=99&sid=0123456789abcdef", &[("Last-Event-ID", "0123456789abcdef:99")]).await;
+    let mut sse = s
+        .events(
+            "doc.md",
+            "&v=99&sid=0123456789abcdef",
+            &[("Last-Event-ID", "0123456789abcdef:99")],
+        )
+        .await;
     let hello = sse.wait_for("hello").await.json();
     assert_eq!(hello["server_id"], sid.as_str());
     sse.wait_for("content").await;
@@ -184,7 +208,10 @@ async fn reconnecting_clients_catch_up() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn changed_images_send_assets_events() {
     let f = Fixture::new();
-    f.file("docs/doc.md", "intro\n![](img/a.png)\n![](https://example.com/remote.png)");
+    f.file(
+        "docs/doc.md",
+        "intro\n![](img/a.png)\n![](https://example.com/remote.png)",
+    );
     f.file("docs/img/a.png", b"\x89PNG one");
     let s = f.start(|_| {}).await;
     let (mut sse, _) = s.subscribe("docs/doc.md").await;
@@ -209,7 +236,10 @@ async fn replacing_the_bundle_sends_styles_and_a_corrupt_one_keeps_the_old() {
     write_bundle(&bundle, "p{color:green}/* re-vendored */");
     let styles = sse.wait_for("styles").await.json();
     assert_eq!(styles["styles_version"], 1);
-    assert_eq!(styles["hrefs"], serde_json::json!(["/__/md-render/bundle/github/a.css"]));
+    assert_eq!(
+        styles["hrefs"],
+        serde_json::json!(["/__/md-render/bundle/github/a.css"])
+    );
     let r = s.get("/__/md-render/bundle/github/a.css").await;
     assert_eq!(r.text(), "p{color:green}/* re-vendored */");
 
@@ -237,7 +267,10 @@ async fn a_bundle_vendored_while_serving_replaces_the_fallback() {
     assert_eq!(s.get("/__/md-render/bundle/github/a.css").await.status, 404);
     write_bundle(&bundle, "q{}");
     sse.wait_for("styles").await;
-    assert_eq!(s.get("/__/md-render/bundle/github/a.css").await.text(), "q{}");
+    assert_eq!(
+        s.get("/__/md-render/bundle/github/a.css").await.text(),
+        "q{}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -246,20 +279,33 @@ async fn local_css_changes_send_styles() {
     f.file("doc.md", "x");
     let css = f.tmp.join("extra.css");
     write(&css, "a{}");
-    let s = f.start(|cfg| cfg.extra_css = vec![css.display().to_string()]).await;
+    let s = f
+        .start(|cfg| cfg.extra_css = vec![css.display().to_string()])
+        .await;
     let (mut sse, _) = s.subscribe("doc.md").await;
     write_atomic(&css, "a{color:red}");
     let styles = sse.wait_for("styles").await.json();
     assert!(styles["styles_version"].as_u64().unwrap() >= 1);
-    assert!(styles["hrefs"].as_array().unwrap().iter().any(|h| h == "/__/md-render/css/0/extra.css"));
-    assert_eq!(s.get("/__/md-render/css/0/extra.css").await.text(), "a{color:red}");
+    assert!(
+        styles["hrefs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h == "/__/md-render/css/0/extra.css")
+    );
+    assert_eq!(
+        s.get("/__/md-render/css/0/extra.css").await.text(),
+        "a{color:red}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn polling_watcher() {
     let f = Fixture::new();
     f.file("doc.md", "polled");
-    let s = f.start(|cfg| cfg.poll = Some(Duration::from_millis(100))).await;
+    let s = f
+        .start(|cfg| cfg.poll = Some(Duration::from_millis(100)))
+        .await;
     let (mut sse, _) = s.subscribe("doc.md").await;
     write_atomic(&s.path("doc.md"), "polled again");
     let c = sse.wait_for("content").await.json();
@@ -274,7 +320,10 @@ async fn norefresh_disables_the_event_stream() {
     let page = s.get("/").await;
     assert_eq!(page.status, 200);
     assert!(!page.text().contains("/__/md-render/events?path="));
-    assert_eq!(s.get("/__/md-render/events?path=README.md").await.status, 404);
+    assert_eq!(
+        s.get("/__/md-render/events?path=README.md").await.status,
+        404
+    );
     // Pages still re-read the file on every load.
     write(&s.path("README.md"), "changed");
     assert!(s.get("/").await.text().contains("changed"));
@@ -291,7 +340,11 @@ async fn graceful_shutdown_ends_every_stream() {
     s.shutdown().await;
     // Open SSE streams would otherwise block axum's graceful shutdown (CR §3); the server
     // force-closes after 5 s, so finishing well before that proves the streams ended.
-    assert!(started.elapsed() < Duration::from_secs(3), "shutdown took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "shutdown took {:?}",
+        started.elapsed()
+    );
     for sse in [&mut a, &mut b] {
         sse.wait_for("shutdown").await;
         sse.wait_end(EVENT_TIMEOUT).await;

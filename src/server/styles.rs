@@ -51,14 +51,21 @@ impl ExtraCss {
         let mut out = Vec::new();
         let mut warnings = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
-            let is_url = entry.contains("://") || entry.starts_with("//") || entry.starts_with("data:");
+            let is_url =
+                entry.contains("://") || entry.starts_with("//") || entry.starts_with("data:");
             let path = Path::new(entry);
             if !is_url && path.is_file() {
                 match std::fs::canonicalize(path) {
                     Ok(canon) => {
-                        let name = canon.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let name = canon
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
                         let url = format!("{PREFIX}/css/{i}/{}", paths::encode_segment(&name));
-                        out.push(ExtraCss { url, file: Some(canon) });
+                        out.push(ExtraCss {
+                            url,
+                            file: Some(canon),
+                        });
                         continue;
                     }
                     Err(e) => warnings.push(format!("--css {entry}: {e}")),
@@ -66,7 +73,10 @@ impl ExtraCss {
             } else if !is_url && !entry.starts_with('/') {
                 warnings.push(format!("--css {entry}: no such file; linking it as a URL"));
             }
-            out.push(ExtraCss { url: entry.clone(), file: None });
+            out.push(ExtraCss {
+                url: entry.clone(),
+                file: None,
+            });
         }
         (out, warnings)
     }
@@ -108,7 +118,10 @@ pub fn vendor_hint(flavor: Flavor, path: &Path) -> String {
     let mut cmd = format!("md-render vendor --flavor {flavor}");
     if path != crate::styles::default_bundle_path() {
         let p = path.display().to_string();
-        let quoted = if p.chars().any(|c| c.is_whitespace() || "'\"$`\\".contains(c)) {
+        let quoted = if p
+            .chars()
+            .any(|c| c.is_whitespace() || "'\"$`\\".contains(c))
+        {
             format!("'{}'", p.replace('\'', r"'\''"))
         } else {
             p
@@ -124,7 +137,10 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
     let mut state = Initial::open(path, flavor);
     if auto_vendor && !state.has_flavor() {
         if !quiet {
-            eprintln!(" * Vendoring {flavor} styles into {} (--auto-vendor) ...", path.display());
+            eprintln!(
+                " * Vendoring {flavor} styles into {} (--auto-vendor) ...",
+                path.display()
+            );
         }
         let opts = crate::styles::vendor::VendorOptions {
             flavors: vec![flavor],
@@ -138,7 +154,12 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
         match tokio::task::spawn_blocking(move || crate::styles::vendor::vendor(&opts)).await {
             Ok(Ok(report)) => {
                 if !quiet {
-                    eprintln!(" * Vendored {} files ({} bytes) into {}", report.files, report.bytes, report.output.display());
+                    eprintln!(
+                        " * Vendored {} files ({} bytes) into {}",
+                        report.files,
+                        report.bytes,
+                        report.output.display()
+                    );
                 }
                 state = Initial::open(path, flavor);
             }
@@ -198,7 +219,10 @@ pub struct Styles {
 
 impl std::fmt::Debug for Styles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Styles").field("path", &self.path).field("version", &self.version()).finish_non_exhaustive()
+        f.debug_struct("Styles")
+            .field("path", &self.path)
+            .field("version", &self.version())
+            .finish_non_exhaustive()
     }
 }
 
@@ -253,7 +277,12 @@ impl Styles {
         let bundle = self.bundle();
         let mut out: Vec<String> = bundle
             .flavor(self.flavor)
-            .map(|m| m.stylesheets.iter().map(|s| format!("{PREFIX}/bundle/{}", s.path)).collect())
+            .map(|m| {
+                m.stylesheets
+                    .iter()
+                    .map(|s| format!("{PREFIX}/bundle/{}", s.path))
+                    .collect()
+            })
             .unwrap_or_default();
         out.extend(self.extra_css_urls());
         out
@@ -278,7 +307,9 @@ impl Styles {
     /// directory did not exist before (no bundle vendored yet) or was removed and re-created.
     /// Returns true when a new watch was set up, i.e. changes may have been missed.
     fn ensure_bundle_watched(&self) -> bool {
-        let Some(watcher) = self.watcher.get() else { return false };
+        let Some(watcher) = self.watcher.get() else {
+            return false;
+        };
         let mut watched = lock(&self.watched);
         if let Some((dir, _)) = watched.as_ref() {
             if dir.is_dir() {
@@ -288,7 +319,9 @@ impl Styles {
             watcher.remove(dir);
             *watched = None;
         }
-        let Some((dir, file)) = paths::watch_target(&self.path) else { return false };
+        let Some((dir, file)) = paths::watch_target(&self.path) else {
+            return false;
+        };
         match watcher.add(&dir) {
             Ok(()) => {
                 tracing::debug!("watching the style bundle directory {}", dir.display());
@@ -296,7 +329,10 @@ impl Styles {
                 true
             }
             Err(e) => {
-                tracing::debug!("not watching the style bundle directory {}: {e}", dir.display());
+                tracing::debug!(
+                    "not watching the style bundle directory {}: {e}",
+                    dir.display()
+                );
                 false
             }
         }
@@ -314,11 +350,15 @@ impl Styles {
         {
             self.wake.notify_one();
         }
-        let css_changed = lock(&self.css_watched).iter().any(|(_, f)| changed.contains(f));
+        let css_changed = lock(&self.css_watched)
+            .iter()
+            .any(|(_, f)| changed.contains(f));
         if css_changed {
             let v = self.version.fetch_add(1, Ordering::SeqCst) + 1;
             self.log("Change detected in --css stylesheet, refreshing styles");
-            let _ = self.global.send(Arc::new(WireEvent::styles(v, &self.hrefs())));
+            let _ = self
+                .global
+                .send(Arc::new(WireEvent::styles(v, &self.hrefs())));
         }
     }
 
@@ -358,7 +398,10 @@ impl Styles {
             *fp = now;
         }
         if now.is_none() {
-            self.log(&format!("style bundle {} was removed; keeping the loaded styles", self.path.display()));
+            self.log(&format!(
+                "style bundle {} was removed; keeping the loaded styles",
+                self.path.display()
+            ));
             return;
         }
         let path = self.path.clone();
@@ -374,18 +417,29 @@ impl Styles {
                 }
                 self.bundle.store(Arc::new(b.with_fallbacks()));
                 let v = self.version.fetch_add(1, Ordering::SeqCst) + 1;
-                self.log(&format!("Style bundle {} changed, refreshing styles", self.path.display()));
-                let _ = self.global.send(Arc::new(WireEvent::styles(v, &self.hrefs())));
+                self.log(&format!(
+                    "Style bundle {} changed, refreshing styles",
+                    self.path.display()
+                ));
+                let _ = self
+                    .global
+                    .send(Arc::new(WireEvent::styles(v, &self.hrefs())));
             }
             Ok(Err(e)) => {
                 let message = format!("{e:#}; keeping the previously loaded styles");
                 self.log(&format!("style bundle error: {message}"));
-                let _ = self.global.send(Arc::new(WireEvent::global_error(ErrorKind::Bundle, &message)));
+                let _ = self.global.send(Arc::new(WireEvent::global_error(
+                    ErrorKind::Bundle,
+                    &message,
+                )));
             }
             Err(e) => {
                 let message = format!("re-opening the style bundle failed: {e}");
                 self.log(&message);
-                let _ = self.global.send(Arc::new(WireEvent::global_error(ErrorKind::Bundle, &message)));
+                let _ = self.global.send(Arc::new(WireEvent::global_error(
+                    ErrorKind::Bundle,
+                    &message,
+                )));
             }
         }
     }
@@ -406,12 +460,18 @@ mod tests {
         m.flavors.insert(
             Flavor::Github,
             FlavorManifest {
-                stylesheets: vec![Stylesheet { path: "github/a.css".into(), role: "github".into(), ..Default::default() }],
+                stylesheets: vec![Stylesheet {
+                    path: "github/a.css".into(),
+                    role: "github".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         );
-        fs.write_file("manifest.json", serde_json::to_vec(&m).unwrap()).unwrap();
-        fs.write_file("github/a.css", css.as_bytes().to_vec()).unwrap();
+        fs.write_file("manifest.json", serde_json::to_vec(&m).unwrap())
+            .unwrap();
+        fs.write_file("github/a.css", css.as_bytes().to_vec())
+            .unwrap();
         fs.write_tarball_gz(path).unwrap();
     }
 
@@ -427,7 +487,13 @@ mod tests {
             "missing.css".to_owned(),
         ];
         let (css, warnings) = ExtraCss::from_config(&entries);
-        assert_eq!(css[0], ExtraCss { url: "https://example.com/a.css".into(), file: None });
+        assert_eq!(
+            css[0],
+            ExtraCss {
+                url: "https://example.com/a.css".into(),
+                file: None
+            }
+        );
         assert_eq!(css[1].url, "/__/md-render/css/1/my%20style.css");
         assert!(css[1].file.is_some());
         assert_eq!(css[2].url, "/local/root.css");
@@ -438,7 +504,10 @@ mod tests {
     #[test]
     fn hint_mentions_custom_paths() {
         let hint = vendor_hint(Flavor::Gitlab, Path::new("/tmp/my bundle.tar.gz"));
-        assert_eq!(hint, "md-render vendor --flavor gitlab -o '/tmp/my bundle.tar.gz'");
+        assert_eq!(
+            hint,
+            "md-render vendor --flavor gitlab -o '/tmp/my bundle.tar.gz'"
+        );
         let default = vendor_hint(Flavor::Github, &crate::styles::default_bundle_path());
         assert_eq!(default, "md-render vendor --flavor github");
     }
@@ -447,12 +516,24 @@ mod tests {
     fn initial_classification() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.tar.gz");
-        assert!(matches!(Initial::open(&path, Flavor::Github), Initial::Missing));
+        assert!(matches!(
+            Initial::open(&path, Flavor::Github),
+            Initial::Missing
+        ));
         std::fs::write(&path, b"not a tarball").unwrap();
-        assert!(matches!(Initial::open(&path, Flavor::Github), Initial::Broken(_)));
+        assert!(matches!(
+            Initial::open(&path, Flavor::Github),
+            Initial::Broken(_)
+        ));
         write_bundle(&path, "a{}");
-        assert!(matches!(Initial::open(&path, Flavor::Github), Initial::Ready(_)));
-        assert!(matches!(Initial::open(&path, Flavor::Gitlab), Initial::NoFlavor(_)));
+        assert!(matches!(
+            Initial::open(&path, Flavor::Github),
+            Initial::Ready(_)
+        ));
+        assert!(matches!(
+            Initial::open(&path, Flavor::Gitlab),
+            Initial::NoFlavor(_)
+        ));
     }
 
     #[tokio::test]
@@ -460,7 +541,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache/md-render/styles.tar.gz");
         let (tx, _rx) = broadcast::channel(8);
-        let styles = Styles::new(Flavor::Github, path.clone(), Bundle::fallback(), vec![], tx, true);
+        let styles = Styles::new(
+            Flavor::Github,
+            path.clone(),
+            Bundle::fallback(),
+            vec![],
+            tx,
+            true,
+        );
         let (wtx, _wrx) = tokio::sync::mpsc::unbounded_channel();
         let (watcher, _) = FsWatcher::new(Some(std::time::Duration::from_millis(50)), wtx).unwrap();
         let watcher = Arc::new(watcher);
@@ -491,7 +579,14 @@ mod tests {
         let path = dir.path().join("s.tar.gz");
         write_bundle(&path, "a{}");
         let (tx, mut rx) = broadcast::channel(8);
-        let styles = Styles::new(Flavor::Github, path.clone(), load_initial(&path, Flavor::Github, false, true).await, vec![], tx, true);
+        let styles = Styles::new(
+            Flavor::Github,
+            path.clone(),
+            load_initial(&path, Flavor::Github, false, true).await,
+            vec![],
+            tx,
+            true,
+        );
         assert_eq!(styles.hrefs(), ["/__/md-render/bundle/github/a.css"]);
         // Unchanged file: nothing happens.
         styles.reload().await;
@@ -501,7 +596,10 @@ mod tests {
         styles.reload().await;
         assert_eq!(styles.version(), 1);
         assert_eq!(rx.recv().await.unwrap().name, "styles");
-        assert_eq!(&styles.bundle().read("github/a.css").unwrap()[..], b"a{color:red}/* longer */");
+        assert_eq!(
+            &styles.bundle().read("github/a.css").unwrap()[..],
+            b"a{color:red}/* longer */"
+        );
 
         std::fs::write(&path, b"garbage, definitely not gzip").unwrap();
         styles.reload().await;
@@ -509,6 +607,9 @@ mod tests {
         let ev = rx.recv().await.unwrap();
         assert_eq!(ev.name, "error");
         assert!(ev.data.contains("\"bundle\""));
-        assert_eq!(&styles.bundle().read("github/a.css").unwrap()[..], b"a{color:red}/* longer */");
+        assert_eq!(
+            &styles.bundle().read("github/a.css").unwrap()[..],
+            b"a{color:red}/* longer */"
+        );
     }
 }

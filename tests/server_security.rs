@@ -31,7 +31,12 @@ async fn server(follow_symlinks: bool) -> TestServer {
 }
 
 fn assert_no_leak(path: &str, r: &server_support::Response) {
-    assert!(!r.text().contains(SECRET), "{path} leaked the secret: {} {}", r.status, r.text());
+    assert!(
+        !r.text().contains(SECRET),
+        "{path} leaked the secret: {} {}",
+        r.status,
+        r.text()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -76,7 +81,13 @@ async fn traversal_is_rejected_in_every_encoding() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_endpoints_validate_their_path_parameter() {
     let s = server(false).await;
-    for q in ["../secret.md", "%2e%2e/secret.md", "docs/../../secret.md", "a\\b.md", "x%00.md"] {
+    for q in [
+        "../secret.md",
+        "%2e%2e/secret.md",
+        "docs/../../secret.md",
+        "a\\b.md",
+        "x%00.md",
+    ] {
         for endpoint in ["render", "events"] {
             let r = s.get(&format!("/__/md-render/{endpoint}?path={q}")).await;
             assert_eq!(r.status, 400, "{endpoint}?path={q}: {}", r.text());
@@ -99,7 +110,15 @@ async fn live_endpoints_validate_their_path_parameter() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn symlink_escapes_are_blocked() {
     let s = server(false).await;
-    for path in ["/escape.txt", "/escape.md", "/escape.md?raw=1", "/outdir/", "/outdir", "/outdir/inner.txt", "/outdir/new.md"] {
+    for path in [
+        "/escape.txt",
+        "/escape.md",
+        "/escape.md?raw=1",
+        "/outdir/",
+        "/outdir",
+        "/outdir/inner.txt",
+        "/outdir/new.md",
+    ] {
         let r = s.get(path).await;
         assert_eq!(r.status, 403, "{path}: {}", r.text());
         assert_no_leak(path, &r);
@@ -139,13 +158,28 @@ async fn a_document_replaced_by_an_escaping_symlink_is_not_read() {
     assert_eq!(r.status, 403);
     assert_no_leak("/docs/README.md", &r);
     let (_, v) = s.render_json("docs/README.md").await;
-    assert_no_leak("render", &server_support::Response { status: 0, headers: vec![], body: v.to_string().into_bytes() });
+    assert_no_leak(
+        "render",
+        &server_support::Response {
+            status: 0,
+            headers: vec![],
+            body: v.to_string().into_bytes(),
+        },
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_directories_are_never_served() {
     let s = server(false).await;
-    for path in ["/.git/config", "/.git/", "/.git", "/.GIT/config", "/sub/.git/HEAD", "/%2egit/config", "/sub/.Git/"] {
+    for path in [
+        "/.git/config",
+        "/.git/",
+        "/.git",
+        "/.GIT/config",
+        "/sub/.git/HEAD",
+        "/%2egit/config",
+        "/sub/.Git/",
+    ] {
         let r = s.get(path).await;
         assert_eq!(r.status, 403, "{path}");
         assert_no_leak(path, &r);
@@ -164,12 +198,30 @@ async fn git_directories_are_never_served() {
 async fn host_header_allowlist_on_loopback() {
     let s = server(false).await;
     let port = s.addr.port();
-    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), "localhost".into(), format!("app.localhost:{port}"), format!("LOCALHOST:{port}")] {
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "localhost".into(),
+        format!("app.localhost:{port}"),
+        format!("LOCALHOST:{port}"),
+    ] {
         let r = s.get_with("/README.md", &[("Host", &host)]).await;
         assert_eq!(r.status, 200, "Host: {host}");
     }
-    for host in [format!("evil.example:{port}"), "evil.example".into(), format!("localhost:{}", port.wrapping_add(1)), format!("127.0.0.1.evil.example:{port}"), format!("10.0.0.1:{port}")] {
-        for path in ["/README.md", "/__/md-render/static/live.js", "/__/md-render/render?path=README.md", "/__/md-render/events?path=README.md"] {
+    for host in [
+        format!("evil.example:{port}"),
+        "evil.example".into(),
+        format!("localhost:{}", port.wrapping_add(1)),
+        format!("127.0.0.1.evil.example:{port}"),
+        format!("10.0.0.1:{port}"),
+    ] {
+        for path in [
+            "/README.md",
+            "/__/md-render/static/live.js",
+            "/__/md-render/render?path=README.md",
+            "/__/md-render/events?path=README.md",
+        ] {
             let r = s.get_with(path, &[("Host", &host)]).await;
             assert_eq!(r.status, 403, "Host: {host} {path}");
             assert!(!r.text().contains("public readme"));

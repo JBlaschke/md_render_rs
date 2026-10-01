@@ -18,11 +18,30 @@ const OCTET: &str = "application/octet-stream";
 
 /// `application/*` types that are really text and should display in the browser with an
 /// explicit UTF-8 charset.
-const TEXTUAL_APPLICATION: &[&str] =
-    &["javascript", "ecmascript", "json", "ld+json", "manifest+json", "xml", "xhtml+xml", "toml", "yaml", "x-yaml"];
+const TEXTUAL_APPLICATION: &[&str] = &[
+    "javascript",
+    "ecmascript",
+    "json",
+    "ld+json",
+    "manifest+json",
+    "xml",
+    "xhtml+xml",
+    "toml",
+    "yaml",
+    "x-yaml",
+];
 
 /// `application/*` script types browsers would download; shown as plain text instead.
-const SOURCE_AS_PLAIN: &[&str] = &["x-sh", "x-csh", "x-python", "x-perl", "x-ruby", "x-tcl", "x-httpd-php", "x-tex"];
+const SOURCE_AS_PLAIN: &[&str] = &[
+    "x-sh",
+    "x-csh",
+    "x-python",
+    "x-perl",
+    "x-ruby",
+    "x-tcl",
+    "x-httpd-php",
+    "x-tex",
+];
 
 /// Content-Type for a file served raw.
 ///
@@ -33,7 +52,10 @@ pub fn content_type(path: &Path, sniff: impl FnOnce() -> Option<Vec<u8>>) -> Str
     match mime_guess::from_path(path).first() {
         Some(m) => {
             let (ty, sub) = (m.type_().as_str(), m.subtype().as_str());
-            let suffix = m.suffix().map(|s| format!("+{}", s.as_str())).unwrap_or_default();
+            let suffix = m
+                .suffix()
+                .map(|s| format!("+{}", s.as_str()))
+                .unwrap_or_default();
             let full_sub = format!("{sub}{suffix}");
             let textual = ty == "text"
                 || (ty == "application" && TEXTUAL_APPLICATION.contains(&full_sub.as_str()))
@@ -100,8 +122,12 @@ pub async fn serve_raw(path: &Path, req: Request, force_type: Option<&str>) -> R
         if let Ok(v) = HeaderValue::from_str(&ctype) {
             resp.headers_mut().insert(header::CONTENT_TYPE, v);
         }
-        resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-        resp.headers_mut().insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        resp.headers_mut().insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
     } else if status == StatusCode::NOT_FOUND {
         // The file vanished between resolution and open.
         return (StatusCode::NOT_FOUND, "not found").into_response();
@@ -124,7 +150,11 @@ mod tests {
         assert_eq!(ct("a.png"), "image/png");
         assert_eq!(ct("a.svg"), "image/svg+xml; charset=utf-8");
         assert_eq!(ct("a.json"), "application/json; charset=utf-8");
-        assert!(ct("a.js").ends_with("javascript; charset=utf-8"), "{}", ct("a.js"));
+        assert!(
+            ct("a.js").ends_with("javascript; charset=utf-8"),
+            "{}",
+            ct("a.js")
+        );
         assert_eq!(ct("a.sh"), "text/plain; charset=utf-8");
         assert_eq!(ct("a.woff2"), "font/woff2");
         assert_eq!(ct("a.pdf"), "application/pdf");
@@ -132,13 +162,20 @@ mod tests {
 
     #[test]
     fn sniffing_unknown_extensions() {
-        let text = content_type(Path::new("Makefile"), || Some(b"all:\n\techo hi\n".to_vec()));
+        let text = content_type(Path::new("Makefile"), || {
+            Some(b"all:\n\techo hi\n".to_vec())
+        });
         assert_eq!(text, "text/plain; charset=utf-8");
-        let bin = content_type(Path::new("blob"), || Some(vec![0x7f, b'E', b'L', b'F', 0, 1]));
+        let bin = content_type(Path::new("blob"), || {
+            Some(vec![0x7f, b'E', b'L', b'F', 0, 1])
+        });
         assert_eq!(bin, "application/octet-stream");
         let latin1 = content_type(Path::new("blob"), || Some(b"caf\xe9 au lait".to_vec()));
         assert_eq!(latin1, "application/octet-stream");
-        assert_eq!(content_type(Path::new("blob"), || None), "application/octet-stream");
+        assert_eq!(
+            content_type(Path::new("blob"), || None),
+            "application/octet-stream"
+        );
     }
 
     #[test]

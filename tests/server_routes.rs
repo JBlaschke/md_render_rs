@@ -21,26 +21,38 @@ async fn root_renders_the_readme_of_the_served_directory() {
     assert!(body.contains("Hello from the readme"), "{body}");
     assert!(body.contains("second paragraph"));
     // Live pages load the live client.
-    assert!(body.contains("live.js") || body.contains("/__/md-render/events?path="), "{body}");
+    assert!(
+        body.contains("live.js") || body.contains("/__/md-render/events?path="),
+        "{body}"
+    );
     // The document is also reachable under its own name.
     let r = s.get("/README.md").await;
     assert_eq!(r.status, 200);
     assert!(r.text().contains("Hello from the readme"));
-    assert_eq!(s.renders(), 1, "one render serves every page load of unchanged content");
+    assert_eq!(
+        s.renders(),
+        1,
+        "one render serves every page load of unchanged content"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_real_offline_renderer_is_wired_in() {
     let f = Fixture::new();
     f.file("README.md", "# Big Title\n\nSome *text*.\n");
-    let s = f.start(|cfg| cfg.renderer = std::sync::Arc::new(md_render::render::OfflineRenderer)).await;
+    let s = f
+        .start(|cfg| cfg.renderer = std::sync::Arc::new(md_render::render::OfflineRenderer))
+        .await;
     let r = s.get("/").await;
     assert_eq!(r.status, 200);
     assert!(r.text().contains("Big Title"));
     let (status, json) = s.render_json("README.md").await;
     assert_eq!(status, 200);
     let html = json["html"].as_str().unwrap();
-    assert!(html.contains("<h1") && html.contains("data-sourcepos"), "{html}");
+    assert!(
+        html.contains("<h1") && html.contains("data-sourcepos"),
+        "{html}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -54,7 +66,11 @@ async fn directories_redirect_and_find_their_readme() {
     assert_eq!(r.status, 301);
     assert_eq!(r.header("location"), Some("/docs/"));
     let r = s.get("/docs?x=1").await;
-    assert_eq!(r.header("location"), Some("/docs/?x=1"), "the query string is kept");
+    assert_eq!(
+        r.header("location"),
+        Some("/docs/?x=1"),
+        "the query string is kept"
+    );
 
     let r = s.get("/docs/").await;
     assert_eq!(r.status, 200);
@@ -62,11 +78,20 @@ async fn directories_redirect_and_find_their_readme() {
 
     // `/file/` -> `/file`, `.` and empty segments collapse.
     let r = s.get("/docs/other.md/").await;
-    assert_eq!((r.status, r.header("location")), (301, Some("/docs/other.md")));
+    assert_eq!(
+        (r.status, r.header("location")),
+        (301, Some("/docs/other.md"))
+    );
     let r = s.get("/./docs/other.md").await;
-    assert_eq!((r.status, r.header("location")), (301, Some("/docs/other.md")));
+    assert_eq!(
+        (r.status, r.header("location")),
+        (301, Some("/docs/other.md"))
+    );
     let r = s.get("/docs//other.md").await;
-    assert_eq!((r.status, r.header("location")), (301, Some("/docs/other.md")));
+    assert_eq!(
+        (r.status, r.header("location")),
+        (301, Some("/docs/other.md"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -75,7 +100,11 @@ async fn root_readme_fallbacks_and_listing() {
     f.file("docs/README.md", "docs readme");
     let s = f.start(|_| {}).await;
     let r = s.get("/").await;
-    assert_eq!((r.status, r.header("location")), (302, Some("/docs/")), "docs/README.md is the root README");
+    assert_eq!(
+        (r.status, r.header("location")),
+        (302, Some("/docs/")),
+        "docs/README.md is the root README"
+    );
 
     let f = Fixture::new();
     f.file("assets/a.png", b"\x89PNG\r\n\x1a\n");
@@ -98,25 +127,41 @@ async fn targets() {
     // A file below the root: `/` redirects to it so relative links resolve.
     let f = Fixture::new();
     f.file("docs/guide.md", "the guide");
-    let s = f.start(|cfg| cfg.target = Target::File(PathBuf::from("docs/guide.md"))).await;
+    let s = f
+        .start(|cfg| cfg.target = Target::File(PathBuf::from("docs/guide.md")))
+        .await;
     let r = s.get("/").await;
-    assert_eq!((r.status, r.header("location")), (302, Some("/docs/guide.md")));
+    assert_eq!(
+        (r.status, r.header("location")),
+        (302, Some("/docs/guide.md"))
+    );
 
     // A non-Markdown target file is still rendered (it was asked for explicitly).
     let f = Fixture::new();
     f.file("notes.txt", "plain notes");
-    let s = f.start(|cfg| cfg.target = Target::File(PathBuf::from("notes.txt"))).await;
+    let s = f
+        .start(|cfg| cfg.target = Target::File(PathBuf::from("notes.txt")))
+        .await;
     for path in ["/", "/notes.txt"] {
         let r = s.get(path).await;
         assert_eq!(r.status, 200, "{path}");
-        assert!(r.header("content-type").unwrap().starts_with("text/html"), "{path}");
-        assert!(r.text().contains("<p data-sourcepos=\"1:1-1:11\">plain notes</p>"), "{path}");
+        assert!(
+            r.header("content-type").unwrap().starts_with("text/html"),
+            "{path}"
+        );
+        assert!(
+            r.text()
+                .contains("<p data-sourcepos=\"1:1-1:11\">plain notes</p>"),
+            "{path}"
+        );
     }
 
     // A directory target below the root.
     let f = Fixture::new();
     f.file("sub/README.md", "sub readme");
-    let s = f.start(|cfg| cfg.target = Target::Dir(PathBuf::from("sub"))).await;
+    let s = f
+        .start(|cfg| cfg.target = Target::Dir(PathBuf::from("sub")))
+        .await;
     let r = s.get("/").await;
     assert_eq!((r.status, r.header("location")), (302, Some("/sub/")));
 }
@@ -126,15 +171,24 @@ async fn stdin_is_rendered_once_without_live_updates() {
     let f = Fixture::new();
     let s = f
         .start(|cfg| {
-            cfg.target = Target::Stdin { name: "stdin".into(), text: "piped text".into() };
+            cfg.target = Target::Stdin {
+                name: "stdin".into(),
+                text: "piped text".into(),
+            };
         })
         .await;
     let r = s.get("/").await;
     assert_eq!(r.status, 200);
     let body = r.text();
     assert!(body.contains("piped text"), "{body}");
-    assert!(!body.contains("/__/md-render/events?path="), "stdin pages are not live: {body}");
-    assert!(body.contains("<title>stdin"), "the title defaults to the stdin name: {body}");
+    assert!(
+        !body.contains("/__/md-render/events?path="),
+        "stdin pages are not live: {body}"
+    );
+    assert!(
+        body.contains("<title>stdin"),
+        "the title defaults to the stdin name: {body}"
+    );
     s.get("/").await;
     assert_eq!(s.renders(), 1);
 }
@@ -159,7 +213,10 @@ async fn missing_documents_and_files() {
     assert!(r.header("content-type").unwrap().starts_with("text/html"));
     let body = r.text();
     assert!(body.contains("new.md"), "{body}");
-    assert!(body.contains("live.js") || body.contains("/__/md-render/events?path=new.md"), "{body}");
+    assert!(
+        body.contains("live.js") || body.contains("/__/md-render/events?path=new.md"),
+        "{body}"
+    );
     // Other missing files: styled 404 as well.
     let r = s.get("/missing.png").await;
     assert_eq!(r.status, 404);
@@ -197,7 +254,11 @@ async fn raw_files_have_correct_content_types() {
         let r = s.get(path).await;
         assert_eq!(r.status, 200, "{path}");
         assert_eq!(r.header("content-type"), Some(ctype), "{path}");
-        assert_eq!(r.header("x-content-type-options"), Some("nosniff"), "{path}");
+        assert_eq!(
+            r.header("x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
     }
     assert_eq!(s.get("/README.md?raw").await.text(), "# doc source");
     assert_eq!(s.get("/notes.txt").await.text(), "hello world");
@@ -208,7 +269,9 @@ async fn raw_files_have_correct_content_types() {
     assert_eq!(r.text(), "hello");
     let r = s.get("/notes.txt").await;
     let modified = r.header("last-modified").expect("Last-Modified").to_owned();
-    let r = s.get_with("/notes.txt", &[("If-Modified-Since", &modified)]).await;
+    let r = s
+        .get_with("/notes.txt", &[("If-Modified-Since", &modified)])
+        .await;
     assert_eq!(r.status, 304);
 }
 
@@ -223,13 +286,20 @@ async fn embedded_static_assets() {
     assert_eq!(r.body, bytes);
     assert_eq!(r.header("cache-control"), Some("no-cache"));
     let etag = r.header("etag").expect("ETag").to_owned();
-    let r = s.get_with("/__/md-render/static/live.js", &[("If-None-Match", &etag)]).await;
+    let r = s
+        .get_with("/__/md-render/static/live.js", &[("If-None-Match", &etag)])
+        .await;
     assert_eq!(r.status, 304);
     // A different asset has a different (content-based) ETag.
     let other = s.get("/__/md-render/static/github.js").await;
     assert_ne!(other.header("etag"), Some(etag.as_str()));
     assert_eq!(s.get("/__/md-render/static/nope.js").await.status, 404);
-    assert_eq!(s.get("/__/md-render/static/favicon.svg").await.header("content-type"), Some("image/svg+xml"));
+    assert_eq!(
+        s.get("/__/md-render/static/favicon.svg")
+            .await
+            .header("content-type"),
+        Some("image/svg+xml")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -245,14 +315,32 @@ async fn bundle_files_are_served_in_place() {
     assert_eq!(r.header("content-type"), Some("text/css; charset=utf-8"));
     assert_eq!(r.header("cache-control"), Some("no-cache"));
     let etag = r.header("etag").expect("ETag").to_owned();
-    let r = s.get_with("/__/md-render/bundle/github/a.css", &[("If-None-Match", &etag)]).await;
+    let r = s
+        .get_with(
+            "/__/md-render/bundle/github/a.css",
+            &[("If-None-Match", &etag)],
+        )
+        .await;
     assert_eq!(r.status, 304);
     let r = s.get("/__/md-render/bundle/github/fonts/x.woff2").await;
-    assert_eq!((r.status, r.header("content-type")), (200, Some("font/woff2")));
-    assert_eq!(s.get("/__/md-render/bundle/github/nope.css").await.status, 404);
-    assert_eq!(s.get("/__/md-render/bundle/manifest.json").await.status, 200);
+    assert_eq!(
+        (r.status, r.header("content-type")),
+        (200, Some("font/woff2"))
+    );
+    assert_eq!(
+        s.get("/__/md-render/bundle/github/nope.css").await.status,
+        404
+    );
+    assert_eq!(
+        s.get("/__/md-render/bundle/manifest.json").await.status,
+        200
+    );
     // The bundle is read in place, never unpacked next to it.
-    let entries: Vec<_> = std::fs::read_dir(s.tmp.join("styles")).unwrap().flatten().map(|e| e.file_name()).collect();
+    let entries: Vec<_> = std::fs::read_dir(s.tmp.join("styles"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
     assert_eq!(entries, ["styles.tar.gz"]);
 }
 
@@ -273,7 +361,14 @@ async fn local_extra_css_is_served() {
     f.file("README.md", "x");
     let css = f.tmp.join("my style.css");
     server_support::write(&css, "h1{color:blue}");
-    let s = f.start(|cfg| cfg.extra_css = vec![css.display().to_string(), "https://example.com/x.css".into()]).await;
+    let s = f
+        .start(|cfg| {
+            cfg.extra_css = vec![
+                css.display().to_string(),
+                "https://example.com/x.css".into(),
+            ]
+        })
+        .await;
     let r = s.get("/__/md-render/css/0/my%20style.css").await;
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("text/css; charset=utf-8"));
@@ -314,7 +409,10 @@ async fn render_endpoint_reports_state_as_json() {
     assert!(v["html"].as_str().unwrap().contains("second"));
     let page = s.get("/README.md").await;
     assert_eq!(page.status, 500);
-    assert!(page.text().contains("second"), "the page keeps the last good render");
+    assert!(
+        page.text().contains("second"),
+        "the page keeps the last good render"
+    );
 
     for bad in ["", "?path=", "?path=notes.txt", "?path=docs/"] {
         let r = s.get(&format!("/__/md-render/render{bad}")).await;
@@ -335,7 +433,10 @@ async fn bom_is_stripped_and_invalid_utf8_decoded_lossily() {
     assert_eq!(status, 200);
     assert!(v["html"].as_str().unwrap().contains("caf\u{FFFD} au lait"));
     let warning = v["warnings"][0].as_str().unwrap();
-    assert!(warning.contains("not valid UTF-8") && warning.contains("offset 3"), "{warning}");
+    assert!(
+        warning.contains("not valid UTF-8") && warning.contains("offset 3"),
+        "{warning}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

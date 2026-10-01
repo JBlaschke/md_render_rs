@@ -75,13 +75,24 @@ pub struct WireEvent {
 }
 
 impl WireEvent {
-    fn new(name: &'static str, version: Option<u64>, state: bool, data: serde_json::Value) -> WireEvent {
-        WireEvent { name, version, state, data: data.to_string() }
+    fn new(
+        name: &'static str,
+        version: Option<u64>,
+        state: bool,
+        data: serde_json::Value,
+    ) -> WireEvent {
+        WireEvent {
+            name,
+            version,
+            state,
+            data: data.to_string(),
+        }
     }
 
     /// `hello {server_id, version, styles_version}`.
     pub fn hello(server_id: &str, version: u64, styles_version: u64) -> WireEvent {
-        let data = json!({ "server_id": server_id, "version": version, "styles_version": styles_version });
+        let data =
+            json!({ "server_id": server_id, "version": version, "styles_version": styles_version });
         WireEvent::new("hello", None, false, data)
     }
 
@@ -103,7 +114,12 @@ impl WireEvent {
 
     /// `deleted {path}` (plus `version`).
     pub fn deleted(version: u64, path: &str) -> WireEvent {
-        WireEvent::new("deleted", Some(version), true, json!({ "version": version, "path": path }))
+        WireEvent::new(
+            "deleted",
+            Some(version),
+            true,
+            json!({ "version": version, "path": path }),
+        )
     }
 
     /// `assets {urls, v}`: local files referenced by the document changed.
@@ -115,12 +131,22 @@ impl WireEvent {
     /// lists the stylesheet URLs the page should now use, so a client whose `<link>`s point
     /// at files that no longer exist (re-vendored hashed names) can reload instead.
     pub fn styles(styles_version: u64, hrefs: &[String]) -> WireEvent {
-        WireEvent::new("styles", None, false, json!({ "styles_version": styles_version, "hrefs": hrefs }))
+        WireEvent::new(
+            "styles",
+            None,
+            false,
+            json!({ "styles_version": styles_version, "hrefs": hrefs }),
+        )
     }
 
     /// A global `error` (e.g. kind `bundle`): not tied to a document version.
     pub fn global_error(kind: ErrorKind, message: &str) -> WireEvent {
-        WireEvent::new("error", None, false, json!({ "kind": kind.as_str(), "message": message }))
+        WireEvent::new(
+            "error",
+            None,
+            false,
+            json!({ "kind": kind.as_str(), "message": message }),
+        )
     }
 
     /// `shutdown {}`.
@@ -133,7 +159,10 @@ impl WireEvent {
     pub fn to_sse(&self, server_id: &str, delivered: u64) -> Event {
         let version = self.version.unwrap_or(delivered);
         // JSON never contains raw newlines or CRs, so `data` cannot panic here.
-        Event::default().event(self.name).id(format!("{server_id}:{version}")).data(&self.data)
+        Event::default()
+            .event(self.name)
+            .id(format!("{server_id}:{version}"))
+            .data(&self.data)
     }
 }
 
@@ -164,14 +193,23 @@ pub fn client_version(headers: &HeaderMap, q: &DocQuery, server_id: &str) -> u64
         .and_then(|s| s.rsplit_once(':'))
         .filter(|(sid, _)| *sid == server_id)
         .and_then(|(_, v)| v.parse::<u64>().ok());
-    let from_query = q.v.filter(|_| q.sid.as_deref().is_none_or(|sid| sid == server_id));
+    let from_query =
+        q.v.filter(|_| q.sid.as_deref().is_none_or(|sid| sid == server_id));
     from_header.unwrap_or(0).max(from_query.unwrap_or(0))
 }
 
 /// `GET /__/md-render/events?path=<doc>[&v=<version>]`.
-pub async fn events(State(app): State<Arc<App>>, Query(q): Query<DocQuery>, headers: HeaderMap) -> Response {
+pub async fn events(
+    State(app): State<Arc<App>>,
+    Query(q): Query<DocQuery>,
+    headers: HeaderMap,
+) -> Response {
     if !app.live {
-        return (StatusCode::NOT_FOUND, "live updates are disabled (--norefresh)").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "live updates are disabled (--norefresh)",
+        )
+            .into_response();
     }
     let key = match app.validate_doc_param(q.path.as_deref()) {
         Ok(k) => k,
@@ -182,14 +220,24 @@ pub async fn events(State(app): State<Arc<App>>, Query(q): Query<DocQuery>, head
     let (tx, rx) = mpsc::channel::<Event>(32);
     tokio::spawn(client_task(app.clone(), sub, since, tx));
     let stream = ReceiverStream::new(rx).map(Ok::<Event, Infallible>);
-    let mut resp = Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEPALIVE).text("ping")).into_response();
+    let mut resp = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(KEEPALIVE).text("ping"))
+        .into_response();
     // Proxies (and some dev tools) must not buffer the stream.
-    resp.headers_mut().insert("x-accel-buffering", axum::http::HeaderValue::from_static("no"));
+    resp.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
     resp
 }
 
 /// Feed one SSE connection until the client goes away or the server shuts down.
-async fn client_task(app: Arc<App>, sub: super::hub::Subscription, since: u64, tx: mpsc::Sender<Event>) {
+async fn client_task(
+    app: Arc<App>,
+    sub: super::hub::Subscription,
+    since: u64,
+    tx: mpsc::Sender<Event>,
+) {
     // Subscribe to the broadcasts *before* reading the snapshot so nothing published in
     // between is lost; duplicates are filtered by version below.
     let mut doc_rx = sub.entry.subscribe_events();
@@ -279,7 +327,11 @@ mod tests {
 
     #[test]
     fn event_payloads() {
-        let r = Rendered { html: "<p>x</p>\n".into(), title: Some("T".into()), ..Default::default() };
+        let r = Rendered {
+            html: "<p>x</p>\n".into(),
+            title: Some("T".into()),
+            ..Default::default()
+        };
         let c = WireEvent::content(3, &r);
         assert_eq!(c.name, "content");
         assert!(c.state);
@@ -292,18 +344,30 @@ mod tests {
 
         let h = WireEvent::hello("abc", 2, 5);
         let v: serde_json::Value = serde_json::from_str(&h.data).unwrap();
-        assert_eq!(v, json!({"server_id": "abc", "version": 2, "styles_version": 5}));
+        assert_eq!(
+            v,
+            json!({"server_id": "abc", "version": 2, "styles_version": 5})
+        );
 
         let e = WireEvent::error(4, ErrorKind::Render, "boom");
         let v: serde_json::Value = serde_json::from_str(&e.data).unwrap();
-        assert_eq!(v, json!({"version": 4, "kind": "render", "message": "boom"}));
+        assert_eq!(
+            v,
+            json!({"version": 4, "kind": "render", "message": "boom"})
+        );
 
         let d = WireEvent::deleted(5, "docs/a.md");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&d.data).unwrap()["path"], "docs/a.md");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&d.data).unwrap()["path"],
+            "docs/a.md"
+        );
         let a = WireEvent::assets(&["/img.png".into()], "17");
         assert_eq!(a.version, None);
         let s = WireEvent::styles(2, &["/__/md-render/bundle/github/a.css".into()]);
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&s.data).unwrap()["styles_version"], 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&s.data).unwrap()["styles_version"],
+            2
+        );
         assert_eq!(WireEvent::shutdown().data, "{}");
         assert_eq!(ErrorKind::Bundle.as_str(), "bundle");
         assert_eq!(ErrorKind::Decode.as_str(), "decode");
@@ -312,7 +376,11 @@ mod tests {
     }
 
     fn q(v: Option<u64>, sid: Option<&str>) -> DocQuery {
-        DocQuery { path: None, v, sid: sid.map(str::to_owned) }
+        DocQuery {
+            path: None,
+            v,
+            sid: sid.map(str::to_owned),
+        }
     }
 
     #[test]

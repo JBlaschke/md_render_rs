@@ -11,7 +11,9 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use percent_encoding::{
+    AsciiSet, CONTROLS, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode,
+};
 
 use crate::flavor::Flavor;
 use crate::page::ListingEntry;
@@ -43,8 +45,12 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b']');
 
 /// Characters escaped in a query-string value (everything but unreserved characters and `/`).
-const QUERY_VALUE: &AsciiSet =
-    &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~').remove(b'/');
+const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
 
 /// Is `name` (a file name or relative path) a Markdown document for `flavor`?
 pub fn is_markdown(name: &str, flavor: Flavor) -> bool {
@@ -53,12 +59,19 @@ pub fn is_markdown(name: &str, flavor: Flavor) -> bool {
 
 /// Index of the file's extension in the flavor's Markdown extension list (case-insensitive).
 fn markdown_rank(name: &str, flavor: Flavor) -> Option<usize> {
-    let ext = Path::new(name).extension().and_then(OsStr::to_str)?.to_ascii_lowercase();
-    let mut all = MARKDOWN_EXTENSIONS.iter().copied().collect::<Vec<_>>();
-    if flavor == Flavor::Gitlab {
-        all.extend(GITLAB_EXTRA_EXTENSIONS.iter().copied());
-    }
-    all.iter().position(|e| *e == ext)
+    let ext = Path::new(name)
+        .extension()
+        .and_then(OsStr::to_str)?
+        .to_ascii_lowercase();
+    let extra: &[&str] = if flavor == Flavor::Gitlab {
+        GITLAB_EXTRA_EXTENSIONS
+    } else {
+        &[]
+    };
+    MARKDOWN_EXTENSIONS
+        .iter()
+        .chain(extra)
+        .position(|e| *e == ext)
 }
 
 /// Why a request path was rejected before touching the filesystem.
@@ -103,7 +116,9 @@ pub struct RequestPath {
 impl RequestPath {
     /// Parse the path component of a request URI (percent-decoded exactly once).
     pub fn from_uri_path(raw: &str) -> Result<RequestPath, PathError> {
-        let decoded = percent_decode_str(raw).decode_utf8().map_err(|_| PathError::BadEncoding)?;
+        let decoded = percent_decode_str(raw)
+            .decode_utf8()
+            .map_err(|_| PathError::BadEncoding)?;
         RequestPath::from_decoded(&decoded)
     }
 
@@ -146,7 +161,10 @@ impl RequestPath {
                         // Exactly one normal component (rejects drive prefixes and the like on
                         // Windows, where `Path::join("C:")` would replace the root).
                         let mut comps = Path::new(s).components();
-                        if !matches!((comps.next(), comps.next()), (Some(Component::Normal(_)), None)) {
+                        if !matches!(
+                            (comps.next(), comps.next()),
+                            (Some(Component::Normal(_)), None)
+                        ) {
                             return Err(PathError::InvalidSegment);
                         }
                         segments.push(s.to_owned());
@@ -158,7 +176,11 @@ impl RequestPath {
             // `/`, `/./`, `//` all mean the root directory, which is always "a directory URL".
             trailing_slash = true;
         }
-        Ok(RequestPath { segments, trailing_slash, collapsed })
+        Ok(RequestPath {
+            segments,
+            trailing_slash,
+            collapsed,
+        })
     }
 
     /// The root directory (`/`).
@@ -175,8 +197,11 @@ impl RequestPath {
 /// URL path (`/`-prefixed, percent-encoded) of a root-relative path; `dir` appends `/`.
 pub fn url_for(rel: &str, dir: bool) -> String {
     let mut out = String::from("/");
-    let segs: Vec<String> =
-        rel.split('/').filter(|s| !s.is_empty()).map(|s| utf8_percent_encode(s, SEGMENT).to_string()).collect();
+    let segs: Vec<String> = rel
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| utf8_percent_encode(s, SEGMENT).to_string())
+        .collect();
     out.push_str(&segs.join("/"));
     if dir && !segs.is_empty() {
         out.push('/');
@@ -216,7 +241,10 @@ pub enum ResolveError {
 
 /// Is this I/O error a "does not exist" condition (including a file used as a directory)?
 pub fn is_not_found(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
 }
 
 /// Resolve `rel` (validated, `/`-separated) inside the canonical `root`.
@@ -229,7 +257,11 @@ pub fn resolve(root: &Path, rel: &str, follow_symlinks: bool) -> Result<Resolved
         Ok(canon) => {
             check_contained(root, &canon, follow_symlinks)?;
             let meta = std::fs::metadata(&canon)?;
-            if meta.is_dir() { Ok(Resolved::Dir(canon)) } else { Ok(Resolved::File(canon)) }
+            if meta.is_dir() {
+                Ok(Resolved::Dir(canon))
+            } else {
+                Ok(Resolved::File(canon))
+            }
         }
         Err(e) if is_not_found(&e) => {
             let mut ancestor = full.parent();
@@ -259,10 +291,16 @@ pub fn join_rel(root: &Path, rel: &str) -> PathBuf {
 
 /// Require a canonical path to stay inside the canonical root (unless symlinks may be
 /// followed anywhere) and to never enter a `.git` directory.
-pub fn check_contained(root: &Path, canon: &Path, follow_symlinks: bool) -> Result<(), ResolveError> {
+pub fn check_contained(
+    root: &Path,
+    canon: &Path,
+    follow_symlinks: bool,
+) -> Result<(), ResolveError> {
     let inside = canon.strip_prefix(root);
     if inside.is_err() && !follow_symlinks {
-        return Err(ResolveError::Forbidden("the path resolves outside the served root (symlink)".into()));
+        return Err(ResolveError::Forbidden(
+            "the path resolves outside the served root (symlink)".into(),
+        ));
     }
     let checked = inside.unwrap_or(canon);
     let in_git = checked.components().any(|c| match c {
@@ -270,7 +308,9 @@ pub fn check_contained(root: &Path, canon: &Path, follow_symlinks: bool) -> Resu
         _ => false,
     });
     if in_git {
-        return Err(ResolveError::Forbidden("`.git` directories are not served".into()));
+        return Err(ResolveError::Forbidden(
+            "`.git` directories are not served".into(),
+        ));
     }
     Ok(())
 }
@@ -282,9 +322,16 @@ pub fn find_readme(dir: &Path, flavor: Flavor) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(usize, String)> = None;
     for entry in entries.flatten() {
-        let Ok(name) = entry.file_name().into_string() else { continue };
-        let Some(rank) = markdown_rank(&name, flavor) else { continue };
-        let stem = Path::new(&name).file_stem().and_then(OsStr::to_str).unwrap_or("");
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(rank) = markdown_rank(&name, flavor) else {
+            continue;
+        };
+        let stem = Path::new(&name)
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or("");
         if !stem.eq_ignore_ascii_case("readme") {
             continue;
         }
@@ -327,7 +374,12 @@ pub fn find_root_readme(root: &Path, flavor: Flavor) -> Option<String> {
 /// Entries of a directory for the listing page: `.git` hidden, symlinks escaping the root
 /// hidden (unless `follow_symlinks`), directories first, then case-insensitive by name; a
 /// `..` entry first for every directory below the root.
-pub fn list_dir(root: &Path, dir: &Path, rel: &str, follow_symlinks: bool) -> io::Result<Vec<ListingEntry>> {
+pub fn list_dir(
+    root: &Path,
+    dir: &Path,
+    rel: &str,
+    follow_symlinks: bool,
+) -> io::Result<Vec<ListingEntry>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -343,18 +395,41 @@ pub fn list_dir(root: &Path, dir: &Path, rel: &str, follow_symlinks: bool) -> io
                 _ => continue, // dangling or escaping symlink
             }
         }
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
         let is_dir = meta.is_dir();
-        let href = if is_dir { format!("{}/", encode_segment(&name)) } else { encode_segment(&name) };
-        out.push(ListingEntry { name, href, is_dir, size: (!is_dir).then_some(meta.len()) });
+        let href = if is_dir {
+            format!("{}/", encode_segment(&name))
+        } else {
+            encode_segment(&name)
+        };
+        out.push(ListingEntry {
+            name,
+            href,
+            is_dir,
+            size: (!is_dir).then_some(meta.len()),
+        });
     }
     out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name)),
+        _ => a
+            .name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.name.cmp(&b.name)),
     });
     if !rel.is_empty() {
-        out.insert(0, ListingEntry { name: "..".into(), href: "../".into(), is_dir: true, size: None });
+        out.insert(
+            0,
+            ListingEntry {
+                name: "..".into(),
+                href: "../".into(),
+                is_dir: true,
+                size: None,
+            },
+        );
     }
     Ok(out)
 }
@@ -427,7 +502,10 @@ mod tests {
     fn rejects_traversal_and_tricks() {
         assert_eq!(parse("/../etc/passwd"), Err(PathError::Traversal));
         assert_eq!(parse("/%2e%2e/etc/passwd"), Err(PathError::Traversal));
-        assert_eq!(parse("/docs/%2E%2E/%2e%2e/secret"), Err(PathError::Traversal));
+        assert_eq!(
+            parse("/docs/%2E%2E/%2e%2e/secret"),
+            Err(PathError::Traversal)
+        );
         assert_eq!(parse("/docs%2f..%2f..%2fsecret"), Err(PathError::Traversal));
         assert_eq!(parse("/a%5c..%5csecret"), Err(PathError::Backslash));
         assert_eq!(parse("/a\\b"), Err(PathError::Backslash));
@@ -446,7 +524,10 @@ mod tests {
     fn decoded_query_paths() {
         let p = RequestPath::from_decoded("docs/README.md").unwrap();
         assert_eq!(p.rel(), "docs/README.md");
-        assert_eq!(RequestPath::from_decoded("../x.md"), Err(PathError::Traversal));
+        assert_eq!(
+            RequestPath::from_decoded("../x.md"),
+            Err(PathError::Traversal)
+        );
         assert!(RequestPath::from_decoded("").unwrap().is_root());
     }
 
@@ -465,7 +546,10 @@ mod tests {
     fn url_encoding() {
         assert_eq!(url_for("", true), "/");
         assert_eq!(url_for("docs", true), "/docs/");
-        assert_eq!(url_for("docs/my file#1.md", false), "/docs/my%20file%231.md");
+        assert_eq!(
+            url_for("docs/my file#1.md", false),
+            "/docs/my%20file%231.md"
+        );
         assert_eq!(url_for("ü.md", false), "/%C3%BC.md");
         assert_eq!(encode_query_value("docs/a b&c.md"), "docs/a%20b%26c.md");
         assert_eq!(encode_segment("a/b"), "a%2Fb");
@@ -477,14 +561,26 @@ mod tests {
         let d = dir.path();
         assert_eq!(find_readme(d, Flavor::Github), None);
         std::fs::write(d.join("readme.markdown"), "x").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github).as_deref(), Some("readme.markdown"));
+        assert_eq!(
+            find_readme(d, Flavor::Github).as_deref(),
+            Some("readme.markdown")
+        );
         std::fs::write(d.join("Readme.mkd"), "x").unwrap();
         // `.markdown` ranks before `.mkd`.
-        assert_eq!(find_readme(d, Flavor::Github).as_deref(), Some("readme.markdown"));
+        assert_eq!(
+            find_readme(d, Flavor::Github).as_deref(),
+            Some("readme.markdown")
+        );
         std::fs::create_dir(d.join("README.mdown")).unwrap(); // a directory is not a README
-        assert_eq!(find_readme(d, Flavor::Github).as_deref(), Some("readme.markdown"));
+        assert_eq!(
+            find_readme(d, Flavor::Github).as_deref(),
+            Some("readme.markdown")
+        );
         std::fs::write(d.join("README.txt"), "x").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github).as_deref(), Some("readme.markdown"));
+        assert_eq!(
+            find_readme(d, Flavor::Github).as_deref(),
+            Some("readme.markdown")
+        );
     }
 
     #[test]
@@ -502,12 +598,21 @@ mod tests {
         let d = dir.path();
         std::fs::create_dir_all(d.join("docs")).unwrap();
         std::fs::write(d.join("docs/README.md"), "x").unwrap();
-        assert_eq!(find_root_readme(d, Flavor::Github).as_deref(), Some("docs/README.md"));
+        assert_eq!(
+            find_root_readme(d, Flavor::Github).as_deref(),
+            Some("docs/README.md")
+        );
         std::fs::create_dir_all(d.join(".github")).unwrap();
         std::fs::write(d.join(".github/readme.md"), "x").unwrap();
-        assert_eq!(find_root_readme(d, Flavor::Github).as_deref(), Some(".github/readme.md"));
+        assert_eq!(
+            find_root_readme(d, Flavor::Github).as_deref(),
+            Some(".github/readme.md")
+        );
         std::fs::write(d.join("Readme.md"), "x").unwrap();
-        assert_eq!(find_root_readme(d, Flavor::Github).as_deref(), Some("Readme.md"));
+        assert_eq!(
+            find_root_readme(d, Flavor::Github).as_deref(),
+            Some("Readme.md")
+        );
     }
 
     #[test]
@@ -516,11 +621,20 @@ mod tests {
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir(root.join("sub")).unwrap();
         std::fs::write(root.join("sub/a.md"), "x").unwrap();
-        assert_eq!(resolve(&root, "sub", false).unwrap(), Resolved::Dir(root.join("sub")));
-        assert_eq!(resolve(&root, "sub/a.md", false).unwrap(), Resolved::File(root.join("sub/a.md")));
+        assert_eq!(
+            resolve(&root, "sub", false).unwrap(),
+            Resolved::Dir(root.join("sub"))
+        );
+        assert_eq!(
+            resolve(&root, "sub/a.md", false).unwrap(),
+            Resolved::File(root.join("sub/a.md"))
+        );
         assert_eq!(resolve(&root, "nope.md", false).unwrap(), Resolved::Missing);
         // A file used as a directory is "missing", not an I/O error.
-        assert_eq!(resolve(&root, "sub/a.md/b", false).unwrap(), Resolved::Missing);
+        assert_eq!(
+            resolve(&root, "sub/a.md/b", false).unwrap(),
+            Resolved::Missing
+        );
     }
 
     #[cfg(unix)]
@@ -530,19 +644,43 @@ mod tests {
         std::fs::write(outside.path().join("secret.txt"), "s").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("link.txt"))
+            .unwrap();
         std::os::unix::fs::symlink(root.join("inside.txt"), root.join("dangling.txt")).unwrap();
-        assert!(matches!(resolve(&root, "link.txt", false), Err(ResolveError::Forbidden(_))));
-        assert!(matches!(resolve(&root, "link.txt", true), Ok(Resolved::File(_))));
-        assert_eq!(resolve(&root, "dangling.txt", false).unwrap(), Resolved::Missing);
+        assert!(matches!(
+            resolve(&root, "link.txt", false),
+            Err(ResolveError::Forbidden(_))
+        ));
+        assert!(matches!(
+            resolve(&root, "link.txt", true),
+            Ok(Resolved::File(_))
+        ));
+        assert_eq!(
+            resolve(&root, "dangling.txt", false).unwrap(),
+            Resolved::Missing
+        );
         // Waiting for a file below an escaping directory symlink is refused too.
         std::os::unix::fs::symlink(outside.path(), root.join("outdir")).unwrap();
-        assert!(matches!(resolve(&root, "outdir/new.md", false), Err(ResolveError::Forbidden(_))));
-        assert!(matches!(resolve(&root, "outdir/new.md", true), Ok(Resolved::Missing)));
+        assert!(matches!(
+            resolve(&root, "outdir/new.md", false),
+            Err(ResolveError::Forbidden(_))
+        ));
+        assert!(matches!(
+            resolve(&root, "outdir/new.md", true),
+            Ok(Resolved::Missing)
+        ));
         // Listings hide escaping and dangling symlinks.
-        let names: Vec<_> = list_dir(&root, &root, "", false).unwrap().into_iter().map(|e| e.name).collect();
+        let names: Vec<_> = list_dir(&root, &root, "", false)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert!(names.is_empty(), "{names:?}");
-        let names: Vec<_> = list_dir(&root, &root, "", true).unwrap().into_iter().map(|e| e.name).collect();
+        let names: Vec<_> = list_dir(&root, &root, "", true)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(names, ["outdir", "link.txt"]);
     }
 

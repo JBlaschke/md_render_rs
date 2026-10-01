@@ -35,7 +35,11 @@ pub fn scan(html: &str, doc_rel: &str) -> Vec<DepRef> {
         }
         if let Some(set) = node.attr("srcset") {
             // `srcset="a.png 1x, b.png 2x"`: the URL is the first token of each candidate.
-            urls.extend(set.split(',').filter_map(|c| c.split_whitespace().next()).map(str::to_owned));
+            urls.extend(
+                set.split(',')
+                    .filter_map(|c| c.split_whitespace().next())
+                    .map(str::to_owned),
+            );
         }
     }
     let base_dir: Vec<&str> = {
@@ -43,7 +47,10 @@ pub fn scan(html: &str, doc_rel: &str) -> Vec<DepRef> {
         segs.pop(); // the document's own file name
         segs
     };
-    let mut out: Vec<DepRef> = urls.iter().filter_map(|u| resolve_local(u, &base_dir)).collect();
+    let mut out: Vec<DepRef> = urls
+        .iter()
+        .filter_map(|u| resolve_local(u, &base_dir))
+        .collect();
     out.sort();
     out.dedup();
     out
@@ -97,7 +104,9 @@ fn resolve_local(url: &str, base_dir: &[&str]) -> Option<DepRef> {
 
 /// Does `url` start with a URL scheme (`http:`, `data:`, `mailto:` ...)?
 fn has_scheme(url: &str) -> bool {
-    let Some(colon) = url.find(':') else { return false };
+    let Some(colon) = url.find(':') else {
+        return false;
+    };
     let scheme = &url[..colon];
     let mut chars = scheme.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
@@ -138,15 +147,34 @@ mod tests {
             <img src="data:image/png;base64,AAAA"><img src="/__/md-render/bundle/github/emoji/shipit.png">
             <img src="../../outside.png"><img src="#frag"><img src=""><img src="../.git/x.png">
             <a href="link.png">not media</a>"##;
-        assert!(rels(html, "docs/README.md").is_empty(), "{:?}", rels(html, "docs/README.md"));
+        assert!(
+            rels(html, "docs/README.md").is_empty(),
+            "{:?}",
+            rels(html, "docs/README.md")
+        );
     }
 
     #[test]
     fn decodes_and_reencodes() {
-        let deps = scan(r#"<img src="my%20pic.png"><img src="my pic.png"><img src="./a/../b.png">"#, "README.md");
+        let deps = scan(
+            r#"<img src="my%20pic.png"><img src="my pic.png"><img src="./a/../b.png">"#,
+            "README.md",
+        );
         assert_eq!(deps.len(), 2);
-        assert_eq!(deps[0], DepRef { rel: "b.png".into(), url: "/b.png".into() });
-        assert_eq!(deps[1], DepRef { rel: "my pic.png".into(), url: "/my%20pic.png".into() });
+        assert_eq!(
+            deps[0],
+            DepRef {
+                rel: "b.png".into(),
+                url: "/b.png".into()
+            }
+        );
+        assert_eq!(
+            deps[1],
+            DepRef {
+                rel: "my pic.png".into(),
+                url: "/my%20pic.png".into()
+            }
+        );
     }
 
     #[test]

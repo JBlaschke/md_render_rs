@@ -45,7 +45,9 @@ pub struct FsWatcher {
 
 impl std::fmt::Debug for FsWatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FsWatcher").field("polling", &self.polling).finish_non_exhaustive()
+        f.debug_struct("FsWatcher")
+            .field("polling", &self.polling)
+            .finish_non_exhaustive()
     }
 }
 
@@ -87,8 +89,17 @@ impl FsWatcher {
             }
         };
         let polling = matches!(backend, Backend::Poll(_));
-        let inner = Inner { backend, dirs: HashMap::new() };
-        Ok((FsWatcher { inner: Mutex::new(inner), polling }, warning))
+        let inner = Inner {
+            backend,
+            dirs: HashMap::new(),
+        };
+        Ok((
+            FsWatcher {
+                inner: Mutex::new(inner),
+                polling,
+            },
+            warning,
+        ))
     }
 
     /// Whether this watcher polls (as opposed to native OS notifications).
@@ -121,7 +132,9 @@ impl FsWatcher {
     /// Drop one reference to `dir`, unwatching it when the last reference goes away.
     pub fn remove(&self, dir: &Path) {
         let mut inner = self.lock();
-        let Some(n) = inner.dirs.get_mut(dir) else { return };
+        let Some(n) = inner.dirs.get_mut(dir) else {
+            return;
+        };
         *n -= 1;
         if *n > 0 {
             return;
@@ -165,12 +178,19 @@ impl Stamp {
     fn of(path: &Path) -> Option<Stamp> {
         // Follow symlinks (a symlinked document changes when its target does); a dangling
         // link is still an entry.
-        let meta = std::fs::metadata(path).or_else(|_| std::fs::symlink_metadata(path)).ok()?;
+        let meta = std::fs::metadata(path)
+            .or_else(|_| std::fs::symlink_metadata(path))
+            .ok()?;
         #[cfg(unix)]
         let ino = std::os::unix::fs::MetadataExt::ino(&meta);
         #[cfg(not(unix))]
         let ino = 0;
-        Some(Stamp { len: meta.len(), modified: meta.modified().ok(), is_dir: meta.is_dir(), ino })
+        Some(Stamp {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            is_dir: meta.is_dir(),
+            ino,
+        })
     }
 }
 
@@ -198,7 +218,11 @@ fn diff(dir: &Path, old: &Listing, new: &Listing) -> Vec<PathBuf> {
                 .filter(|(name, stamp)| old.get(*name) != Some(*stamp))
                 .map(|(name, _)| dir.join(name))
                 .collect();
-            out.extend(old.keys().filter(|name| !new.contains_key(*name)).map(|name| dir.join(name)));
+            out.extend(
+                old.keys()
+                    .filter(|name| !new.contains_key(*name))
+                    .map(|name| dir.join(name)),
+            );
             out
         }
         (None, None) => Vec::new(),
@@ -335,9 +359,26 @@ mod tests {
     #[test]
     fn listing_diffs() {
         let dir = Path::new("/d");
-        let stamp = |len| Stamp { len, modified: None, is_dir: false, ino: 1 };
-        let old: Listing = Some([(OsString::from("a"), stamp(1)), (OsString::from("b"), stamp(1))].into());
-        let new: Listing = Some([(OsString::from("a"), stamp(2)), (OsString::from("c"), stamp(1))].into());
+        let stamp = |len| Stamp {
+            len,
+            modified: None,
+            is_dir: false,
+            ino: 1,
+        };
+        let old: Listing = Some(
+            [
+                (OsString::from("a"), stamp(1)),
+                (OsString::from("b"), stamp(1)),
+            ]
+            .into(),
+        );
+        let new: Listing = Some(
+            [
+                (OsString::from("a"), stamp(2)),
+                (OsString::from("c"), stamp(1)),
+            ]
+            .into(),
+        );
         let mut changed = diff(dir, &old, &new);
         changed.sort();
         assert_eq!(changed, [dir.join("a"), dir.join("b"), dir.join("c")]);

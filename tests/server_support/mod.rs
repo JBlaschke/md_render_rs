@@ -49,13 +49,25 @@ impl Renderer for TestRenderer {
             }
             let n = i + 1;
             if let Some(src) = line.strip_prefix("![](").and_then(|s| s.strip_suffix(')')) {
-                html.push_str(&format!("<p data-sourcepos=\"{n}:1-{n}:{}\"><img src=\"{}\" alt=\"\"></p>\n", line.len(), escape(src)));
+                html.push_str(&format!(
+                    "<p data-sourcepos=\"{n}:1-{n}:{}\"><img src=\"{}\" alt=\"\"></p>\n",
+                    line.len(),
+                    escape(src)
+                ));
             } else {
-                html.push_str(&format!("<p data-sourcepos=\"{n}:1-{n}:{}\">{}</p>\n", line.len(), escape(line)));
+                html.push_str(&format!(
+                    "<p data-sourcepos=\"{n}:1-{n}:{}\">{}</p>\n",
+                    line.len(),
+                    escape(line)
+                ));
             }
         }
         assert!(opts.sourcepos, "the server renders with sourcepos");
-        Ok(Rendered { html, title: None, ..Default::default() })
+        Ok(Rendered {
+            html,
+            title: None,
+            ..Default::default()
+        })
     }
 
     fn name(&self) -> &'static str {
@@ -64,7 +76,10 @@ impl Renderer for TestRenderer {
 }
 
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// A running server over a temporary directory.
@@ -129,11 +144,20 @@ impl Fixture {
 
     /// Start a server with the default configuration adjusted by `tweak`.
     pub async fn start(self, tweak: impl FnOnce(&mut ServeConfig)) -> TestServer {
-        let renderer = Arc::new(TestRenderer { renders: AtomicUsize::new(0) });
+        let renderer = Arc::new(TestRenderer {
+            renders: AtomicUsize::new(0),
+        });
         let mut cfg = self.config(renderer.clone());
         tweak(&mut cfg);
         let server = md_render::server::start(cfg).await.expect("server starts");
-        TestServer { addr: server.addr, server: Some(server), tmp: self.tmp, root: self.root, renderer, _dir: self.dir }
+        TestServer {
+            addr: server.addr,
+            server: Some(server),
+            tmp: self.tmp,
+            root: self.root,
+            renderer,
+            _dir: self.dir,
+        }
     }
 }
 
@@ -156,13 +180,19 @@ impl TestServer {
     /// `/__/md-render/render?path=<doc>` as JSON.
     pub async fn render_json(&self, doc: &str) -> (u16, serde_json::Value) {
         let r = self.get(&format!("/__/md-render/render?path={doc}")).await;
-        let v = serde_json::from_slice(&r.body).unwrap_or_else(|e| panic!("render JSON for {doc}: {e}: {}", r.text()));
+        let v = serde_json::from_slice(&r.body)
+            .unwrap_or_else(|e| panic!("render JSON for {doc}: {e}: {}", r.text()));
         (r.status, v)
     }
 
     /// Open the event stream of `doc` (`query` is appended verbatim, e.g. `&v=3`).
     pub async fn events(&self, doc: &str, query: &str, headers: &[(&str, &str)]) -> SseStream {
-        SseStream::connect(self.addr, &format!("/__/md-render/events?path={doc}{query}"), headers).await
+        SseStream::connect(
+            self.addr,
+            &format!("/__/md-render/events?path={doc}{query}"),
+            headers,
+        )
+        .await
     }
 
     /// Open the event stream of `doc`, already up to date with its current state, and
@@ -215,9 +245,18 @@ pub fn write_atomic(path: &Path, content: impl AsRef<[u8]>) {
 pub fn write_bundle(path: &Path, css: &str) {
     use md_render::styles::{FlavorManifest, Manifest, Stylesheet};
     use sha2::Digest as _;
-    let hex = |b: &[u8]| sha2::Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let hex = |b: &[u8]| {
+        sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect::<String>()
+    };
     let mut fs = tarfs::InMemoryFileSystem::new();
-    let mut manifest = Manifest { schema: md_render::styles::manifest::SCHEMA, tool: md_render::TOOL.into(), ..Default::default() };
+    let mut manifest = Manifest {
+        schema: md_render::styles::manifest::SCHEMA,
+        tool: md_render::TOOL.into(),
+        ..Default::default()
+    };
     manifest.flavors.insert(
         Flavor::Github,
         FlavorManifest {
@@ -238,9 +277,15 @@ pub fn write_bundle(path: &Path, css: &str) {
             ..Default::default()
         },
     );
-    fs.write_file("manifest.json", serde_json::to_vec_pretty(&manifest).expect("manifest JSON")).expect("manifest");
-    fs.write_file("github/a.css", css.as_bytes().to_vec()).expect("css");
-    fs.write_file("github/fonts/x.woff2", b"wOF2fake".to_vec()).expect("font");
+    fs.write_file(
+        "manifest.json",
+        serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
+    )
+    .expect("manifest");
+    fs.write_file("github/a.css", css.as_bytes().to_vec())
+        .expect("css");
+    fs.write_file("github/fonts/x.woff2", b"wOF2fake".to_vec())
+        .expect("font");
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).expect("bundle directory");
     }
@@ -263,7 +308,10 @@ pub struct Response {
 impl Response {
     /// First header named `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 
     /// The body as (lossy) UTF-8.
@@ -274,10 +322,18 @@ impl Response {
 
 /// Send one request with `Connection: close` and read the whole response. `headers` may
 /// override `Host`.
-pub async fn request(addr: SocketAddr, method: &str, target: &str, headers: &[(&str, &str)]) -> Response {
+pub async fn request(
+    addr: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+) -> Response {
     let fut = async {
         let mut stream = TcpStream::connect(addr).await.expect("connect");
-        stream.write_all(request_head(addr, method, target, headers).as_bytes()).await.expect("send request");
+        stream
+            .write_all(request_head(addr, method, target, headers).as_bytes())
+            .await
+            .expect("send request");
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await.expect("read response");
         raw
@@ -285,22 +341,30 @@ pub async fn request(addr: SocketAddr, method: &str, target: &str, headers: &[(&
     let raw = tokio::time::timeout(Duration::from_secs(30), fut)
         .await
         .unwrap_or_else(|_| panic!("{method} {target}: no complete response within 30 s"));
-    let head_end = find(&raw, b"\r\n\r\n").unwrap_or_else(|| panic!("{method} {target}: malformed response"));
+    let head_end =
+        find(&raw, b"\r\n\r\n").unwrap_or_else(|| panic!("{method} {target}: malformed response"));
     let (status, headers) = parse_head(&raw[..head_end]);
     let rest = &raw[head_end + 4..];
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"));
+    let chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked")
+    });
     let body = if chunked {
         let mut d = Dechunker::default();
         let mut out = d.feed(rest);
-        assert!(d.done || method == "HEAD", "{method} {target}: truncated chunked body");
+        assert!(
+            d.done || method == "HEAD",
+            "{method} {target}: truncated chunked body"
+        );
         out.shrink_to_fit();
         out
     } else {
         rest.to_vec()
     };
-    Response { status, headers, body }
+    Response {
+        status,
+        headers,
+        body,
+    }
 }
 
 fn request_head(addr: SocketAddr, method: &str, target: &str, headers: &[(&str, &str)]) -> String {
@@ -323,7 +387,11 @@ fn parse_head(head: &[u8]) -> (u16, Vec<(String, String)>) {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
-    let status = status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).expect("status code");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status code");
     let headers = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
@@ -344,7 +412,9 @@ impl Dechunker {
         self.buf.extend_from_slice(data);
         let mut out = Vec::new();
         while !self.done {
-            let Some(line_end) = find(&self.buf, b"\r\n") else { break };
+            let Some(line_end) = find(&self.buf, b"\r\n") else {
+                break;
+            };
             let size_text = String::from_utf8_lossy(&self.buf[..line_end]);
             let size_hex = size_text.split(';').next().unwrap_or("").trim();
             let size = usize::from_str_radix(size_hex, 16).expect("chunk size");
@@ -376,7 +446,9 @@ pub struct SseEvent {
 
 impl SseEvent {
     pub fn json(&self) -> serde_json::Value {
-        serde_json::from_str(&self.data).unwrap_or_else(|e| panic!("event {} data is not JSON ({e}): {}", self.event, self.data))
+        serde_json::from_str(&self.data).unwrap_or_else(|e| {
+            panic!("event {} data is not JSON ({e}): {}", self.event, self.data)
+        })
     }
 }
 
@@ -412,7 +484,10 @@ impl SseStream {
         let mut stream = TcpStream::connect(addr).await.expect("connect");
         let mut all: Vec<(&str, &str)> = vec![("Accept", "text/event-stream")];
         all.extend_from_slice(headers);
-        stream.write_all(request_head(addr, "GET", target, &all).as_bytes()).await.expect("send request");
+        stream
+            .write_all(request_head(addr, "GET", target, &all).as_bytes())
+            .await
+            .expect("send request");
         let mut raw = Vec::new();
         let mut buf = [0u8; 4096];
         let head_end = loop {
@@ -423,15 +498,27 @@ impl SseStream {
                 .await
                 .expect("response head in time")
                 .expect("read response head");
-            assert!(n > 0, "connection closed before the response head: {}", String::from_utf8_lossy(&raw));
+            assert!(
+                n > 0,
+                "connection closed before the response head: {}",
+                String::from_utf8_lossy(&raw)
+            );
             raw.extend_from_slice(&buf[..n]);
         };
         let (status, headers) = parse_head(&raw[..head_end]);
         let rest = raw[head_end + 4..].to_vec();
         let (tx, rx) = mpsc::unbounded_channel();
-        let chunked = headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.contains("chunked"));
+        let chunked = headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.contains("chunked"));
         let reader = tokio::spawn(read_events(stream, rest, chunked, tx));
-        SseStream { status, headers, rx, seen: Vec::new(), reader }
+        SseStream {
+            status,
+            headers,
+            rx,
+            seen: Vec::new(),
+            reader,
+        }
     }
 
     /// Next item, or None on timeout.
@@ -466,14 +553,21 @@ impl SseStream {
     }
 
     /// Wait for an event named `name` whose JSON satisfies `pred`.
-    pub async fn wait_until(&mut self, name: &str, pred: impl Fn(&serde_json::Value) -> bool) -> SseEvent {
+    pub async fn wait_until(
+        &mut self,
+        name: &str,
+        pred: impl Fn(&serde_json::Value) -> bool,
+    ) -> SseEvent {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.next_event(left).await {
                 Some(e) if e.event == name && pred(&e.json()) => return e,
                 Some(_) => {}
-                None => panic!("no matching `{name}` event within {EVENT_TIMEOUT:?}; stream so far: {:#?}", self.seen),
+                None => panic!(
+                    "no matching `{name}` event within {EVENT_TIMEOUT:?}; stream so far: {:#?}",
+                    self.seen
+                ),
             }
         }
     }
@@ -487,7 +581,9 @@ impl SseStream {
                 return;
             }
             match self.next_event(left).await {
-                Some(e) if e.event == name => panic!("unexpected `{name}` event: {e:?}; stream: {:#?}", self.seen),
+                Some(e) if e.event == name => {
+                    panic!("unexpected `{name}` event: {e:?}; stream: {:#?}", self.seen)
+                }
                 Some(_) => {}
                 None => return,
             }
@@ -502,20 +598,32 @@ impl SseStream {
             match self.next_item(left).await {
                 Some(SseItem::End) => return,
                 Some(_) => {}
-                None => panic!("the event stream did not end within {timeout:?}; stream: {:#?}", self.seen),
+                None => panic!(
+                    "the event stream did not end within {timeout:?}; stream: {:#?}",
+                    self.seen
+                ),
             }
         }
     }
 }
 
 /// Background task: de-chunk and parse the event stream into `tx`.
-async fn read_events(mut stream: TcpStream, initial: Vec<u8>, chunked: bool, tx: mpsc::UnboundedSender<SseItem>) {
+async fn read_events(
+    mut stream: TcpStream,
+    initial: Vec<u8>,
+    chunked: bool,
+    tx: mpsc::UnboundedSender<SseItem>,
+) {
     let mut dechunk = Dechunker::default();
     let mut text = String::new();
     let mut pending = initial;
     let mut buf = [0u8; 8192];
     loop {
-        let decoded = if chunked { dechunk.feed(&pending) } else { std::mem::take(&mut pending) };
+        let decoded = if chunked {
+            dechunk.feed(&pending)
+        } else {
+            std::mem::take(&mut pending)
+        };
         pending.clear();
         text.push_str(&String::from_utf8_lossy(&decoded));
         // Events are separated by a blank line (axum uses `\n`).
@@ -552,16 +660,18 @@ fn parse_block(block: &str) -> Option<SseItem> {
             }
             continue;
         }
-        let (field, value) = line.split_once(':').map(|(f, v)| (f, v.strip_prefix(' ').unwrap_or(v))).unwrap_or((line, ""));
+        let (field, value) = line
+            .split_once(':')
+            .map(|(f, v)| (f, v.strip_prefix(' ').unwrap_or(v)))
+            .unwrap_or((line, ""));
         any = true;
         match field {
             "event" => ev.event = value.to_owned(),
             "id" => ev.id = Some(value.to_owned()),
             "data" => data_lines.push(value),
-            "retry" => {
-                if ev.event.is_empty() && data_lines.is_empty() {
-                    return value.parse().ok().map(SseItem::Retry);
-                }
+            // A `retry:`-only block (what the server sends first).
+            "retry" if ev.event.is_empty() && data_lines.is_empty() => {
+                return value.parse().ok().map(SseItem::Retry);
             }
             _ => {}
         }

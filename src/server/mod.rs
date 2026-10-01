@@ -114,7 +114,10 @@ pub struct RunningServer {
 
 impl std::fmt::Debug for RunningServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunningServer").field("addr", &self.addr).field("url", &self.url).finish_non_exhaustive()
+        f.debug_struct("RunningServer")
+            .field("addr", &self.addr)
+            .field("url", &self.url)
+            .finish_non_exhaustive()
     }
 }
 
@@ -139,7 +142,11 @@ impl RunningServer {
 
     /// Wait until the server stops (after [`ShutdownHandle::shutdown`] or an I/O error).
     pub async fn wait(self) -> anyhow::Result<()> {
-        let RunningServer { shutdown, mut tasks, .. } = self;
+        let RunningServer {
+            shutdown,
+            mut tasks,
+            ..
+        } = self;
         let aborts: Vec<AbortHandle> = tasks.iter().map(JoinHandle::abort_handle).collect();
         let mut stop_rx = shutdown.subscribe();
         let mut results = Vec::new();
@@ -191,7 +198,10 @@ impl ShutdownHandle {
 pub(crate) enum RootTarget {
     File(String),
     Dir(String),
-    Stdin { name: String, content: Arc<Rendered> },
+    Stdin {
+        name: String,
+        content: Arc<Rendered>,
+    },
 }
 
 /// Allowed `Host` header values when bound to loopback (DNS-rebinding protection).
@@ -203,9 +213,19 @@ pub(crate) struct HostAllow {
 
 impl HostAllow {
     fn new(configured: &str, port: u16) -> HostAllow {
-        let mut names: Vec<String> = ["localhost", "127.0.0.1", "[::1]"].iter().map(|s| (*s).to_owned()).collect();
-        let host = configured.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
-        let host = if host.parse::<std::net::Ipv6Addr>().is_ok() { format!("[{host}]") } else { host };
+        let mut names: Vec<String> = ["localhost", "127.0.0.1", "[::1]"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let host = configured
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase();
+        let host = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+            format!("[{host}]")
+        } else {
+            host
+        };
         if !names.contains(&host) {
             names.push(host);
         }
@@ -261,24 +281,42 @@ pub(crate) struct App {
 impl App {
     /// Is `rel` rendered as a document (Markdown extension, or the configured target file)?
     pub(crate) fn is_document(&self, rel: &str) -> bool {
-        paths::is_markdown(rel, self.flavor) || matches!(&self.target, RootTarget::File(t) if t == rel)
+        paths::is_markdown(rel, self.flavor)
+            || matches!(&self.target, RootTarget::File(t) if t == rel)
     }
 
     /// Validate a `?path=` document parameter of the events / render endpoints.
-    pub(crate) fn validate_doc_param(&self, path: Option<&str>) -> Result<String, (axum::http::StatusCode, String)> {
+    pub(crate) fn validate_doc_param(
+        &self,
+        path: Option<&str>,
+    ) -> Result<String, (axum::http::StatusCode, String)> {
         use axum::http::StatusCode;
-        let path = path.ok_or((StatusCode::BAD_REQUEST, "missing ?path=<document>".to_owned()))?;
-        let rp = paths::RequestPath::from_decoded(path)
-            .map_err(|e| (StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST), e.to_string()))?;
+        let path = path.ok_or((
+            StatusCode::BAD_REQUEST,
+            "missing ?path=<document>".to_owned(),
+        ))?;
+        let rp = paths::RequestPath::from_decoded(path).map_err(|e| {
+            (
+                StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST),
+                e.to_string(),
+            )
+        })?;
         let rel = rp.rel();
         if rp.is_root() || rp.trailing_slash || !self.is_document(&rel) {
-            return Err((StatusCode::BAD_REQUEST, format!("{path:?} is not a Markdown document path")));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{path:?} is not a Markdown document path"),
+            ));
         }
         match paths::resolve(&self.root, &rel, self.follow_symlinks) {
             Ok(paths::Resolved::File(_) | paths::Resolved::Missing) => Ok(rel),
-            Ok(paths::Resolved::Dir(_)) => Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory"))),
+            Ok(paths::Resolved::Dir(_)) => {
+                Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory")))
+            }
             Err(paths::ResolveError::Forbidden(m)) => Err((StatusCode::FORBIDDEN, m)),
-            Err(paths::ResolveError::Io(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{path:?}: {e}"))),
+            Err(paths::ResolveError::Io(e)) => {
+                Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{path:?}: {e}")))
+            }
         }
     }
 }
@@ -297,14 +335,18 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         }
     };
 
-    let bundle = styles::load_initial(&cfg.bundle_path, cfg.flavor, cfg.auto_vendor, cfg.quiet).await;
+    let bundle =
+        styles::load_initial(&cfg.bundle_path, cfg.flavor, cfg.auto_vendor, cfg.quiet).await;
     let (css, css_warnings) = ExtraCss::from_config(&cfg.extra_css);
     for w in css_warnings {
         eprintln!("md-render: warning: {w}");
     }
 
     let listeners = bind(&cfg.host, cfg.port).await?;
-    let addrs: Vec<SocketAddr> = listeners.iter().filter_map(|l| l.local_addr().ok()).collect();
+    let addrs: Vec<SocketAddr> = listeners
+        .iter()
+        .filter_map(|l| l.local_addr().ok())
+        .collect();
     let addr = *addrs.first().context("no listening address")?;
     let loopback = addrs.iter().all(|a| a.ip().is_loopback());
 
@@ -352,22 +394,37 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         Target::Stdin { name, text } => {
             let renderer = cfg.renderer.clone();
             let (text, flavor) = (text.clone(), cfg.flavor);
-            let rendered = tokio::task::spawn_blocking(move || renderer.render(&text, &options)).await;
+            let rendered =
+                tokio::task::spawn_blocking(move || renderer.render(&text, &options)).await;
             let content = match rendered {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => error_content(flavor, &format!("rendering {name} failed: {e:#}")),
                 Err(e) => error_content(flavor, &format!("rendering {name} failed: {e}")),
             };
-            RootTarget::Stdin { name: name.clone(), content: Arc::new(content) }
+            RootTarget::Stdin {
+                name: name.clone(),
+                content: Arc::new(content),
+            }
         }
         Target::File(p) => {
             let rel = target_rel(&root, p)?;
-            if paths::join_rel(&root, &rel).is_dir() { RootTarget::Dir(rel) } else { RootTarget::File(rel) }
+            if paths::join_rel(&root, &rel).is_dir() {
+                RootTarget::Dir(rel)
+            } else {
+                RootTarget::File(rel)
+            }
         }
         Target::Dir(p) => RootTarget::Dir(target_rel(&root, p)?),
     };
 
-    let styles = Arc::new(Styles::new(cfg.flavor, cfg.bundle_path.clone(), bundle, css, global.clone(), cfg.quiet));
+    let styles = Arc::new(Styles::new(
+        cfg.flavor,
+        cfg.bundle_path.clone(),
+        bundle,
+        css,
+        global.clone(),
+        cfg.quiet,
+    ));
     if let Some(w) = &watcher {
         styles.watch(w.clone());
     }
@@ -428,7 +485,12 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
     {
         eprintln!("md-render: warning: could not open a browser for {url}: {e}");
     }
-    Ok(RunningServer { addr, url, shutdown: shutdown_tx, tasks })
+    Ok(RunningServer {
+        addr,
+        url,
+        shutdown: shutdown_tx,
+        tasks,
+    })
 }
 
 /// Start, then run until Ctrl-C (or SIGTERM).
@@ -476,7 +538,11 @@ async fn ctrl_c_or_pending() {
 }
 
 /// Forward watcher batches to the style state and the document hub until shutdown.
-async fn dispatch(mut rx: mpsc::UnboundedReceiver<Vec<PathBuf>>, app: Arc<App>, mut stop: watch::Receiver<bool>) {
+async fn dispatch(
+    mut rx: mpsc::UnboundedReceiver<Vec<PathBuf>>,
+    app: Arc<App>,
+    mut stop: watch::Receiver<bool>,
+) {
     loop {
         let batch = tokio::select! {
             biased;
@@ -500,7 +566,10 @@ async fn dispatch(mut rx: mpsc::UnboundedReceiver<Vec<PathBuf>>, app: Arc<App>, 
 /// A content fragment showing an error (stdin render failures).
 fn error_content(flavor: Flavor, message: &str) -> Rendered {
     eprintln!("md-render: {message}");
-    Rendered { html: crate::page::error_html(flavor, 500, message), ..Default::default() }
+    Rendered {
+        html: crate::page::error_html(flavor, 500, message),
+        ..Default::default()
+    }
 }
 
 /// Normalise a target path (relative to the root, or absolute inside it) to a validated
@@ -515,7 +584,13 @@ fn target_rel(root: &Path, p: &Path) -> anyhow::Result<String> {
         })?;
         canon
             .strip_prefix(root)
-            .with_context(|| format!("{} is outside the served root {}", p.display(), root.display()))?
+            .with_context(|| {
+                format!(
+                    "{} is outside the served root {}",
+                    p.display(),
+                    root.display()
+                )
+            })?
             .to_path_buf()
     } else {
         p.to_path_buf()
@@ -524,14 +599,21 @@ fn target_rel(root: &Path, p: &Path) -> anyhow::Result<String> {
     for c in rel_path.components() {
         match c {
             Component::CurDir => {}
-            Component::Normal(s) => {
-                segs.push(s.to_str().with_context(|| format!("{} is not valid UTF-8", p.display()))?.to_owned())
-            }
-            _ => bail!("target {} must be inside the served root {}", p.display(), root.display()),
+            Component::Normal(s) => segs.push(
+                s.to_str()
+                    .with_context(|| format!("{} is not valid UTF-8", p.display()))?
+                    .to_owned(),
+            ),
+            _ => bail!(
+                "target {} must be inside the served root {}",
+                p.display(),
+                root.display()
+            ),
         }
     }
     let rel = segs.join("/");
-    paths::RequestPath::from_decoded(&rel).map_err(|e| anyhow::anyhow!("cannot serve {}: {e}", p.display()))?;
+    paths::RequestPath::from_decoded(&rel)
+        .map_err(|e| anyhow::anyhow!("cannot serve {}: {e}", p.display()))?;
     Ok(rel)
 }
 
@@ -544,7 +626,9 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
         .with_context(|| format!("cannot resolve host {host:?}"))?
         .collect();
     addrs.dedup();
-    let first = *addrs.first().with_context(|| format!("host {host:?} has no addresses"))?;
+    let first = *addrs
+        .first()
+        .with_context(|| format!("host {host:?} has no addresses"))?;
     let primary = TcpListener::bind(first).await.map_err(|e| {
         let what = if e.kind() == std::io::ErrorKind::AddrInUse {
             format!("port {port} is already in use on {}", first.ip())
@@ -553,10 +637,15 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
         };
         anyhow::Error::new(e).context(what)
     })?;
-    let bound_port = primary.local_addr().context("reading the bound address")?.port();
+    let bound_port = primary
+        .local_addr()
+        .context("reading the bound address")?
+        .port();
     let mut out = vec![primary];
     if bare.eq_ignore_ascii_case("localhost")
-        && let Some(other) = addrs.iter().find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
+        && let Some(other) = addrs
+            .iter()
+            .find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
     {
         match TcpListener::bind(SocketAddr::new(other.ip(), bound_port)).await {
             Ok(l) => out.push(l),
@@ -583,7 +672,12 @@ fn display_url(host: &str, addr: SocketAddr) -> String {
 fn new_server_id() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
     h.write_u32(std::process::id());
     format!("{:016x}", h.finish())
 }
@@ -595,10 +689,25 @@ mod tests {
     #[test]
     fn host_allowlist() {
         let allow = HostAllow::new("localhost", 6419);
-        for ok in ["localhost", "localhost:6419", "127.0.0.1:6419", "[::1]:6419", "LOCALHOST:6419", "app.localhost:6419"] {
+        for ok in [
+            "localhost",
+            "localhost:6419",
+            "127.0.0.1:6419",
+            "[::1]:6419",
+            "LOCALHOST:6419",
+            "app.localhost:6419",
+        ] {
             assert!(allow.allows(ok), "{ok}");
         }
-        for bad in ["evil.com", "evil.com:6419", "localhost:80", "127.0.0.1:1", "[::1", "localhost.evil.com:6419", "10.0.0.1:6419"] {
+        for bad in [
+            "evil.com",
+            "evil.com:6419",
+            "localhost:80",
+            "127.0.0.1:1",
+            "[::1",
+            "localhost.evil.com:6419",
+            "10.0.0.1:6419",
+        ] {
             assert!(!allow.allows(bad), "{bad}");
         }
         let v6 = HostAllow::new("::1", 8080);
@@ -623,11 +732,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir(root.join("docs")).unwrap();
-        assert_eq!(target_rel(&root, Path::new("README.md")).unwrap(), "README.md");
-        assert_eq!(target_rel(&root, Path::new("./docs/a.md")).unwrap(), "docs/a.md");
+        assert_eq!(
+            target_rel(&root, Path::new("README.md")).unwrap(),
+            "README.md"
+        );
+        assert_eq!(
+            target_rel(&root, Path::new("./docs/a.md")).unwrap(),
+            "docs/a.md"
+        );
         assert_eq!(target_rel(&root, Path::new("")).unwrap(), "");
         assert_eq!(target_rel(&root, Path::new(".")).unwrap(), "");
-        assert_eq!(target_rel(&root, &root.join("docs/new.md")).unwrap(), "docs/new.md");
+        assert_eq!(
+            target_rel(&root, &root.join("docs/new.md")).unwrap(),
+            "docs/new.md"
+        );
         assert!(target_rel(&root, Path::new("../x.md")).is_err());
         assert!(target_rel(&root, Path::new("/")).is_err());
         assert!(target_rel(&root, Path::new(".git/config")).is_err());

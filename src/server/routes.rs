@@ -14,7 +14,7 @@ use axum::routing::get;
 use super::events::{self, DocQuery};
 use super::files;
 use super::hub::DocStatus;
-use super::paths::{self, RequestPath, Resolved, ResolveError};
+use super::paths::{self, RequestPath, ResolveError, Resolved};
 use super::{App, RootTarget};
 use crate::PREFIX;
 use crate::page::{self, AssetMode, Banner, BannerKind, LiveInfo, PageInput};
@@ -43,7 +43,12 @@ async fn host_guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Re
             .uri()
             .authority()
             .map(|a| a.as_str().to_owned())
-            .or_else(|| req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).map(str::to_owned));
+            .or_else(|| {
+                req.headers()
+                    .get(header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .map(str::to_owned)
+            });
         // HTTP/1.0 clients may omit Host; browsers (the rebinding vector) always send it.
         if let Some(h) = host
             && !allow.allows(&h)
@@ -81,7 +86,11 @@ async fn static_asset(UrlPath(name): UrlPath<String>, headers: HeaderMap) -> Res
 }
 
 /// `GET /__/md-render/bundle/{*path}`: a file of the current style bundle, read in place.
-async fn bundle_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>, headers: HeaderMap) -> Response {
+async fn bundle_file(
+    State(app): State<Arc<App>>,
+    UrlPath(path): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
     let bundle = app.styles.bundle();
     let Some(bytes) = bundle.read(&path) else {
         return not_found_text();
@@ -104,17 +113,27 @@ async fn bundle_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>
 }
 
 /// `GET /__/md-render/css/{index}/{name}`: a local `--css` file.
-async fn extra_css(State(app): State<Arc<App>>, UrlPath((index, _name)): UrlPath<(usize, String)>) -> Response {
+async fn extra_css(
+    State(app): State<Arc<App>>,
+    UrlPath((index, _name)): UrlPath<(usize, String)>,
+) -> Response {
     let Some(file) = app.styles.css_file(index) else {
         return not_found_text();
     };
     match tokio::fs::read(file).await {
         Ok(bytes) => (
-            [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+            [
+                (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
             bytes,
         )
             .into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, format!("cannot read {}: {e}\n", file.display())).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            format!("cannot read {}: {e}\n", file.display()),
+        )
+            .into_response(),
     }
 }
 
@@ -174,18 +193,27 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
         Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m).await,
         Err(ResolveError::Io(e)) => {
             let msg = format!("cannot access /{rel}: {e}");
-            app.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await
+            app.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+                .await
         }
         Ok(Resolved::Dir(abs)) => {
             if !rp.trailing_slash || rp.collapsed {
                 // `/dir` -> `/dir/` so relative links resolve like on the sites (GRIP C35).
-                return redirect(StatusCode::MOVED_PERMANENTLY, &paths::url_for(&rel, true), query);
+                return redirect(
+                    StatusCode::MOVED_PERMANENTLY,
+                    &paths::url_for(&rel, true),
+                    query,
+                );
             }
             app.dir_page(&rel, &abs).await
         }
         Ok(Resolved::File(abs)) => {
             if rp.trailing_slash || rp.collapsed {
-                return redirect(StatusCode::MOVED_PERMANENTLY, &paths::url_for(&rel, false), query);
+                return redirect(
+                    StatusCode::MOVED_PERMANENTLY,
+                    &paths::url_for(&rel, false),
+                    query,
+                );
             }
             if app.is_document(&rel) && !raw_requested {
                 app.doc_page(&rel).await
@@ -197,7 +225,11 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
         Ok(Resolved::Missing) => {
             if app.is_document(&rel) && !raw_requested && !rp.trailing_slash {
                 if rp.collapsed {
-                    return redirect(StatusCode::MOVED_PERMANENTLY, &paths::url_for(&rel, false), query);
+                    return redirect(
+                        StatusCode::MOVED_PERMANENTLY,
+                        &paths::url_for(&rel, false),
+                        query,
+                    );
                 }
                 // Rendered as a 404 page that includes the live client, so it turns into the
                 // document as soon as the file is created (GRIP C58).
@@ -217,17 +249,35 @@ impl App {
         match &self.target {
             RootTarget::Stdin { name, content } => {
                 let title = self.title.clone().unwrap_or_else(|| name.clone());
-                self.page(StatusCode::OK, content.clone(), title, Some(name.clone()), None, Vec::new()).await
+                self.page(
+                    StatusCode::OK,
+                    content.clone(),
+                    title,
+                    Some(name.clone()),
+                    None,
+                    Vec::new(),
+                )
+                .await
             }
             RootTarget::File(rel) if !rel.contains('/') => self.doc_page(rel).await,
             // A target below the root is shown at its own URL so relative links resolve.
-            RootTarget::File(rel) => redirect(StatusCode::FOUND, &paths::url_for(rel, false), query.as_deref()),
-            RootTarget::Dir(rel) if !rel.is_empty() => {
-                redirect(StatusCode::FOUND, &paths::url_for(rel, true), query.as_deref())
-            }
+            RootTarget::File(rel) => redirect(
+                StatusCode::FOUND,
+                &paths::url_for(rel, false),
+                query.as_deref(),
+            ),
+            RootTarget::Dir(rel) if !rel.is_empty() => redirect(
+                StatusCode::FOUND,
+                &paths::url_for(rel, true),
+                query.as_deref(),
+            ),
             RootTarget::Dir(_) => match paths::find_root_readme(&self.root, self.flavor) {
                 Some(readme) => match readme.rsplit_once('/') {
-                    Some((dir, _)) => redirect(StatusCode::FOUND, &paths::url_for(dir, true), query.as_deref()),
+                    Some((dir, _)) => redirect(
+                        StatusCode::FOUND,
+                        &paths::url_for(dir, true),
+                        query.as_deref(),
+                    ),
                     None => self.doc_page(&readme).await,
                 },
                 None => self.listing_page("", &self.root.clone()).await,
@@ -246,23 +296,47 @@ impl App {
     async fn listing_page(&self, rel: &str, abs: &std::path::Path) -> Response {
         let (root, dir, follow) = (self.root.clone(), abs.to_path_buf(), self.follow_symlinks);
         let rel_owned = rel.to_owned();
-        let listed = tokio::task::spawn_blocking(move || paths::list_dir(&root, &dir, &rel_owned, follow)).await;
+        let listed =
+            tokio::task::spawn_blocking(move || paths::list_dir(&root, &dir, &rel_owned, follow))
+                .await;
         let entries = match listed {
             Ok(Ok(e)) => e,
             Ok(Err(e)) => {
                 let msg = format!("cannot list /{rel}: {e}");
-                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await;
+                return self
+                    .error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+                    .await;
             }
             Err(e) => {
                 let msg = format!("cannot list /{rel}: {e}");
-                return self.error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg).await;
+                return self
+                    .error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+                    .await;
             }
         };
-        let shown = if rel.is_empty() { "/".to_owned() } else { format!("/{rel}/") };
+        let shown = if rel.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{rel}/")
+        };
         let html = page::listing_html(self.flavor, &shown, &entries);
-        let content = Arc::new(Rendered { html, ..Default::default() });
-        let title = self.title.clone().unwrap_or_else(|| format!("Index of {shown}"));
-        self.page(StatusCode::OK, content, title, Some(shown), None, Vec::new()).await
+        let content = Arc::new(Rendered {
+            html,
+            ..Default::default()
+        });
+        let title = self
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Index of {shown}"));
+        self.page(
+            StatusCode::OK,
+            content,
+            title,
+            Some(shown),
+            None,
+            Vec::new(),
+        )
+        .await
     }
 
     /// A Markdown document (existing or not).
@@ -276,25 +350,49 @@ impl App {
         let live = self.live.then(|| self.live_info(rel, snap.version));
         match (&snap.status, &snap.content) {
             (DocStatus::Ready, Some(c)) => {
-                self.page(StatusCode::OK, c.rendered.clone(), title, Some(rel.to_owned()), live, Vec::new()).await
+                self.page(
+                    StatusCode::OK,
+                    c.rendered.clone(),
+                    title,
+                    Some(rel.to_owned()),
+                    live,
+                    Vec::new(),
+                )
+                .await
             }
             (DocStatus::Failed { kind, message }, Some(c)) => {
                 // Keep showing the last good render under an error banner.
-                let banner = Banner { kind: BannerKind::Error, message: format!("{} error: {message}", kind.as_str()) };
+                let banner = Banner {
+                    kind: BannerKind::Error,
+                    message: format!("{} error: {message}", kind.as_str()),
+                };
                 let status = StatusCode::INTERNAL_SERVER_ERROR;
-                self.page(status, c.rendered.clone(), title, Some(rel.to_owned()), live, vec![banner]).await
+                self.page(
+                    status,
+                    c.rendered.clone(),
+                    title,
+                    Some(rel.to_owned()),
+                    live,
+                    vec![banner],
+                )
+                .await
             }
             (DocStatus::Failed { kind, message }, None) => {
                 let msg = format!("{} error: {message}", kind.as_str());
-                self.doc_error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, rel, title, live).await
+                self.doc_error_page(StatusCode::INTERNAL_SERVER_ERROR, &msg, rel, title, live)
+                    .await
             }
             (DocStatus::Missing, _) => {
-                let msg = format!("/{rel} does not exist (yet); this page updates as soon as it is created");
-                self.doc_error_page(StatusCode::NOT_FOUND, &msg, rel, title, live).await
+                let msg = format!(
+                    "/{rel} does not exist (yet); this page updates as soon as it is created"
+                );
+                self.doc_error_page(StatusCode::NOT_FOUND, &msg, rel, title, live)
+                    .await
             }
             (DocStatus::Ready | DocStatus::Pending, _) => {
                 let msg = format!("{rel} has not been rendered yet");
-                self.doc_error_page(StatusCode::SERVICE_UNAVAILABLE, &msg, rel, title, live).await
+                self.doc_error_page(StatusCode::SERVICE_UNAVAILABLE, &msg, rel, title, live)
+                    .await
             }
         }
     }
@@ -311,8 +409,19 @@ impl App {
         live: Option<LiveInfo>,
     ) -> Response {
         let html = page::error_html(self.flavor, status.as_u16(), message);
-        let content = Arc::new(Rendered { html, ..Default::default() });
-        self.page(status, content, title, Some(rel.to_owned()), live, Vec::new()).await
+        let content = Arc::new(Rendered {
+            html,
+            ..Default::default()
+        });
+        self.page(
+            status,
+            content,
+            title,
+            Some(rel.to_owned()),
+            live,
+            Vec::new(),
+        )
+        .await
     }
 
     fn live_info(&self, rel: &str, version: u64) -> LiveInfo {
@@ -329,10 +438,18 @@ impl App {
     /// A styled error page for a request that is not a (live) document.
     pub(crate) async fn error_page(&self, status: StatusCode, message: &str) -> Response {
         let html = page::error_html(self.flavor, status.as_u16(), message);
-        let content = Arc::new(Rendered { html, ..Default::default() });
-        let reason = format!("{} {}", status.as_u16(), status.canonical_reason().unwrap_or("Error"));
+        let content = Arc::new(Rendered {
+            html,
+            ..Default::default()
+        });
+        let reason = format!(
+            "{} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("Error")
+        );
         let title = self.title.clone().unwrap_or(reason);
-        self.page(status, content, title, None, None, Vec::new()).await
+        self.page(status, content, title, None, None, Vec::new())
+            .await
     }
 
     /// Wrap content in the full page (crate::page) off the reactor.
@@ -346,10 +463,13 @@ impl App {
         banners: Vec<Banner>,
     ) -> Response {
         let bundle = self.styles.bundle();
-        let (flavor, mode, theme, layout) = (self.flavor, self.mode, self.theme.clone(), self.layout);
+        let (flavor, mode, theme, layout) =
+            (self.flavor, self.mode, self.theme.clone(), self.layout);
         let extra_css = self.styles.extra_css_urls();
         let built = tokio::task::spawn_blocking(move || {
-            let assets = AssetMode::Server { prefix: PREFIX.to_owned() };
+            let assets = AssetMode::Server {
+                prefix: PREFIX.to_owned(),
+            };
             let input = PageInput {
                 flavor,
                 mode,
@@ -369,7 +489,10 @@ impl App {
         match built {
             Ok(Ok(html)) => (
                 status,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
                 html,
             )
                 .into_response(),
@@ -416,7 +539,10 @@ fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
     headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim().trim_start_matches("W/") == etag || t.trim() == "*"))
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|t| t.trim().trim_start_matches("W/") == etag || t.trim() == "*")
+        })
 }
 
 fn not_modified(etag: &str) -> Response {
@@ -424,20 +550,38 @@ fn not_modified(etag: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(etag) {
         resp.headers_mut().insert(header::ETAG, v);
     }
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     resp
 }
 
 fn not_found_text() -> Response {
-    (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, TEXT_UTF8)], "404 Not Found\n").into_response()
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, TEXT_UTF8)],
+        "404 Not Found\n",
+    )
+        .into_response()
 }
 
 fn plain_error(msg: &str) -> Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE, TEXT_UTF8)], format!("{msg}\n")).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, TEXT_UTF8)],
+        format!("{msg}\n"),
+    )
+        .into_response()
 }
 
 fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
-    (status, [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body.to_string(),
+    )
         .into_response()
 }
 
