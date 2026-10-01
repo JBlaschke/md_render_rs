@@ -383,6 +383,8 @@ const C: &[(&str, Rule)] = &[
 /// `nn`, annotations `nd`, names via the word rules.
 const JAVA: &[(&str, Rule)] = &[
     ("punctuation", Span("o")),
+    ("punctuation.definition.string", Inherit),
+    ("punctuation.definition.comment", Inherit),
     ("string.quoted.double", Span("s")),
     ("string.quoted.single", Span("sc")),
     ("meta.path support", Span("nn")),
@@ -398,6 +400,114 @@ const JAVA: &[(&str, Rule)] = &[
     ("entity.name.class", Span("nc")),
 ];
 
+/// `Rouge::Lexers::Shell` (also the commands of `console`): comments `c`, options `nt`,
+/// `$var`/`x=` `nv`, `${`/`}` keywords, command names plain unless builtins (word rules),
+/// pipes and redirections plain, function-definition brackets operators.
+const SHELL: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("variable.parameter.option", Span("nt")),
+    ("punctuation.definition.parameter", Inherit),
+    ("meta.group.expansion.parameter punctuation.definition.variable", Span("nv")),
+    ("punctuation.section.expansion.parameter", Span("k")),
+    ("meta.group.expansion.parameter keyword.operator", Span("k")),
+    ("variable.other.readwrite.assignment", Span("nv")),
+    ("keyword.operator.logical.continue", Span("p")),
+    ("keyword.operator.logical.pipe", Plain),
+    ("keyword.operator.assignment.redirection", Plain),
+    ("constant.numeric.integer.decimal.file-descriptor", Plain),
+    ("keyword.operator.regexp.quantifier", Span("k")),
+    ("support.function.test", Span("o")),
+    ("support.function.double-brace", Span("o")),
+    ("variable.function", Plain),
+    ("entity.name.function", Plain),
+    ("punctuation.section.parens", Span("o")),
+    ("punctuation.section.braces", Span("o")),
+];
+
+/// `Rouge::Lexers::HTML`: attribute values `s`, `=` `na`, doctype `cp`, comments `c`, entities
+/// `ni` (with their `;`).
+const HTML: &[(&str, Rule)] = &[
+    ("string.quoted", Span("s")),
+    ("meta.class-name", Inherit),
+    ("meta.attribute-with-value punctuation.separator.key-value", Span("na")),
+    ("meta.tag.sgml.doctype", Span("cp")),
+    ("meta.tag.sgml.doctype punctuation", Span("cp")),
+    ("meta.tag.sgml.doctype keyword", Span("cp")),
+    ("meta.tag.sgml.doctype constant", Span("cp")),
+    ("comment", Span("c")),
+    ("constant.character.entity", Span("ni")),
+    ("constant.character.entity punctuation", Span("ni")),
+];
+
+/// `Rouge::Lexers::CSS`: property names `nl`, numbers with units `m`, keyword values `nb`,
+/// `#id` selectors and functions `nf`, strings `s1`, colors `nx`, custom properties `py`.
+const CSS: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("meta.property-name", Span("nl")),
+    ("support.type.property-name", Span("nl")),
+    ("support.type.property-name.media", Span("n")),
+    ("constant.numeric", Span("m")),
+    ("keyword.other.unit", Span("m")),
+    ("support.constant.property-value", Span("nb")),
+    ("support.constant.font-name", Span("nb")),
+    ("entity.other.attribute-name.id", Span("nf")),
+    ("entity.other.attribute-name.id punctuation", Span("nf")),
+    ("punctuation.separator.combinator", Span("o")),
+    ("meta.attribute-selector punctuation", Span("o")),
+    ("string", Span("s1")),
+    ("constant.other.color", Span("nx")),
+    ("constant.other.color punctuation", Span("nx")),
+    ("keyword.other.important", Span("cp")),
+    ("support.function", Span("nf")),
+    ("support.type.custom-property", Span("py")),
+    ("support.type.custom-property punctuation", Span("py")),
+    ("support.type.custom-property.name", Span("py")),
+    ("meta.group string.unquoted", Span("sx")),
+];
+
+/// `Rouge::Lexers::YAML`: numbers `m`, quoted strings `s`, anchors `nl`, aliases `nv`, block
+/// scalar indicators `pi`.
+const YAML: &[(&str, Rule)] = &[
+    ("constant.numeric", Span("m")),
+    ("string.quoted", Span("s")),
+    ("meta.property", Span("nl")),
+    ("meta.property punctuation", Span("nl")),
+    ("meta.property keyword", Span("nl")),
+    ("keyword.control.flow.alias", Span("nv")),
+    ("keyword.control.flow.alias punctuation", Span("nv")),
+    ("variable.other.alias", Span("nv")),
+    ("keyword.control.flow.block-scalar", Span("pi")),
+];
+
+/// `Rouge::Lexers::Markdown`: whole-line headings (`#` `gh`, deeper `gu`) and quotes (`gt`),
+/// table pipes plain, fences `p` around plain (or delegated) code, reference definitions
+/// `p`/`ss`/`sx`, bare URLs plain; inline HTML as `Rouge::Lexers::HTML`.
+const MARKDOWN: &[(&str, Rule)] = &[
+    ("markup.heading", Span("gu")),
+    ("markup.heading.1", Span("gh")),
+    ("entity.name.section", Inherit),
+    ("punctuation.definition.blockquote", Inherit),
+    ("punctuation.separator.table-cell", Plain),
+    ("punctuation.section.table-header", Plain),
+    ("punctuation.definition.table-cell-alignment", Plain),
+    ("markup.underline.link.markdown-gfm", Plain),
+    ("punctuation.definition.constant", Span("p")),
+    ("entity.name.reference.link", Span("ss")),
+    ("constant.other.reference.link", Span("ss")),
+    ("meta.link.reference.description", Span("nv")),
+    ("string.other.link.description.title", Span("nn")),
+    ("punctuation.definition.raw.code-fence", Span("p")),
+    ("markup.raw.code-fence", Plain),
+    ("meta.hard-line-break", Span("err")),
+    ("meta.separator.thematic-break", Span("p")),
+    ("meta.separator.thematic-break punctuation", Inherit),
+    ("string.quoted", Span("s")),
+    ("meta.attribute-with-value punctuation.separator.key-value", Span("na")),
+    ("constant.character.entity", Span("ni")),
+    ("constant.character.entity punctuation", Span("ni")),
+    ("comment", Span("c")),
+];
+
 /// Per-Rouge-tag overlays ([`Variant::Improved`]): consulted before the shared table; they
 /// encode how a particular Rouge lexer tokenizes where its classes differ systematically from
 /// the shared mapping.
@@ -410,6 +520,29 @@ const OVERLAYS: &[(&str, &[(&str, Rule)])] = &[
     ("c", C),
     ("cpp", C),
     ("java", JAVA),
+    ("shell", SHELL),
+    ("html", HTML),
+    ("css", CSS),
+    ("yaml", YAML),
+    ("markdown", MARKDOWN),
+];
+
+/// Embedded-language roots (syntect scope → Rouge tag): Rouge's HTML and Markdown lexers hand
+/// `<style>`/`<script>` and fenced code to the language's own lexer, so the scopes inside such a
+/// root use that language's overlay.
+const EMBEDDED: &[(&str, &str)] = &[
+    ("source.css", "css"),
+    ("source.js", "javascript"),
+    ("source.ts", "typescript"),
+    ("source.python", "python"),
+    ("source.rust", "rust"),
+    ("source.go", "go"),
+    ("source.c", "c"),
+    ("source.c++", "cpp"),
+    ("source.java", "java"),
+    ("source.shell.bash", "shell"),
+    ("source.yaml", "yaml"),
+    ("text.html.basic", "html"),
 ];
 
 /// Class scheme variants.
@@ -433,6 +566,8 @@ pub(crate) const DEFAULT_VARIANT: Variant = Variant::Improved;
 pub(crate) struct Scheme {
     base: RuleSet<Rule>,
     overlays: HashMap<&'static str, RuleSet<Rule>>,
+    /// Embedded-language roots ([`EMBEDDED`]) and their Rouge tags.
+    embedded: Vec<(Scope, &'static str)>,
     /// Whether the Rouge word tables apply.
     pub(crate) words: bool,
 }
@@ -450,6 +585,7 @@ impl Scheme {
             Variant::Baseline => Scheme {
                 base: RuleSet::new(Precedence::AncestorFirst, BASELINE_RULES.iter().copied()),
                 overlays: HashMap::new(),
+                embedded: Vec::new(),
                 words: false,
             },
             Variant::Improved => {
@@ -468,6 +604,10 @@ impl Scheme {
                         .map(|&(tag, rules)| {
                             (tag, RuleSet::new(Precedence::AncestorFirst, rules.iter().copied()))
                         })
+                        .collect(),
+                    embedded: EMBEDDED
+                        .iter()
+                        .filter_map(|&(scope, tag)| Some((Scope::new(scope).ok()?, tag)))
                         .collect(),
                     words: true,
                 }
@@ -501,12 +641,28 @@ impl Scheme {
 }
 
 impl ForLang<'_> {
+    /// The innermost embedded-language root on `stack` (not the stack's own root) and the
+    /// overlay of that language.
+    fn embedded(&self, stack: &[Scope]) -> Option<(usize, Option<&RuleSet<Rule>>)> {
+        if self.scheme.embedded.is_empty() {
+            return None;
+        }
+        (1..stack.len()).rev().find_map(|i| {
+            let (_, tag) = self.scheme.embedded.iter().find(|(s, _)| *s == stack[i])?;
+            Some((i, self.scheme.overlays.get(tag)))
+        })
+    }
+
     /// The Rouge class for text under `stack` (outermost first); `None` = plain text.
     pub(crate) fn classify(&self, stack: &[Scope]) -> Option<&'static str> {
+        let embedded = self.embedded(stack);
         for i in (0..stack.len()).rev() {
             let (scope, parents) = (stack[i], &stack[..i]);
-            let rule = self
-                .overlay
+            let overlay = match embedded {
+                Some((root, overlay)) if i >= root => overlay,
+                _ => self.overlay,
+            };
+            let rule = overlay
                 .and_then(|o| o.lookup(scope, parents))
                 .or_else(|| self.scheme.base.lookup(scope, parents));
             match rule {
