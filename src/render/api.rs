@@ -90,10 +90,7 @@ pub struct ApiRequest {
 impl ApiRequest {
     /// Value of the first header called `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+        find_header(&self.headers, name)
     }
 }
 
@@ -116,6 +113,14 @@ impl fmt::Debug for ApiRequest {
     }
 }
 
+/// Value of the first header called `name` in `headers` (case-insensitive).
+fn find_header<'h>(headers: &'h [(String, String)], name: &str) -> Option<&'h str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
 /// An HTTP response (any status).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiResponse {
@@ -128,10 +133,7 @@ pub struct ApiResponse {
 impl ApiResponse {
     /// Value of the first header called `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+        find_header(&self.headers, name)
     }
 }
 
@@ -1215,23 +1217,28 @@ fn block_for(err: &ApiError) -> Option<Block> {
     })
 }
 
-/// Split YAML front matter (`---` line at byte 0 … closing `---` line) from the body (GH §8.12).
+/// Split YAML front matter from the body (GH §8.12), with the delimiter rules of the offline
+/// renderer (`github::frontmatter::extract`, after its line-ending normalization), so that
+/// `--api` and offline pages agree on what is front matter: a `---` line at byte 0, then a
+/// closing `---` or `...` line; trailing blanks are allowed on both, and `\r\n` line ends.
+/// The `front_matter_split_matches_the_offline_renderer` test pins the two together.
 fn split_front_matter(text: &str) -> (Option<&str>, &str) {
-    let first_line_end = match text.find('\n') {
-        Some(i) => i + 1,
-        None => return (None, text),
+    fn bare(line: &str) -> &str {
+        line.trim_end_matches(['\n', '\r', ' ', '\t'])
+    }
+    let mut lines = text.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return (None, text);
     };
-    if text[..first_line_end].trim_end_matches(['\n', '\r']) != "---" {
+    if !first.ends_with('\n') || bare(first) != "---" {
         return (None, text);
     }
-    let mut pos = first_line_end;
-    while pos < text.len() {
-        let end = text[pos..].find('\n').map_or(text.len(), |i| pos + i + 1);
-        let line = text[pos..end].trim_end_matches(['\n', '\r']);
-        if line.trim_end_matches([' ', '\t']) == "---" {
+    let mut end = first.len();
+    for line in lines {
+        end += line.len();
+        if matches!(bare(line), "---" | "...") {
             return (Some(&text[..end]), &text[end..]);
         }
-        pos = end;
     }
     (None, text)
 }
@@ -2716,6 +2723,63 @@ mod tests {
         );
         assert_eq!(split_front_matter("---"), (None, "---"));
         assert_eq!(split_front_matter("---\n---\nx"), (Some("---\n---\n"), "x"));
+        assert_eq!(
+            split_front_matter("---\na: 1\n...\nx"),
+            (Some("---\na: 1\n...\n"), "x")
+        );
+        assert_eq!(
+            split_front_matter("--- \t\na: 1\n---"),
+            (Some("--- \t\na: 1\n---"), "")
+        );
+        // `...` only closes a block.
+        assert_eq!(split_front_matter("...\na\n...\n"), (None, "...\na\n...\n"));
+    }
+
+    /// Q-API-DUP: `--api` treats exactly the blocks as front matter that the offline renderer
+    /// shows as a table, and sends GitHub only the rest. Pins `split_front_matter` to
+    /// `github::frontmatter::extract` (and its line-ending normalization) until they share code.
+    #[test]
+    fn front_matter_split_matches_the_offline_renderer() {
+        let table = |html: &str| html.contains("<markdown-accessiblity-table");
+        for (md, front_matter) in [
+            ("---\ntitle: T\n---\n# Doc\n", true),
+            ("---\ntitle: T\n...\n# Doc\n", true),
+            ("--- \ntitle: T\n---  \n# Doc\n", true),
+            ("---\t\ntitle: T\n...\t\n# Doc\n", true),
+            ("---\r\ntitle: T\r\n---\r\n# Doc\r\n", true),
+            ("---\ntitle: T\n---", true),
+            ("---\ntitle: T\n", false),
+            (" ---\ntitle: T\n---\n# Doc\n", false),
+            ("----\ntitle: T\n----\n# Doc\n", false),
+            ("...\ntitle: T\n...\n# Doc\n", false),
+            ("---", false),
+            ("# Doc\n---\ntitle: T\n---\n", false),
+        ] {
+            let opts = opts(Flavor::Github, Mode::Readme, None);
+            let offline = crate::render::github::render(md, &opts);
+            assert_eq!(table(&offline.html), front_matter, "offline: {md:?}");
+
+            let fake = Fake::with(vec![ok("<p>body</p>")]);
+            let r = ApiRenderer::with_transport(cfg(Flavor::Github, None, false), fake.clone())
+                .unwrap();
+            let out = r.render(md, &opts).unwrap();
+            let sent = fake.requests()[0].body["text"].as_str().unwrap().to_owned();
+            assert_eq!(
+                table(&out.html),
+                front_matter,
+                "--api: {md:?}: {}",
+                out.html
+            );
+            if front_matter {
+                assert!(
+                    md.ends_with(&sent) && sent.len() < md.len(),
+                    "{md:?}: {sent:?}"
+                );
+                assert!(!sent.contains("title: T"), "{md:?}: {sent:?}");
+            } else {
+                assert_eq!(sent, md);
+            }
+        }
     }
 
     #[test]
