@@ -76,11 +76,17 @@ pub(crate) fn github<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
         Theme::Auto => vec![light.as_str(), dark.as_str()],
     };
 
-    let mut sheets: Vec<Sheet<'a>> = theme_sheets
-        .iter()
-        .filter(|s| s.theme.as_deref().is_some_and(|id| wanted.contains(&id)))
-        .map(|s| sheet(s, s.media.clone()))
-        .collect();
+    // Light slot first, then dark (github.com's order, GH §4.1), whatever the manifest order;
+    // a theme used by both slots is linked once.
+    let mut sheets: Vec<Sheet<'a>> = Vec::new();
+    for (i, id) in wanted.iter().enumerate() {
+        if wanted[..i].contains(id) {
+            continue;
+        }
+        sheets.extend(
+            theme_sheets.iter().filter(|s| s.theme.as_deref() == Some(*id)).map(|s| sheet(s, s.media.clone())),
+        );
+    }
     for role in GITHUB_ORDER {
         sheets.extend(m.stylesheets.iter().filter(|s| s.role == role).map(|s| sheet(s, s.media.clone())));
     }
@@ -214,6 +220,17 @@ mod tests {
         let s = github(&m, &sel(Theme::Dark, "light", "dark_dimmed"));
         assert_eq!(paths(&s)[..2], ["g/dark_dimmed.css", "g/prim.css"]);
         assert_eq!(s.dark, "dark_dimmed");
+    }
+
+    #[test]
+    fn github_theme_slots_order_and_dedup() {
+        let mut m = github_manifest();
+        m.stylesheets.swap(1, 2); // dark before light in the manifest
+        let s = github(&m, &sel(Theme::Auto, "light", "dark"));
+        assert_eq!(paths(&s)[..3], ["g/light.css", "g/dark.css", "g/prim.css"]);
+        // The same theme in both slots is linked once.
+        let s = github(&m, &sel(Theme::Auto, "dark", "dark"));
+        assert_eq!(paths(&s)[..2], ["g/dark.css", "g/prim.css"]);
     }
 
     #[test]
