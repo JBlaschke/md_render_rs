@@ -31,6 +31,7 @@ mod preprocess;
 mod sanitize;
 mod spaced_link;
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use dom_query::Document;
@@ -81,18 +82,14 @@ fn markdown_to_html(
     opts: &RenderOptions,
     included: &mut preprocess::Included,
 ) -> String {
-    let text = preprocess::normalize_source(markdown);
-    let text = preprocess::front_matter(text);
-    let text = if opts.mode == Mode::Readme {
+    let mut text = preprocess::front_matter(preprocess::normalize_source(markdown));
+    if opts.mode == Mode::Readme {
         let ctx =
             preprocess::IncludeContext::new(opts.source_path.as_deref(), opts.root.as_deref());
-        match preprocess::includes(&text, &ctx, included) {
-            std::borrow::Cow::Borrowed(_) => text,
-            std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
+        if let Cow::Owned(expanded) = preprocess::includes(&text, &ctx, included) {
+            text = Cow::Owned(expanded);
         }
-    } else {
-        text
-    };
+    }
     render_snippet(&text)
 }
 

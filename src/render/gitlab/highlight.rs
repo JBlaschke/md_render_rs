@@ -108,8 +108,21 @@ pub(super) fn highlight_block(lang: Option<&str>, code: &str) -> (String, Vec<St
                 res.tag
             };
             let expected = plain_lines(code).len();
-            if res.lines.len() == expected {
-                (tag, res.lines)
+            let mut lines = res.lines;
+            // Rouge drops only the final empty line (`token_lines`); tolerate a highlighter that
+            // keeps it, or one that drops more trailing empty lines.
+            while lines.len() > expected && lines.last().is_some_and(String::is_empty) {
+                lines.pop();
+            }
+            if lines.len() < expected
+                && plain_lines(code)[lines.len()..]
+                    .iter()
+                    .all(String::is_empty)
+            {
+                lines.resize(expected, String::new());
+            }
+            if lines.len() == expected {
+                (tag, lines)
             } else {
                 // Defensive: a highlighter that disagrees about line splitting falls back to
                 // plain text, as GitLab does when Rouge raises.
