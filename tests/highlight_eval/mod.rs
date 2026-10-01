@@ -530,20 +530,52 @@ pub fn evaluate_gitlab(
     dir: &Path,
     highlight: impl Fn(&str, &str) -> Vec<String>,
 ) -> (BTreeMap<String, RougeScore>, BTreeMap<(String, String), usize>) {
-    let mut scores = BTreeMap::new();
-    let mut confusions: BTreeMap<(String, String), usize> = BTreeMap::new();
     let base = dir.join("gitlab/rouge_samples");
-    for lang in rouge_sample_langs(dir) {
+    let samples = rouge_sample_langs(dir).into_iter().map(|lang| {
         let code = read(&base.join(format!("code.{lang}")));
-        let rouge = rouge_char_classes(&read(&base.join(format!("{lang}.tokens.tsv"))));
+        let tsv = read(&base.join(format!("{lang}.tokens.tsv")));
+        (lang, code, tsv)
+    });
+    evaluate_rouge_samples(samples, highlight)
+}
+
+/// Evaluate over `(lang, code, tokens.tsv)` samples; scores are summed per language.
+pub fn evaluate_rouge_samples(
+    samples: impl IntoIterator<Item = (String, String, String)>,
+    highlight: impl Fn(&str, &str) -> Vec<String>,
+) -> (BTreeMap<String, RougeScore>, BTreeMap<(String, String), usize>) {
+    let mut scores: BTreeMap<String, RougeScore> = BTreeMap::new();
+    let mut confusions: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (lang, code, tsv) in samples {
+        let rouge = rouge_char_classes(&tsv);
         let ours = our_char_classes(&highlight(&code, &lang));
         let (s, conf) = score_rouge(&code, &ours, &rouge);
         for c in conf {
             *confusions.entry(c).or_default() += 1;
         }
-        scores.insert(lang, s);
+        scores.entry(lang).or_default().add(s);
     }
     (scores, confusions)
+}
+
+/// A directory of extra Rouge oracles (`NNN.<lang>.code` + `NNN.<lang>.tokens.tsv`, made with
+/// `R/tools/rouge_gitlab.rb --tokens`), e.g. from `$MDR_ROUGE_HELDOUT`.
+pub fn rouge_dir_samples(dir: &Path) -> Vec<(String, String, String)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".code").map(str::to_owned))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let lang = n.split_once('.')?.1.to_owned();
+            let code = std::fs::read_to_string(dir.join(format!("{n}.code"))).ok()?;
+            let tsv = std::fs::read_to_string(dir.join(format!("{n}.tokens.tsv"))).ok()?;
+            Some((lang, code, tsv))
+        })
+        .collect()
 }
 
 /// Render the per-language GitLab table (`MAPPING_EVAL.txt` format).

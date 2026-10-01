@@ -255,22 +255,170 @@ pub(crate) const BASELINE_RULES: &[(&str, Rule)] = &[
 /// [`Variant::Improved`].
 const IMPROVED_RULES: &[(&str, Rule)] = &[];
 
+/// `Rouge::Lexers::Rust`: strings `s` (placeholders included), chars `sc`, `<`/`>` operators,
+/// macros and attributes `nd` throughout, `->` a keyword, lifetimes `nv`, type names plain
+/// (`n` via the word rules).
+const RUST: &[(&str, Rule)] = &[
+    ("string.quoted.double", Span("s")),
+    ("string.quoted.single", Span("sc")),
+    ("constant.other.placeholder", Inherit),
+    ("punctuation.definition.generic", Span("o")),
+    ("support.macro", Span("nd")),
+    ("meta.annotation", Span("nd")),
+    ("meta.annotation punctuation", Span("nd")),
+    ("variable.annotation", Span("nd")),
+    ("meta.function.return-type punctuation.separator", Span("k")),
+    ("storage.modifier.lifetime", Span("nv")),
+    ("entity.name.label", Span("nv")),
+    ("entity.name.struct", Plain),
+    ("entity.name.impl", Plain),
+    ("entity.name.type", Plain),
+    ("entity.name.enum", Plain),
+    ("entity.name.trait", Plain),
+    ("variable.other.member", Plain),
+    ("constant.numeric.integer.hexadecimal", Span("mi")),
+];
+
+/// `Rouge::Lexers::Python`: string delimiters (and prefixes) `sh`, contents `s`, docstrings
+/// alike; `def`/`class` plain keywords; interpolations lexed as code; `self` and calls `n`.
+const PYTHON: &[(&str, Rule)] = &[
+    ("string", Span("s")),
+    ("punctuation.definition.string", Span("sh")),
+    ("comment.block.documentation", Span("s")),
+    ("comment.block.documentation punctuation.definition.comment", Span("sh")),
+    ("storage.type.function", Span("k")),
+    ("storage.type.class", Span("k")),
+    ("keyword.declaration", Span("k")),
+    ("meta.import-name", Span("nn")),
+    ("meta.statement.import meta.qualified-name", Span("nn")),
+    ("meta.interpolation", Plain),
+    ("storage.modifier.conversion", Span("si")),
+    ("variable.language", Plain),
+    ("variable.function", Plain),
+    ("variable.annotation", Span("nd")),
+    ("entity.other.inherited-class", Plain),
+    ("punctuation.separator.annotation", Span("o")),
+    ("punctuation.definition.numeric", Inherit),
+    ("source.regexp constant", Span("s")),
+    ("source.regexp keyword", Span("s")),
+];
+
+/// `Rouge::Lexers::Javascript` / `Typescript`: quote delimiters `dl`, template literals `s2`
+/// with `p` interpolation braces, names via the word rules (`nx`), object keys `na`, `=>` and
+/// `?:` as in the lexer.
+const JAVASCRIPT: &[(&str, Rule)] = &[
+    ("punctuation.definition.string", Span("dl")),
+    ("string.quoted.other", Span("s2")),
+    ("string.quoted.other punctuation.definition.string", Span("s2")),
+    ("string.template", Span("s2")),
+    ("string.template punctuation.definition.string", Span("s2")),
+    ("punctuation.section.interpolation", Span("p")),
+    ("punctuation.definition.template-expression", Span("p")),
+    ("meta.interpolation", Plain),
+    ("meta.template.expression", Plain),
+    ("meta.embedded", Plain),
+    ("string.regexp keyword", Span("sr")),
+    ("string.regexp punctuation", Span("sr")),
+    ("keyword.operator.ternary", Span("p")),
+    ("storage.type.function.arrow", Span("o")),
+    ("variable.other", Plain),
+    ("variable.parameter", Plain),
+    ("variable.language", Plain),
+    ("support.type.object", Plain),
+    ("support.variable", Plain),
+    ("meta.property.object", Plain),
+    ("meta.mapping.key", Span("na")),
+    ("comment.block.documentation", Span("cm")),
+    ("meta.brace", Span("p")),
+    ("keyword.operator.type.annotation", Span("p")),
+    ("keyword.operator.optional", Span("p")),
+    ("keyword.control.export", Span("k")),
+    ("entity.name.type", Plain),
+    ("variable.object.property", Span("nl")),
+    ("punctuation.definition.typeparameters", Span("o")),
+];
+
+/// `Rouge::Lexers::Go`: every comment `c`, strings `s`, numbers `m`, `.` an operator, names via
+/// the word rules.
+const GO: &[(&str, Rule)] = &[
+    ("comment", Span("c")),
+    ("string", Span("s")),
+    ("constant.other.placeholder", Inherit),
+    ("constant.numeric", Span("m")),
+    ("punctuation.accessor", Span("o")),
+    ("keyword.other.package", Span("k")),
+    ("keyword.other.import", Span("k")),
+    ("variable", Plain),
+    ("entity.name", Plain),
+    ("storage.type", Plain),
+];
+
+/// `Rouge::Lexers::C` / `Cpp`: strings `s`, chars `sc`, whole preprocessor lines `cp`, floats
+/// without exponent lexed as integers, names via the word rules.
+const C: &[(&str, Rule)] = &[
+    ("string.quoted.double", Span("s")),
+    ("string.quoted.single", Span("sc")),
+    ("constant.other.placeholder", Inherit),
+    ("meta.preprocessor", Span("cp")),
+    ("meta.preprocessor keyword", Span("cp")),
+    ("meta.preprocessor entity", Span("cp")),
+    ("meta.preprocessor constant", Span("cp")),
+    ("constant.numeric.float", Span("mi")),
+    ("punctuation.separator.decimal", Span("p")),
+    ("constant.numeric.integer.hexadecimal storage.type.numeric", Span("mh")),
+    ("punctuation.definition.numeric", Inherit),
+    ("storage.type", Plain),
+    ("storage.modifier", Plain),
+    ("support.function", Plain),
+    ("variable.function", Plain),
+    ("entity.name.type", Plain),
+    ("entity.name.namespace", Plain),
+    ("punctuation.accessor.double-colon", Span("o")),
+    ("punctuation.section.generic", Span("o")),
+    ("punctuation.separator.initializer-list", Span("o")),
+    ("punctuation.section.class", Span("nl")),
+];
+
+/// `Rouge::Lexers::Java`: all punctuation is `Operator`, strings `s`, chars `sc`, package paths
+/// `nn`, annotations `nd`, names via the word rules.
+const JAVA: &[(&str, Rule)] = &[
+    ("punctuation", Span("o")),
+    ("string.quoted.double", Span("s")),
+    ("string.quoted.single", Span("sc")),
+    ("meta.path support", Span("nn")),
+    ("meta.path entity", Span("nn")),
+    ("meta.path punctuation", Span("nn")),
+    ("meta.annotation", Span("nd")),
+    ("meta.annotation punctuation", Span("nd")),
+    ("variable.annotation", Span("nd")),
+    ("variable.function", Plain),
+    ("storage.type", Plain),
+    ("storage.modifier", Plain),
+    ("support.class", Plain),
+    ("entity.name.class", Span("nc")),
+];
+
 /// Per-Rouge-tag overlays ([`Variant::Improved`]): consulted before the shared table; they
 /// encode how a particular Rouge lexer tokenizes where its classes differ systematically from
 /// the shared mapping.
-const OVERLAYS: &[(&str, &[(&str, Rule)])] = &[];
-
-/// Per-Rouge-tag class of bare identifiers that no TextMate scope classifies
-/// ([`Variant::Improved`]). Rouge lexers emit `Name` (`n`) or `Name.Other` (`nx`) for them
-/// where the TextMate grammars leave them unscoped (GL §8.4: the largest confusion `'' → n`).
-const BARE_IDENTIFIERS: &[(&str, &str)] = &[];
+const OVERLAYS: &[(&str, &[(&str, Rule)])] = &[
+    ("rust", RUST),
+    ("python", PYTHON),
+    ("javascript", JAVASCRIPT),
+    ("typescript", JAVASCRIPT),
+    ("go", GO),
+    ("c", C),
+    ("cpp", C),
+    ("java", JAVA),
+];
 
 /// Class scheme variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Variant {
     /// Exactly `scope_map.py` (GL §8.4; the 50.5% / 75.8% baseline).
     Baseline,
-    /// Baseline + [`IMPROVED_RULES`] + [`OVERLAYS`] + [`BARE_IDENTIFIERS`].
+    /// Baseline + [`IMPROVED_RULES`] + [`OVERLAYS`] + the Rouge word tables
+    /// (`super::words`).
     Improved,
 }
 
@@ -285,7 +433,8 @@ pub(crate) const DEFAULT_VARIANT: Variant = Variant::Improved;
 pub(crate) struct Scheme {
     base: RuleSet<Rule>,
     overlays: HashMap<&'static str, RuleSet<Rule>>,
-    bare: HashMap<&'static str, &'static str>,
+    /// Whether the Rouge word tables apply.
+    pub(crate) words: bool,
 }
 
 /// Language-specific parts of a scheme for one block.
@@ -293,8 +442,6 @@ pub(crate) struct Scheme {
 pub(crate) struct ForLang<'s> {
     scheme: &'s Scheme,
     overlay: Option<&'s RuleSet<Rule>>,
-    /// Class for unclassified identifiers.
-    pub(crate) bare_identifier: Option<&'static str>,
 }
 
 impl Scheme {
@@ -303,7 +450,7 @@ impl Scheme {
             Variant::Baseline => Scheme {
                 base: RuleSet::new(Precedence::AncestorFirst, BASELINE_RULES.iter().copied()),
                 overlays: HashMap::new(),
-                bare: HashMap::new(),
+                words: false,
             },
             Variant::Improved => {
                 // Replacements keep the baseline position (tie order); new selectors append.
@@ -322,7 +469,7 @@ impl Scheme {
                             (tag, RuleSet::new(Precedence::AncestorFirst, rules.iter().copied()))
                         })
                         .collect(),
-                    bare: BARE_IDENTIFIERS.iter().copied().collect(),
+                    words: true,
                 }
             }
         }
@@ -340,11 +487,7 @@ impl Scheme {
 
     /// The scheme specialised for Rouge lexer `tag`.
     pub(crate) fn for_lang(&self, tag: &str) -> ForLang<'_> {
-        ForLang {
-            scheme: self,
-            overlay: self.overlays.get(tag),
-            bare_identifier: self.bare.get(tag).copied(),
-        }
+        ForLang { scheme: self, overlay: self.overlays.get(tag) }
     }
 
     #[cfg(test)]

@@ -11,6 +11,7 @@ mod classes;
 mod console;
 mod diff;
 pub(crate) mod registry;
+mod words;
 
 use std::ops::Range;
 
@@ -71,8 +72,10 @@ pub(crate) fn segments_for(code: &str, lang: &str, variant: Variant) -> (String,
         Resolved::Rouge(tag) => {
             let scheme = Scheme::get(variant);
             let mut out = Vec::new();
+            // The console lexer hands commands to the shell lexer.
+            let lexer = if tag == "console" { "shell" } else { tag };
             let result = if tag == "console" {
-                console::segments(&code, &scheme.for_lang("shell"), &mut out)
+                console::segments(&code, &scheme.for_lang(lexer), &mut out)
             } else {
                 match select_syntax(tag, lang) {
                     Some(syntax) => tokenize(&code, syntax, &scheme.for_lang(tag), &mut out),
@@ -80,7 +83,10 @@ pub(crate) fn segments_for(code: &str, lang: &str, variant: Variant) -> (String,
                 }
             };
             match result {
-                Ok(()) => out,
+                Ok(()) => match words::for_tag(lexer) {
+                    Some(words) if scheme.words => words.refine(&code, out),
+                    _ => out,
+                },
                 Err(engine::Error) => plain(&code),
             }
         }
@@ -113,44 +119,9 @@ fn tokenize(
         if let Event::Text(text) = event {
             let range = pos..pos + text.len();
             pos = range.end;
-            match scheme.classify(stack) {
-                None => match scheme.bare_identifier {
-                    Some(class) => split_identifiers(text, range.start, class, out),
-                    None => out.push(Segment::new(None, range)),
-                },
-                class => out.push(Segment::new(class, range)),
-            }
+            out.push(Segment::new(scheme.classify(stack), range));
         }
     })
-}
-
-/// Give ASCII identifiers (`[A-Za-z_][A-Za-z0-9_]*`) in unclassified text the class `class`.
-fn split_identifiers(text: &str, base: usize, class: &'static str, out: &mut Vec<Segment>) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    let mut plain_start = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        // An identifier may not start inside a run of word characters (e.g. after a digit).
-        let at_boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-        if (b.is_ascii_alphabetic() || b == b'_') && at_boundary {
-            let end = bytes[i..]
-                .iter()
-                .position(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
-                .map_or(bytes.len(), |n| i + n);
-            if plain_start < i {
-                out.push(Segment::new(None, base + plain_start..base + i));
-            }
-            out.push(Segment::new(Some(class), base + i..base + end));
-            i = end;
-            plain_start = end;
-        } else {
-            i += 1;
-        }
-    }
-    if plain_start < bytes.len() {
-        out.push(Segment::new(None, base + plain_start..base + bytes.len()));
-    }
 }
 
 /// `HTMLGitlab#stream` + `token_lines` (GL §8.2): merge adjacent pieces of the same class
@@ -330,15 +301,5 @@ mod tests {
         assert_eq!(r.lines.len(), 1);
         assert!(r.lines[0].contains("<span class=\"c1\">// c</span>"), "{}", r.lines[0]);
         assert!(r.lines[0].contains("\"s\"</span>"), "{}", r.lines[0]);
-    }
-
-    #[test]
-    fn identifiers_split_at_boundaries() {
-        let mut out = Vec::new();
-        split_identifiers(" foo 1x _b9", 10, "n", &mut out);
-        assert_eq!(
-            out,
-            [seg(None, 10..11), seg(Some("n"), 11..14), seg(None, 14..18), seg(Some("n"), 18..21)]
-        );
     }
 }

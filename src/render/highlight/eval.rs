@@ -157,34 +157,49 @@ fn github_scopes() {
     }
 }
 
-/// Debug aid: `MDR_HL_DUMP_GL=rust` prints Rouge's and our classes per token of a sample.
+/// Debug aid: `MDR_HL_DUMP_GL=rust` prints, for every syntect token of the Rouge sample (and of
+/// the `$MDR_ROUGE_HELDOUT` samples of that language) whose class differs from Rouge's, the
+/// token, both classes and the scopes, as `TOK` lines.
 #[test]
 fn gitlab_dump() {
-    let (Some(dir), Ok(lang)) = (golden_dir(), std::env::var("MDR_HL_DUMP_GL")) else { return };
+    let (Some(dir), Ok(want)) = (golden_dir(), std::env::var("MDR_HL_DUMP_GL")) else { return };
     let base = dir.join("gitlab/rouge_samples");
-    let code = std::fs::read_to_string(base.join(format!("code.{lang}"))).unwrap();
-    let tsv = std::fs::read_to_string(base.join(format!("{lang}.tokens.tsv"))).unwrap();
-    let rouge = rouge_char_classes(&tsv);
-    let ours = our_char_classes(&rouge::highlight_with(&code, &lang, rouge::DEFAULT_VARIANT).lines);
-    let chars: Vec<char> = code.chars().collect();
-    // Print runs of (rouge, ours) classes.
-    let mut i = 0;
-    while i < chars.len().min(rouge.len()).min(ours.len()) {
-        let mut j = i;
-        while j < chars.len().min(rouge.len()).min(ours.len())
-            && rouge[j] == rouge[i]
-            && ours[j] == ours[i]
-            && chars[j] != '\n'
-        {
-            j += 1;
-        }
-        let j = j.max(i + 1);
-        let text: String = chars[i..j].iter().collect();
-        if !text.trim().is_empty() {
-            let mark = if rouge[i] == ours[i] { " " } else { "X" };
-            println!("{mark} rouge={:<4} ours={:<4} {text:?}", rouge[i], ours[i]);
-        }
-        i = j;
+    let mut samples: Vec<(String, String, String)> = Vec::new();
+    if let (Ok(code), Ok(tsv)) = (
+        std::fs::read_to_string(base.join(format!("code.{want}"))),
+        std::fs::read_to_string(base.join(format!("{want}.tokens.tsv"))),
+    ) {
+        samples.push((want.clone(), code, tsv));
+    }
+    if let Some(d) = std::env::var_os("MDR_ROUGE_HELDOUT") {
+        samples.extend(rouge_dir_samples(std::path::Path::new(&d)).into_iter().filter(|s| s.0 == want));
+    }
+    for (lang, code, tsv) in samples {
+        let rouge = rouge_char_classes(&tsv);
+        let ours = our_char_classes(&rouge::highlight_with(&code, &lang, rouge::DEFAULT_VARIANT).lines);
+        let tag = rouge::registry::resolve(&lang).tag().to_owned();
+        let Some(syntax) = rouge::select_syntax(&tag, &lang) else { continue };
+        println!("=== {lang} ({tag}) syntax {}", syntax.name);
+        let mut pos = 0usize;
+        let code = code.replace("\r\n", "\n");
+        let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
+            if let super::engine::Event::Text(t) = e {
+                let n = t.chars().count();
+                let chars: Vec<char> = t.chars().collect();
+                let differs = (0..n).any(|k| {
+                    !chars[k].is_whitespace() && rouge.get(pos + k) != ours.get(pos + k)
+                });
+                let all = std::env::var_os("MDR_HL_DUMP_ALL").is_some();
+                if differs || (all && !t.trim().is_empty()) {
+                    let k = (0..n).find(|&k| !chars[k].is_whitespace()).unwrap_or(0);
+                    let r = rouge.get(pos + k).cloned().unwrap_or_default();
+                    let o = ours.get(pos + k).cloned().unwrap_or_default();
+                    let scopes: Vec<String> = stack.iter().skip(1).map(|s| s.build_string()).collect();
+                    println!("TOK\t{t:?}\tG={r}\tO={o}\tS={}", scopes.join(" "));
+                }
+                pos += n;
+            }
+        });
     }
 }
 
@@ -194,9 +209,16 @@ fn gitlab_variants() {
         skipped("highlight::eval::gitlab_variants");
         return;
     };
+    let heldout = std::env::var_os("MDR_ROUGE_HELDOUT")
+        .map(|d| rouge_dir_samples(std::path::Path::new(&d)))
+        .unwrap_or_default();
     for variant in rouge::Variant::ALL {
-        let (scores, conf) =
-            evaluate_gitlab(&dir, |code, lang| rouge::highlight_with(code, lang, variant).lines);
+        let highlight = |code: &str, lang: &str| rouge::highlight_with(code, lang, variant).lines;
+        let (scores, conf) = evaluate_gitlab(&dir, highlight);
         println!("{}", gitlab_table(&format!("== GitLab {variant:?}"), &scores, &conf));
+        if !heldout.is_empty() {
+            let (scores, conf) = evaluate_rouge_samples(heldout.iter().cloned(), highlight);
+            println!("{}", gitlab_table(&format!("== GitLab {variant:?} held-out"), &scores, &conf));
+        }
     }
 }
