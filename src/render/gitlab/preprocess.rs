@@ -222,9 +222,27 @@ fn markdown_link(url: &str) -> String {
 
 /// `error_message` of IncludeFilter.
 fn error_message(file: &str, reason: &str, out: &mut Included) -> String {
+    error_message_hint(file, reason, "", out)
+}
+
+/// [`error_message`] whose banner warning explains why (`hint`); the inline Markdown is
+/// GitLab's exact text either way.
+fn error_message_hint(file: &str, reason: &str, hint: &str, out: &mut Included) -> String {
+    let sep = if hint.is_empty() { "" } else { " " };
     out.warnings
-        .push(format!("::include{{file={file}}}: {reason}"));
+        .push(format!("::include{{file={file}}}: {reason}{sep}{hint}"));
     format!("**Error including '{}': {reason}**", markdown_link(file))
+}
+
+/// Banner hint for an include that names something inside `.git`.
+const GIT_DIR_HINT: &str = "(`.git` is not part of the repository)";
+
+/// True when a path component is `.git` in any letter case (as `server::paths` checks).
+fn has_git_component(path: &Path) -> bool {
+    path.components().any(|c| match c {
+        Component::Normal(s) => s.as_encoded_bytes().eq_ignore_ascii_case(b".git"),
+        _ => false,
+    })
 }
 
 /// `target_http?` of IncludeFilter.
@@ -248,13 +266,32 @@ fn read_include(file: &str, ctx: &IncludeContext, out: &mut Included) -> String 
     let Some(target) = resolve_relative_path(file, requested) else {
         return error_message(file, "not found", out);
     };
+    // `.git` is never part of a repository tree (GitLab reads committed blobs, so it renders
+    // `not found`), and DESIGN D14 denies it like the server does (`check_contained`). Checked
+    // on the requested path (any letter case, for case-insensitive file systems) and again on
+    // the canonical path below, which covers symlinks and `x/../.git`.
+    if has_git_component(&target) {
+        return error_message_hint(file, "not found", GIT_DIR_HINT, out);
+    }
     // Confine to the root: canonicalize (resolving symlinks) and require the root prefix.
     let Ok(abs) = root.join(&target).canonicalize() else {
         return error_message(file, "not found", out);
     };
-    if !abs.starts_with(root) || !abs.is_file() {
+    let Ok(inside) = abs.strip_prefix(root) else {
+        return error_message(file, "not found", out);
+    };
+    if has_git_component(inside) {
+        return error_message_hint(file, "not found", GIT_DIR_HINT, out);
+    }
+    if !abs.is_file() {
         return error_message(file, "not found", out);
     }
+    // Not done: restricting includes to git-tracked files (`git ls-files --error-unmatch`),
+    // which would model GitLab's committed-blob semantics more closely and also hide untracked
+    // in-root files such as `.env`. It needs a `git` subprocess per include (renderers are pure
+    // and fast, DESIGN §3.2), its answer changes with `git add` without any file event the live
+    // watcher could see, and it would show `not found` for exactly the new, not yet committed
+    // files a local preview is for. The served root is the boundary instead (DESIGN D14).
     match std::fs::metadata(&abs) {
         Ok(m) if m.len() > MAX_INCLUDE_BYTES => return error_message(file, "too large", out),
         Ok(_) => {}
@@ -425,6 +462,72 @@ mod tests {
         );
         assert_eq!(out.warnings.len(), 2);
         assert_eq!(out.files.len(), 2);
+    }
+
+    const SECRET: &str = "url = https://alice:FAKE-SECRET-123@git.example.com/r.git";
+
+    /// SEC-3 / GL-INC-1: nothing below a `.git` component is ever included, whatever the
+    /// spelling (case, `x/../`, leading `/`, symlinks); other dotfiles still are.
+    #[test]
+    fn git_dir_is_never_included() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (rel, content) in [
+            (".git/config", SECRET),
+            ("sub/.git/HEAD", SECRET),
+            (".gitignore", "IGNORE-OK"),
+            (".gitlab/snippet.md", "DOTDIR-OK"),
+        ] {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), content).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".git/config"), root.join("cfg")).unwrap();
+            std::os::unix::fs::symlink(root.join(".git"), root.join("gitdir")).unwrap();
+            std::os::unix::fs::symlink(".git/config", root.join("rel-cfg")).unwrap();
+        }
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        let mut attempts = vec![
+            ".git/config",
+            "./.git/config",
+            "/.git/config",
+            "sub/../.git/config",
+            "sub/../.GIT/config",
+            ".Git/config",
+            "sub/.git/HEAD",
+            ".git",
+        ];
+        if cfg!(unix) {
+            attempts.extend(["cfg", "rel-cfg", "gitdir/config"]);
+        }
+        for file in attempts {
+            let mut out = Included::default();
+            let text = format!("::include{{file={file}}}");
+            let res = includes(&text, &ctx, &mut out);
+            assert!(!res.contains("FAKE-SECRET"), "{file} leaked: {res}");
+            assert!(res.ends_with("': not found**"), "{file}: {res}");
+            assert_eq!(out.warnings.len(), 1, "{file}");
+            assert!(out.files.is_empty(), "{file} must not be watched");
+        }
+        let mut out = Included::default();
+        assert_eq!(
+            includes("::include{file=.git/config}", &ctx, &mut out),
+            "**Error including '[\\.git/config](<.git/config>)': not found**"
+        );
+        assert!(out.warnings[0].contains("`.git` is not part of the repository"));
+        // Committed dotfiles are fine on GitLab, so they are included here too.
+        let mut out = Included::default();
+        let res = includes(
+            "::include{file=.gitignore}\n::include{file=.gitlab/snippet.md}",
+            &ctx,
+            &mut out,
+        );
+        assert_eq!(res, "IGNORE-OK\nDOTDIR-OK");
+        assert!(out.warnings.is_empty());
     }
 
     #[test]
