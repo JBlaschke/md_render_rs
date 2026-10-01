@@ -38,21 +38,37 @@ fn lazy_loaded_image(img: &NodeRef<'_>) {
 /// `renderMarkdownTables` (GL §6.11): tables with a header row get GitLab's scroll/shadow
 /// wrapper; tables without `<thead>` are left alone, as the client does.
 fn table_wrapper(root: &NodeRef<'_>, table: &NodeRef<'_>) {
-    let Some(thead) = dom::element_children(table).into_iter().find(|c| dom::is(c, "thead")) else {
+    let Some(thead) = dom::element_children(table)
+        .into_iter()
+        .find(|c| dom::is(c, "thead"))
+    else {
         return;
     };
-    let Some(row) = dom::element_children(&thead).into_iter().find(|c| dom::is(c, "tr")) else {
+    let Some(row) = dom::element_children(&thead)
+        .into_iter()
+        .find(|c| dom::is(c, "tr"))
+    else {
         return;
     };
-    if !dom::element_children(&row).iter().any(|c| dom::is_any(c, &["th", "td"])) {
+    if !dom::element_children(&row)
+        .iter()
+        .any(|c| dom::is_any(c, &["th", "td"]))
+    {
         return;
     }
-    let outer = dom::new_element(root.tree, "div", &[("class", "gl-table-shadow-overlay gl-my-5")]);
+    let outer = dom::new_element(
+        root.tree,
+        "div",
+        &[("class", "gl-table-shadow-overlay gl-my-5")],
+    );
     let inner = dom::new_element(
         root.tree,
         "div",
         &[
-            ("class", "gl-max-h-[70vh] gl-w-fit gl-max-w-full gl-overflow-x-auto gl-overflow-y-auto"),
+            (
+                "class",
+                "gl-max-h-[70vh] gl-w-fit gl-max-w-full gl-overflow-x-auto gl-overflow-y-auto",
+            ),
             ("data-sticky-header", "true"),
         ],
     );
@@ -80,7 +96,9 @@ pub(super) fn add_keys(root: &NodeRef<'_>) {
         let n = root.tree.get_unchecked(&id);
         let classes = dom::classes(&n);
         if dom::is(&n, "div") && classes.iter().any(|c| c == "markdown-code-block") {
-            let pre = dom::element_children(&n).into_iter().find(|c| dom::is(c, "pre"));
+            let pre = dom::element_children(&n)
+                .into_iter()
+                .find(|c| dom::is(c, "pre"));
             let (lang, params, text) = match &pre {
                 Some(p) => (
                     dom::attr(p, "data-canonical-lang").unwrap_or_default(),
@@ -89,13 +107,19 @@ pub(super) fn add_keys(root: &NodeRef<'_>) {
                 ),
                 None => (String::new(), String::new(), dom::text(&n)),
             };
-            n.set_attr("data-mdr-key", &content_key(&["code", &lang, &params, &text]));
+            n.set_attr(
+                "data-mdr-key",
+                &content_key(&["code", &lang, &params, &text]),
+            );
         } else if !dom::is(&n, "pre")
             && classes.iter().any(|c| c == "js-render-math")
             && !dom::has_ancestor(&n, &["pre"], root)
         {
             let style = dom::attr(&n, "data-math-style").unwrap_or_default();
-            n.set_attr("data-mdr-key", &content_key(&["math", &style, &dom::text(&n)]));
+            n.set_attr(
+                "data-mdr-key",
+                &content_key(&["math", &style, &dom::text(&n)]),
+            );
         }
     }
 }
@@ -124,32 +148,60 @@ mod tests {
 
     #[test]
     fn images_tables_code() {
-        assert_eq!(run("<img src=\"a.png\" alt=\"\">", apply), "<img src=\"a.png\" alt=\"\" decoding=\"async\" loading=\"lazy\">");
         assert_eq!(
-            run("<table dir=\"auto\"><thead><tr><th>h</th></tr></thead></table>", apply),
+            run("<img src=\"a.png\" alt=\"\">", apply),
+            "<img src=\"a.png\" alt=\"\" decoding=\"async\" loading=\"lazy\">"
+        );
+        assert_eq!(
+            run(
+                "<table dir=\"auto\"><thead><tr><th>h</th></tr></thead></table>",
+                apply
+            ),
             "<div class=\"gl-table-shadow-overlay gl-my-5\"><div class=\"gl-max-h-[70vh] gl-w-fit gl-max-w-full gl-overflow-x-auto gl-overflow-y-auto\" data-sticky-header=\"true\"><table dir=\"auto\" class=\"gl-min-w-full gl-overflow-y-hidden\"><thead><tr><th>h</th></tr></thead></table></div></div>"
         );
-        assert_eq!(run("<table><tbody><tr><td>x</td></tr></tbody></table>", apply), "<table><tbody><tr><td>x</td></tr></tbody></table>");
         assert_eq!(
-            run("<pre class=\"code highlight js-syntax-highlight language-c\"><code></code></pre>", apply),
+            run("<table><tbody><tr><td>x</td></tr></tbody></table>", apply),
+            "<table><tbody><tr><td>x</td></tr></tbody></table>"
+        );
+        assert_eq!(
+            run(
+                "<pre class=\"code highlight js-syntax-highlight language-c\"><code></code></pre>",
+                apply
+            ),
             "<pre class=\"code highlight js-syntax-highlight language-c code-syntax-highlight-theme\"><code></code></pre>"
         );
     }
 
     #[test]
     fn keys_are_content_based() {
-        let a = run("<div class=\"markdown-code-block\"><pre data-canonical-lang=\"c\"><code>x</code></pre></div><p><span class=\"js-render-math\" data-math-style=\"inline\">a</span></p>", add_keys);
-        let b = run("<p>other</p><div class=\"markdown-code-block\"><pre data-canonical-lang=\"c\"><code>x</code></pre></div>", add_keys);
-        let key = |s: &str| s.split("data-mdr-key=\"").nth(1).map(|r| r[..16].to_owned());
+        let a = run(
+            "<div class=\"markdown-code-block\"><pre data-canonical-lang=\"c\"><code>x</code></pre></div><p><span class=\"js-render-math\" data-math-style=\"inline\">a</span></p>",
+            add_keys,
+        );
+        let b = run(
+            "<p>other</p><div class=\"markdown-code-block\"><pre data-canonical-lang=\"c\"><code>x</code></pre></div>",
+            add_keys,
+        );
+        let key = |s: &str| {
+            s.split("data-mdr-key=\"")
+                .nth(1)
+                .map(|r| r[..16].to_owned())
+        };
         assert_eq!(key(&a), key(&b));
         assert_eq!(a.matches("data-mdr-key").count(), 2);
-        assert_ne!(content_key(&["code", "c", "", "x"]), content_key(&["code", "c", "", "y"]));
+        assert_ne!(
+            content_key(&["code", "c", "", "x"]),
+            content_key(&["code", "c", "", "y"])
+        );
     }
 
     #[test]
     fn sourcepos_stripped() {
         assert_eq!(
-            run("<p data-sourcepos=\"1:1-1:3\">x<input data-checkbox-sourcepos=\"1:2-1:2\"></p>", strip_sourcepos),
+            run(
+                "<p data-sourcepos=\"1:1-1:3\">x<input data-checkbox-sourcepos=\"1:2-1:2\"></p>",
+                strip_sourcepos
+            ),
             "<p>x<input></p>"
         );
     }

@@ -25,7 +25,9 @@ pub(super) struct FilterContext {
 
 impl Default for FilterContext {
     fn default() -> Self {
-        FilterContext { internal_hosts: vec!["gitlab.com".to_owned()] }
+        FilterContext {
+            internal_hosts: vec!["gitlab.com".to_owned()],
+        }
     }
 }
 
@@ -82,7 +84,9 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
         if !pre.has_attr("lang") {
             continue;
         }
-        let has_code = dom::descendants(&pre).iter().any(|d| dom::is(&root.tree.get_unchecked(d), "code"));
+        let has_code = dom::descendants(&pre)
+            .iter()
+            .any(|d| dom::is(&root.tree.get_unchecked(d), "code"));
         if has_code {
             continue;
         }
@@ -101,10 +105,16 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
         if pre.parent().is_none() {
             continue;
         }
-        let lang_class = dom::classes(&code).into_iter().find(|c| c.starts_with("language-"));
+        let lang_class = dom::classes(&code)
+            .into_iter()
+            .find(|c| c.starts_with("language-"));
         let language = dom::attr(&pre, "data-lang")
             .or_else(|| dom::attr(&code, "data-lang"))
-            .or_else(|| lang_class.as_ref().map(|c| c["language-".len()..].to_owned()))
+            .or_else(|| {
+                lang_class
+                    .as_ref()
+                    .map(|c| c["language-".len()..].to_owned())
+            })
             .or_else(|| dom::attr(&pre, "lang"))
             .or_else(|| dom::attr(&code, "lang"));
         let meta = dom::attr(&pre, "data-meta").or_else(|| dom::attr(&code, "data-meta"));
@@ -114,7 +124,10 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
                 None => (Some(l.to_owned()), None),
                 Some((a, b)) => {
                     let b = dom::ruby_strip(b);
-                    (Some(a.to_owned()), (!dom::is_blank(b)).then(|| b.to_owned()))
+                    (
+                        Some(a.to_owned()),
+                        (!dom::is_blank(b)).then(|| b.to_owned()),
+                    )
                 }
             },
         };
@@ -129,7 +142,10 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
         pre.remove_attr("data-meta");
         code.remove_attr("data-meta");
         if let Some(lc) = &lang_class {
-            let others: Vec<String> = dom::classes(&code).into_iter().filter(|c| c != lc).collect();
+            let others: Vec<String> = dom::classes(&code)
+                .into_iter()
+                .filter(|c| c != lc)
+                .collect();
             if others.is_empty() {
                 code.remove_attr("class");
             } else {
@@ -174,8 +190,10 @@ pub(super) fn wiki_links(root: &NodeRef<'_>) {
 
 static ATTRIBUTES_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A(?P<matched>\{(?P<attributes>.{1,100})\})").expect("regex"));
-static VALUE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\A(?P<name>[A-Za-z0-9_-]+)="?(?P<value>[^"\t\n\x0B\x0C\r ]+)"?\z"#).expect("regex"));
+static VALUE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\A(?P<name>[A-Za-z0-9_-]+)="?(?P<value>[^"\t\n\x0B\x0C\r ]+)"?\z"#)
+        .expect("regex")
+});
 static VALID_SIZE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[0-9]{1,4}(?:%|px)?\z").expect("regex"));
 static CLASS_REGEX: LazyLock<Regex> =
@@ -184,12 +202,18 @@ static CLASS_REGEX: LazyLock<Regex> =
 pub(super) fn attributes(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["img"]) {
         let img = root.tree.get_unchecked(&id);
-        let Some(sib) = img.next_sibling() else { continue };
-        let Some(content) = dom::text_node_contents(&sib) else { continue };
+        let Some(sib) = img.next_sibling() else {
+            continue;
+        };
+        let Some(content) = dom::text_node_contents(&sib) else {
+            continue;
+        };
         if !content.starts_with('{') {
             continue;
         }
-        let Some(m) = ATTRIBUTES_PATTERN.captures(&content) else { continue };
+        let Some(m) = ATTRIBUTES_PATTERN.captures(&content) else {
+            continue;
+        };
         let matched = m.name("matched").map_or("", |x| x.as_str()).to_owned();
         let attrs = m.name("attributes").map_or("", |x| x.as_str());
         for attribute in attrs.split_ascii_whitespace() {
@@ -266,7 +290,9 @@ pub(super) fn color(root: &NodeRef<'_>) {
         let code = root.tree.get_unchecked(&id);
         let content = dom::text(&code);
         let unescaped = content.strip_prefix('\\').unwrap_or(&content);
-        let Some(color) = parse_color(unescaped) else { continue };
+        let Some(color) = parse_color(unescaped) else {
+            continue;
+        };
         if content.starts_with('\\') {
             let unescaped = unescaped.to_owned();
             code.remove_children();
@@ -283,7 +309,9 @@ pub(super) fn color(root: &NodeRef<'_>) {
 pub(super) fn mermaid(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["code"]) {
         let code = root.tree.get_unchecked(&id);
-        if code.parent().is_some_and(|p| dom::is(&p, "pre") && dom::attr_is(&p, "data-canonical-lang", "mermaid")) {
+        if code.parent().is_some_and(|p| {
+            dom::is(&p, "pre") && dom::attr_is(&p, "data-canonical-lang", "mermaid")
+        }) {
             dom::add_class(&code, "js-render-mermaid");
         }
     }
@@ -316,11 +344,15 @@ pub(super) fn media(root: &NodeRef<'_>, kind: &str) {
         let src = dom::attr(&img, "data-canonical-src")
             .filter(|s| !dom::is_blank(s))
             .or_else(|| dom::attr(&img, "src"));
-        let Some(src) = src.filter(|s| !dom::is_blank(s)) else { continue };
+        let Some(src) = src.filter(|s| !dom::is_blank(s)) else {
+            continue;
+        };
         if !exts.contains(&ruby_extname(&src).as_str()) {
             continue;
         }
-        let title = dom::attr(&img, "title").or_else(|| dom::attr(&img, "alt")).unwrap_or_default();
+        let title = dom::attr(&img, "title")
+            .or_else(|| dom::attr(&img, "alt"))
+            .unwrap_or_default();
         let el = dom::new_element(root.tree, kind, &[]);
         el.set_attr("src", &dom::attr(&img, "src").unwrap_or_default());
         el.set_attr("controls", "true");
@@ -360,13 +392,20 @@ struct HeaderNode {
 /// `build_toc`: the nested `ul.section-nav`, or `None` without headings.
 fn build_toc<'a>(root: &NodeRef<'a>) -> Option<NodeRef<'a>> {
     // Index 0 is the level-0 root.
-    let mut nodes = vec![HeaderNode { level: 0, href: String::new(), text: String::new(), parent: None, children: vec![] }];
+    let mut nodes = vec![HeaderNode {
+        level: 0,
+        href: String::new(),
+        text: String::new(),
+        parent: None,
+        children: vec![],
+    }];
     let mut current = 0usize;
     for id in dom::elements_named(root, &["h1", "h2", "h3", "h4", "h5", "h6"]) {
         let h = root.tree.get_unchecked(&id);
-        let anchor = dom::descendants(&h).into_iter().map(|d| root.tree.get_unchecked(&d)).find(|d| {
-            dom::is(d, "a") && dom::classes(d).iter().any(|c| c == "anchor")
-        });
+        let anchor = dom::descendants(&h)
+            .into_iter()
+            .map(|d| root.tree.get_unchecked(&d))
+            .find(|d| dom::is(d, "a") && dom::classes(d).iter().any(|c| c == "anchor"));
         let Some(anchor) = anchor else { continue };
         let href = dom::attr(&anchor, "href").unwrap_or_default();
         let href: String = href.chars().skip(1).collect();
@@ -400,7 +439,12 @@ fn build_toc<'a>(root: &NodeRef<'a>) -> Option<NodeRef<'a>> {
         }
         current = idx;
     }
-    fn list<'a>(root: &NodeRef<'a>, nodes: &[HeaderNode], children: &[usize], is_root: bool) -> Option<NodeRef<'a>> {
+    fn list<'a>(
+        root: &NodeRef<'a>,
+        nodes: &[HeaderNode],
+        children: &[usize],
+        is_root: bool,
+    ) -> Option<NodeRef<'a>> {
         if children.is_empty() {
             return None;
         }
@@ -470,7 +514,9 @@ pub(super) fn table_of_contents(root: &NodeRef<'_>) {
         if !translate_toc(&content).starts_with("[toc]") {
             continue;
         }
-        if p.children_it(false).count() == 1 && dom::ruby_strip(&content).eq_ignore_ascii_case("[toc]") {
+        if p.children_it(false).count() == 1
+            && dom::ruby_strip(&content).eq_ignore_ascii_case("[toc]")
+        {
             targets.push(p.id);
         }
     }
@@ -530,8 +576,13 @@ pub(super) fn footnotes(root: &NodeRef<'_>) {
     let mut modified: HashSet<String> = HashSet::new();
     for id in refs {
         let link = root.tree.get_unchecked(&id);
-        let Some(link_id) = dom::attr(&link, "id") else { continue };
-        let ref_num = link_id.strip_prefix("fnref-").unwrap_or(&link_id).to_owned();
+        let Some(link_id) = dom::attr(&link, "id") else {
+            continue;
+        };
+        let ref_num = link_id
+            .strip_prefix("fnref-")
+            .unwrap_or(&link_id)
+            .to_owned();
         let fn_id = format!("fn-{ref_num}");
         let footnote = section_items
             .iter()
@@ -607,7 +658,11 @@ pub(super) fn inline_diff(root: &NodeRef<'_>) {
     for id in dom::text_nodes(root) {
         let t = root.tree.get_unchecked(&id);
         let content = dom::text_node_contents(&t).unwrap_or_default();
-        if !(content.contains("[-") || content.contains("{-") || content.contains("[+") || content.contains("{+")) {
+        if !(content.contains("[-")
+            || content.contains("{-")
+            || content.contains("[+")
+            || content.contains("{+"))
+        {
             continue;
         }
         if dom::has_ancestor(&t, &["pre", "code", "tt"], root) {
@@ -646,16 +701,26 @@ pub(super) fn image_link(root: &NodeRef<'_>) {
             continue;
         }
         // ImageLazyLoadFilter copies `src` to `data-src`; an empty one is skipped here.
-        let Some(src) = dom::attr(&img, "src").filter(|s| !s.is_empty()) else { continue };
+        let Some(src) = dom::attr(&img, "src").filter(|s| !s.is_empty()) else {
+            continue;
+        };
         let link = dom::new_element(
             root.tree,
             "a",
-            &[("class", "no-attachment-icon"), ("href", &src), ("target", "_blank"), ("rel", "noopener noreferrer")],
+            &[
+                ("class", "no-attachment-icon"),
+                ("href", &src),
+                ("target", "_blank"),
+                ("rel", "noopener noreferrer"),
+            ],
         );
         if let Some(c) = dom::attr(&img, "data-canonical-src") {
             link.set_attr("data-canonical-src", &c);
         }
-        if let (Some(d), Some(ds)) = (dom::attr(&img, "data-diagram"), dom::attr(&img, "data-diagram-src")) {
+        if let (Some(d), Some(ds)) = (
+            dom::attr(&img, "data-diagram"),
+            dom::attr(&img, "data-diagram-src"),
+        ) {
             link.set_attr("data-diagram", &d);
             link.set_attr("data-diagram-src", &ds);
             img.remove_attr("data-diagram");
@@ -675,9 +740,19 @@ const ENCODED_RTLO: &str = "%E2%80%AE";
 pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
     for id in dom::elements_named(root, &["a"]) {
         let a = root.tree.get_unchecked(&id);
-        let Some(href) = dom::attr(&a, "href").filter(|h| !h.is_empty()) else { continue };
-        let src_attr = if a.has_attr("data-canonical-src") { "data-canonical-src" } else { "href" };
-        let src = if src_attr == "href" { href } else { dom::attr(&a, src_attr).unwrap_or_default() };
+        let Some(href) = dom::attr(&a, "href").filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        let src_attr = if a.has_attr("data-canonical-src") {
+            "data-canonical-src"
+        } else {
+            "href"
+        };
+        let src = if src_attr == "href" {
+            href
+        } else {
+            dom::attr(&a, src_attr).unwrap_or_default()
+        };
         if src.starts_with('#') {
             continue;
         }
@@ -686,13 +761,17 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
                 if normalized != src {
                     a.set_attr(src_attr, &normalized);
                 }
-                sanitize::parse_uri(&normalized).ok().map(|p| (p.scheme.map(str::to_owned), p.host.map(hostname)))
+                sanitize::parse_uri(&normalized)
+                    .ok()
+                    .map(|p| (p.scheme.map(str::to_owned), p.host.map(hostname)))
             }
             None => None,
         };
         if let Some((scheme, host)) = &parts {
             let relative = host.is_none() && scheme.is_none();
-            let internal_host = host.as_deref().is_some_and(|h| ctx.internal_hosts.iter().any(|i| i == h));
+            let internal_host = host
+                .as_deref()
+                .is_some_and(|h| ctx.internal_hosts.iter().any(|i| i == h));
             if relative || internal_host {
                 continue;
             }
@@ -711,7 +790,9 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
             let idn = host.as_deref().is_some_and(is_idn_host);
             if idn || current.contains(ENCODED_RTLO) {
                 dom::add_class(&a, "has-tooltip");
-                let title = url::Url::parse(&current).map(|u| u.to_string()).unwrap_or(current);
+                let title = url::Url::parse(&current)
+                    .map(|u| u.to_string())
+                    .unwrap_or(current);
                 a.set_attr("title", &title);
             }
         }
@@ -723,7 +804,11 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
         };
         if scheme_ok {
             let license = dom::attr_is(&a, "rel", "license");
-            let rel = if license { "nofollow noreferrer noopener license" } else { "nofollow noreferrer noopener" };
+            let rel = if license {
+                "nofollow noreferrer noopener license"
+            } else {
+                "nofollow noreferrer noopener"
+            };
             a.set_attr("rel", rel);
             a.set_attr("target", "_blank");
         }
@@ -732,7 +817,10 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
 
 /// Addressable `hostname`: the host without IPv6 brackets.
 fn hostname(host: &str) -> String {
-    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host).to_owned()
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_owned()
 }
 
 /// `normalized_host.start_with?('xn--')`.
@@ -756,7 +844,9 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
                 if i + 2 >= b.len() {
                     return false;
                 }
-                if !(b[i + 1] as char).is_ascii_hexdigit() || !(b[i + 2] as char).is_ascii_hexdigit() {
+                if !(b[i + 1] as char).is_ascii_hexdigit()
+                    || !(b[i + 2] as char).is_ascii_hexdigit()
+                {
                     return false;
                 }
                 i += 3;
@@ -902,15 +992,23 @@ pub(super) fn truncate_100(s: &str) -> String {
 pub(super) fn task_list(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["input"]) {
         let input = root.tree.get_unchecked(&id);
-        if !dom::classes(&input).iter().any(|c| c == "task-list-item-checkbox") {
+        if !dom::classes(&input)
+            .iter()
+            .any(|c| c == "task-list-item-checkbox")
+        {
             continue;
         }
-        let Some(parent) = input.parent() else { continue };
+        let Some(parent) = input.parent() else {
+            continue;
+        };
         let is_table_item = dom::classes(&parent).iter().any(|c| c == "task-table-item");
         if is_table_item {
             if let Some(header) = column_header_text(&input, &parent, root) {
                 if !dom::is_blank(&header) {
-                    input.set_attr("aria-label", &format!("Check option in column \"{header}\""));
+                    input.set_attr(
+                        "aria-label",
+                        &format!("Check option in column \"{header}\""),
+                    );
                 }
             }
         } else {
@@ -957,9 +1055,15 @@ pub(super) fn task_list(root: &NodeRef<'_>) {
     }
 }
 
-fn column_header_text(input: &NodeRef<'_>, cell: &NodeRef<'_>, root: &NodeRef<'_>) -> Option<String> {
+fn column_header_text(
+    input: &NodeRef<'_>,
+    cell: &NodeRef<'_>,
+    root: &NodeRef<'_>,
+) -> Option<String> {
     let row = cell.parent()?;
-    let index = dom::element_children(&row).iter().position(|c| c.id == cell.id)?;
+    let index = dom::element_children(&row)
+        .iter()
+        .position(|c| c.id == cell.id)?;
     let table = dom::ancestor(input, "table", root)?;
     let first_row = dom::elements_named(&table, &["tr"]).into_iter().next()?;
     let first_row = root.tree.get_unchecked(&first_row);
@@ -972,7 +1076,22 @@ fn column_header_text(input: &NodeRef<'_>, cell: &NodeRef<'_>, root: &NodeRef<'_
 
 pub(super) fn set_direction(root: &NodeRef<'_>) {
     for c in root.children() {
-        if !dom::is_any(&c, &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ol", "ul", "blockquote", "table"]) {
+        if !dom::is_any(
+            &c,
+            &[
+                "p",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "ol",
+                "ul",
+                "blockquote",
+                "table",
+            ],
+        ) {
             continue;
         }
         if dom::is(&c, "ul") && dom::attr_is(&c, "class", "section-nav") {
@@ -997,50 +1116,103 @@ mod tests {
     #[test]
     fn code_language_moves_lang_to_pre() {
         assert_eq!(
-            apply("<pre lang=\"ruby:red\" data-sourcepos=\"1:1-3:3\" data-meta=\"gem\"><code>x</code></pre>", code_language),
+            apply(
+                "<pre lang=\"ruby:red\" data-sourcepos=\"1:1-3:3\" data-meta=\"gem\"><code>x</code></pre>",
+                code_language
+            ),
             "<pre data-sourcepos=\"1:1-3:3\" data-lang=\"ruby\" data-canonical-lang=\"ruby\" data-lang-params=\"red\"><code>x</code></pre>"
         );
         assert_eq!(
-            apply("<pre lang=\"js\" data-meta=\"title x\"><code>x</code></pre>", code_language),
+            apply(
+                "<pre lang=\"js\" data-meta=\"title x\"><code>x</code></pre>",
+                code_language
+            ),
             "<pre data-lang=\"js\" data-canonical-lang=\"js\" data-lang-params=\"title x\"><code>x</code></pre>"
         );
         assert_eq!(
-            apply("<pre><code class=\"language-py other\">x</code></pre>", code_language),
+            apply(
+                "<pre><code class=\"language-py other\">x</code></pre>",
+                code_language
+            ),
             "<pre data-lang=\"py\" data-canonical-lang=\"py\"><code class=\"other\">x</code></pre>"
         );
-        assert_eq!(apply("<pre lang=\"c\">x</pre>", code_language), "<pre data-lang=\"c\" data-canonical-lang=\"c\"><code>x</code></pre>");
+        assert_eq!(
+            apply("<pre lang=\"c\">x</pre>", code_language),
+            "<pre data-lang=\"c\" data-canonical-lang=\"c\"><code>x</code></pre>"
+        );
         // Two element children: not `code:only-child`.
-        assert_eq!(apply("<pre lang=\"c\"><code>a</code><b>b</b></pre>", code_language), "<pre lang=\"c\"><code>a</code><b>b</b></pre>");
+        assert_eq!(
+            apply(
+                "<pre lang=\"c\"><code>a</code><b>b</b></pre>",
+                code_language
+            ),
+            "<pre lang=\"c\"><code>a</code><b>b</b></pre>"
+        );
     }
 
     #[test]
     fn attributes_on_images() {
         assert_eq!(
-            apply("<p><img src=\"a.png\" alt=\"\">{width=50% height=\"30px\" .float-right .bogus title=x} after</p>", attributes),
+            apply(
+                "<p><img src=\"a.png\" alt=\"\">{width=50% height=\"30px\" .float-right .bogus title=x} after</p>",
+                attributes
+            ),
             "<p><img src=\"a.png\" alt=\"\" width=\"50%\" height=\"30px\" class=\"glfm-float-right\"> after</p>"
         );
-        assert_eq!(apply("<p><img src=\"a\">{width=99999}</p>", attributes), "<p><img src=\"a\"></p>");
-        assert_eq!(apply("<p><img src=\"a\"> {width=9}</p>", attributes), "<p><img src=\"a\"> {width=9}</p>");
+        assert_eq!(
+            apply("<p><img src=\"a\">{width=99999}</p>", attributes),
+            "<p><img src=\"a\"></p>"
+        );
+        assert_eq!(
+            apply("<p><img src=\"a\"> {width=9}</p>", attributes),
+            "<p><img src=\"a\"> {width=9}</p>"
+        );
     }
 
     #[test]
     fn math_marks_nodes() {
         assert_eq!(
-            apply("<p><span data-math-style=\"inline\" class=\"x\">a</span><code data-math-style=\"inline\">b</code></p><pre data-canonical-lang=\"math\"><code>c</code></pre>", math),
+            apply(
+                "<p><span data-math-style=\"inline\" class=\"x\">a</span><code data-math-style=\"inline\">b</code></p><pre data-canonical-lang=\"math\"><code>c</code></pre>",
+                math
+            ),
             "<p><span data-math-style=\"inline\" class=\"js-render-math\">a</span><code data-math-style=\"inline\" class=\"js-render-math\">b</code></p><pre data-canonical-lang=\"math\" data-math-style=\"display\" class=\"js-render-math\"><code>c</code></pre>"
         );
     }
 
     #[test]
     fn color_chips() {
-        for good in ["#123", "#1234", "#123456", "#12345678", "RGB(0,255,1)", "rgba(10%, 20%, 30%, 0.5)", "hsl(120deg, 10%, 20%)", "HSLA(-1.5rad, 0%, 100%, 1.0)", "rgb(1, 2, 3, 50%)"] {
+        for good in [
+            "#123",
+            "#1234",
+            "#123456",
+            "#12345678",
+            "RGB(0,255,1)",
+            "rgba(10%, 20%, 30%, 0.5)",
+            "hsl(120deg, 10%, 20%)",
+            "HSLA(-1.5rad, 0%, 100%, 1.0)",
+            "rgb(1, 2, 3, 50%)",
+        ] {
             assert!(parse_color(good).is_some(), "{good}");
         }
-        for bad in ["#12", "#12345", "rgb(256,0,0)", "rgb(1,2)", "hsl(1, 2, 3)", " #123", "#123 ", "red", "#１２３"] {
+        for bad in [
+            "#12",
+            "#12345",
+            "rgb(256,0,0)",
+            "rgb(1,2)",
+            "hsl(1, 2, 3)",
+            " #123",
+            "#123 ",
+            "red",
+            "#１２３",
+        ] {
             assert!(parse_color(bad).is_none(), "{bad}");
         }
         assert_eq!(
-            apply("<code>#abc</code><code>\\#abc</code><code>#ab</code>", color),
+            apply(
+                "<code>#abc</code><code>\\#abc</code><code>#ab</code>",
+                color
+            ),
             "<code>#abc<span class=\"gfm-color_chip\"><span style=\"background-color: #abc;\"></span></span></code><code>#abc</code><code>#ab</code>"
         );
     }
@@ -1048,7 +1220,10 @@ mod tests {
     #[test]
     fn mermaid_class() {
         assert_eq!(
-            apply("<pre data-canonical-lang=\"mermaid\"><code>graph</code></pre>", mermaid),
+            apply(
+                "<pre data-canonical-lang=\"mermaid\"><code>graph</code></pre>",
+                mermaid
+            ),
             "<pre data-canonical-lang=\"mermaid\"><code class=\"js-render-mermaid\">graph</code></pre>"
         );
     }
@@ -1056,14 +1231,24 @@ mod tests {
     #[test]
     fn media_links() {
         assert_eq!(
-            apply("<p><img src=\"v/a.MP4\" alt=\"clip\" width=\"10\"></p>", |r| media(r, "video")),
+            apply(
+                "<p><img src=\"v/a.MP4\" alt=\"clip\" width=\"10\"></p>",
+                |r| media(r, "video")
+            ),
             "<p><span class=\"media-container video-container\"><video src=\"v/a.MP4\" controls=\"true\" data-setup=\"{}\" data-title=\"clip\" preload=\"metadata\" class=\"gl-rounded-lg\" width=\"10\"></video></span></p>"
         );
         assert_eq!(
-            apply("<p><img src=\"a.ogg\" alt=\"s\" title=\"T\"></p>", |r| media(r, "audio")),
+            apply("<p><img src=\"a.ogg\" alt=\"s\" title=\"T\"></p>", |r| {
+                media(r, "audio")
+            }),
             "<p><span class=\"media-container audio-container\"><audio src=\"a.ogg\" controls=\"true\" data-setup=\"{}\" data-title=\"T\"></audio></span></p>"
         );
-        assert_eq!(apply("<a href=\"x\"><img src=\"a.mp4\"></a>", |r| media(r, "video")), "<a href=\"x\"><img src=\"a.mp4\"></a>");
+        assert_eq!(
+            apply("<a href=\"x\"><img src=\"a.mp4\"></a>", |r| media(
+                r, "video"
+            )),
+            "<a href=\"x\"><img src=\"a.mp4\"></a>"
+        );
         assert_eq!(ruby_extname("a/b.c/.hidden"), "");
         assert_eq!(ruby_extname("x.tar.GZ"), "gz");
         assert_eq!(ruby_extname("x."), "");
@@ -1099,19 +1284,28 @@ mod tests {
 
     #[test]
     fn inline_diffs() {
-        assert_eq!(inline_diff_html("a {+ x +} [-y-]"), "a <span class=\"idiff left right addition\"> x </span> <span class=\"idiff left right deletion\">y</span>");
+        assert_eq!(
+            inline_diff_html("a {+ x +} [-y-]"),
+            "a <span class=\"idiff left right addition\"> x </span> <span class=\"idiff left right deletion\">y</span>"
+        );
         assert_eq!(inline_diff_html("{+ x +]"), "{+ x +]");
         assert_eq!(
             apply("<p>{+ a [- b -] c +}</p><code>{+x+}</code>", inline_diff),
             "<p><span class=\"idiff left right addition\"> a <span class=\"idiff left right deletion\"> b </span> c </span></p><code>{+x+}</code>"
         );
-        assert_eq!(apply("<p>{+ &lt;b&gt; +}</p>", inline_diff), "<p><span class=\"idiff left right addition\"> &lt;b&gt; </span></p>");
+        assert_eq!(
+            apply("<p>{+ &lt;b&gt; +}</p>", inline_diff),
+            "<p><span class=\"idiff left right addition\"> &lt;b&gt; </span></p>"
+        );
     }
 
     #[test]
     fn image_links() {
         assert_eq!(
-            apply("<p><img src=\"i.png\" alt=\"x\"><a href=\"y\"><img src=\"j.png\"></a><img alt=\"no src\"></p>", image_link),
+            apply(
+                "<p><img src=\"i.png\" alt=\"x\"><a href=\"y\"><img src=\"j.png\"></a><img alt=\"no src\"></p>",
+                image_link
+            ),
             "<p><a class=\"no-attachment-icon\" href=\"i.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"i.png\" alt=\"x\"></a><a href=\"y\"><img src=\"j.png\"></a><img alt=\"no src\"></p>"
         );
     }
@@ -1120,16 +1314,40 @@ mod tests {
     fn external_link_rules() {
         let ctx = FilterContext::default();
         let run = |h: &str| apply(h, |r| external_links(r, &ctx));
-        assert_eq!(run("<a href=\"https://example.com\">x</a>"), "<a href=\"https://example.com\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>");
-        assert_eq!(run("<a href=\"https://gitlab.com/x\">x</a>"), "<a href=\"https://gitlab.com/x\">x</a>");
-        assert_eq!(run("<a href=\"docs/x.md\">x</a>"), "<a href=\"docs/x.md\">x</a>");
+        assert_eq!(
+            run("<a href=\"https://example.com\">x</a>"),
+            "<a href=\"https://example.com\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"https://gitlab.com/x\">x</a>"),
+            "<a href=\"https://gitlab.com/x\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"docs/x.md\">x</a>"),
+            "<a href=\"docs/x.md\">x</a>"
+        );
         assert_eq!(run("<a href=\"#x\">x</a>"), "<a href=\"#x\">x</a>");
-        assert_eq!(run("<a href=\"mailto:a@b.c\">x</a>"), "<a href=\"mailto:a@b.c\">x</a>");
-        assert_eq!(run("<a href=\"//cdn.example\">x</a>"), "<a href=\"//cdn.example\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>");
-        assert_eq!(run("<a href=\"HTTP://e.com:80/p\">x</a>"), "<a href=\"http://e.com/p\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>");
+        assert_eq!(
+            run("<a href=\"mailto:a@b.c\">x</a>"),
+            "<a href=\"mailto:a@b.c\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"//cdn.example\">x</a>"),
+            "<a href=\"//cdn.example\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"HTTP://e.com:80/p\">x</a>"),
+            "<a href=\"http://e.com/p\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
         // Not parsable by Ruby's URI: GitLab still adds nofollow.
-        assert_eq!(run("<a href=\"a|b\">x</a>"), "<a href=\"a|b\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>");
-        assert_eq!(run("<a href=\"https://e.com\" rel=\"license\">x</a>"), "<a href=\"https://e.com\" rel=\"nofollow noreferrer noopener license\" target=\"_blank\">x</a>");
+        assert_eq!(
+            run("<a href=\"a|b\">x</a>"),
+            "<a href=\"a|b\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"https://e.com\" rel=\"license\">x</a>"),
+            "<a href=\"https://e.com\" rel=\"nofollow noreferrer noopener license\" target=\"_blank\">x</a>"
+        );
         assert_eq!(
             run("<a href=\"https://e.com/%E2%80%AE\">a\u{202E}b</a>"),
             "<a href=\"https://e.com/%E2%80%AE\" class=\"has-tooltip\" title=\"https://e.com/%E2%80%AE\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">a%E2%80%AEb</a>"
@@ -1138,12 +1356,18 @@ mod tests {
 
     #[test]
     fn ruby_uri() {
-        assert_eq!(ruby_uri_to_s("https://x.y/a?b=c#d").as_deref(), Some("https://x.y/a?b=c#d"));
+        assert_eq!(
+            ruby_uri_to_s("https://x.y/a?b=c#d").as_deref(),
+            Some("https://x.y/a?b=c#d")
+        );
         assert_eq!(ruby_uri_to_s("a#b#c"), None);
         assert_eq!(ruby_uri_to_s("ünï"), None);
         assert_eq!(ruby_uri_to_s("a:b/c").as_deref(), Some("a:b/c"));
         assert_eq!(ruby_uri_to_s("x%zz"), None);
-        assert_eq!(ruby_uri_to_s("http://[::1]:8080/").as_deref(), Some("http://[::1]:8080/"));
+        assert_eq!(
+            ruby_uri_to_s("http://[::1]:8080/").as_deref(),
+            Some("http://[::1]:8080/")
+        );
     }
 
     #[test]
@@ -1155,8 +1379,16 @@ mod tests {
         );
         let table = "<table><thead><tr><th>Col</th><th>B</th></tr></thead><tbody><tr><td>x</td>\
                      <td class=\"task-table-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\"> </td></tr></tbody></table>";
-        assert!(apply(table, task_list).contains("aria-label=\"Check option in column &quot;B&quot;\""));
-        assert!(apply("<li><input class=\"task-list-item-checkbox\"> </li>", task_list).contains("aria-label=\"Check option\""));
+        assert!(
+            apply(table, task_list).contains("aria-label=\"Check option in column &quot;B&quot;\"")
+        );
+        assert!(
+            apply(
+                "<li><input class=\"task-list-item-checkbox\"> </li>",
+                task_list
+            )
+            .contains("aria-label=\"Check option\"")
+        );
     }
 
     #[test]
@@ -1173,7 +1405,10 @@ mod tests {
     #[test]
     fn direction_top_level_only() {
         assert_eq!(
-            apply("<p>a</p><div><p>b</p></div><ul class=\"section-nav\"></ul><ul></ul><hr>", set_direction),
+            apply(
+                "<p>a</p><div><p>b</p></div><ul class=\"section-nav\"></ul><ul></ul><hr>",
+                set_direction
+            ),
             "<p dir=\"auto\">a</p><div><p>b</p></div><ul class=\"section-nav\"></ul><ul dir=\"auto\"></ul><hr>"
         );
     }

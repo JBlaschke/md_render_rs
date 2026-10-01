@@ -178,8 +178,11 @@ pub(super) fn text_nodes(root: &NodeRef<'_>) -> Vec<NodeId> {
 }
 
 /// The next node in document order after `n`'s subtree (stays below `root`).
-pub(super) fn following_skip_children<'a>(n: &NodeRef<'a>, root: &NodeRef<'_>) -> Option<NodeRef<'a>> {
-    let mut cur = n.clone();
+pub(super) fn following_skip_children<'a>(
+    n: &NodeRef<'a>,
+    root: &NodeRef<'_>,
+) -> Option<NodeRef<'a>> {
+    let mut cur = *n;
     loop {
         if cur.id == root.id {
             return None;
@@ -247,7 +250,7 @@ mod tests {
     fn unwrap_keeps_children_in_order() {
         let doc = Document::fragment("<p>a<u>b<i>c</i>d</u>e</p>");
         let root = doc.html_root();
-        let u = doc.select("u").nodes()[0].clone();
+        let u = doc.select("u").nodes()[0];
         unwrap(&u);
         assert_eq!(root.inner_html().to_string(), "<p>ab<i>c</i>de</p>");
     }
@@ -269,7 +272,7 @@ mod tests {
     #[test]
     fn class_helpers() {
         let doc = Document::fragment("<p class=\"a  b\">x</p>");
-        let p = doc.select("p").nodes()[0].clone();
+        let p = doc.select("p").nodes()[0];
         add_class(&p, "b c");
         assert_eq!(attr(&p, "class").as_deref(), Some("a b c"));
         remove_class_tokens(&p, &["a", "b", "c"]);

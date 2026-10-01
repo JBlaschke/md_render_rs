@@ -54,14 +54,19 @@ fn name(n: &NodeRef<'_>) -> Option<String> {
 }
 
 fn classes(n: &NodeRef<'_>) -> Vec<String> {
-    attr(n, "class").map(|c| c.split_ascii_whitespace().map(String::from).collect()).unwrap_or_default()
+    attr(n, "class")
+        .map(|c| c.split_ascii_whitespace().map(String::from).collect())
+        .unwrap_or_default()
 }
 
 fn remove_classes(n: &NodeRef<'_>, remove: &[&str]) {
     if !n.has_attr("class") {
         return;
     }
-    let kept: Vec<String> = classes(n).into_iter().filter(|c| !remove.contains(&c.as_str())).collect();
+    let kept: Vec<String> = classes(n)
+        .into_iter()
+        .filter(|c| !remove.contains(&c.as_str()))
+        .collect();
     if kept.is_empty() {
         n.remove_attr("class");
     } else {
@@ -74,7 +79,7 @@ fn all_elements<'a>(root: &NodeRef<'a>) -> Vec<NodeRef<'a>> {
     let mut stack: Vec<NodeRef<'a>> = root.children().into_iter().rev().collect();
     while let Some(n) = stack.pop() {
         if n.is_element() {
-            out.push(n.clone());
+            out.push(n);
             stack.extend(n.children().into_iter().rev());
         }
     }
@@ -114,14 +119,23 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
         }
         // `data-original` holds the original inner HTML.
         let original = attr(&a, "data-original").unwrap_or_else(|| a.text().to_string());
-        let original_text = Document::fragment(original.as_str()).html_root().text().to_string();
+        let original_text = Document::fragment(original.as_str())
+            .html_root()
+            .text()
+            .to_string();
         // Labels are wrapped in `span.gl-label`.
         let target = match a.parent() {
-            Some(p) if name(&p).as_deref() == Some("span") && classes(&p).iter().any(|c| c == "gl-label") => p,
-            _ => a.clone(),
+            Some(p)
+                if name(&p).as_deref() == Some("span")
+                    && classes(&p).iter().any(|c| c == "gl-label") =>
+            {
+                p
+            }
+            _ => a,
         };
         let href = attr(&a, "data-original-href").or_else(|| {
-            (attr(&a, "data-link-reference").as_deref() == Some("true")).then(|| original_text.clone())
+            (attr(&a, "data-link-reference").as_deref() == Some("true"))
+                .then(|| original_text.clone())
         });
         match href {
             Some(href) => {
@@ -137,7 +151,7 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
         target.remove_from_parent();
     }
     // Footnote suffix: every `li[id^=fn-]` of the section shares one `-NNNN`.
-    let suffix = live.then(|| all_elements(root)).unwrap_or_default()
+    let suffix = if live { all_elements(root) } else { Vec::new() }
         .into_iter()
         .filter(|n| name(n).as_deref() == Some("li"))
         .filter_map(|n| attr(&n, "id"))
@@ -158,11 +172,22 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
             if let Some(c) = attr(&n, "data-canonical-src") {
                 n.set_attr("href", &c);
             }
-            for a in ["data-canonical-src", "data-link", "data-gollum", "data-reference-type", "data-project", "data-group"] {
+            for a in [
+                "data-canonical-src",
+                "data-link",
+                "data-gollum",
+                "data-reference-type",
+                "data-project",
+                "data-group",
+            ] {
                 n.remove_attr(a);
             }
         } else if let Some(c) = attr(&n, "data-canonical-src") {
-            let target = if name(&n).as_deref() == Some("a") { "href" } else { "src" };
+            let target = if name(&n).as_deref() == Some("a") {
+                "href"
+            } else {
+                "src"
+            };
             n.set_attr(target, &c);
             n.remove_attr("data-canonical-src");
             n.remove_attr("data-link");
@@ -170,7 +195,9 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
         }
         n.remove_attr("data-proxied-urls");
         // HeadingLocalizationFilter translated the anchor label for the viewer's locale.
-        if let (Some(content), Some(label)) = (attr(&n, "data-heading-content"), attr(&n, "aria-label")) {
+        if let (Some(content), Some(label)) =
+            (attr(&n, "data-heading-content"), attr(&n, "aria-label"))
+        {
             if !label.starts_with("Link to heading '") {
                 n.set_attr("aria-label", &format!("Link to heading '{content}'"));
             }
@@ -178,7 +205,10 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
         if let Some(sfx) = &suffix {
             for a in ["id", "href"] {
                 if let Some(v) = attr(&n, a) {
-                    let is_fn = v.starts_with("fn-") || v.starts_with("fnref-") || v.starts_with("#fn-") || v.starts_with("#fnref-");
+                    let is_fn = v.starts_with("fn-")
+                        || v.starts_with("fnref-")
+                        || v.starts_with("#fn-")
+                        || v.starts_with("#fnref-");
                     if is_fn {
                         if let Some(stripped) = v.strip_suffix(sfx.as_str()) {
                             n.set_attr(a, stripped);
@@ -201,7 +231,9 @@ fn normalize_ours(root: &NodeRef<'_>) {
         }
     }
     for n in all_elements(root) {
-        if name(&n).as_deref() == Some("div") && classes(&n).iter().any(|c| c == "gl-table-shadow-overlay") {
+        if name(&n).as_deref() == Some("div")
+            && classes(&n).iter().any(|c| c == "gl-table-shadow-overlay")
+        {
             if let Some(inner) = n.first_element_child() {
                 unwrap(&inner);
             }
@@ -213,16 +245,22 @@ fn normalize_ours(root: &NodeRef<'_>) {
 /// Both sides: code-block contents.
 fn normalize_code(root: &NodeRef<'_>, strict: bool, registry: bool) {
     for n in all_elements(root) {
-        let is_code_pre = name(&n).as_deref() == Some("pre") && classes(&n).iter().any(|c| c == "code");
+        let is_code_pre =
+            name(&n).as_deref() == Some("pre") && classes(&n).iter().any(|c| c == "code");
         if is_code_pre && !strict && !registry {
-            let kept: Vec<String> = classes(&n).into_iter().filter(|c| !c.starts_with("language-") || c == "language-plaintext").collect();
+            let kept: Vec<String> = classes(&n)
+                .into_iter()
+                .filter(|c| !c.starts_with("language-") || c == "language-plaintext")
+                .collect();
             n.set_attr("class", &kept.join(" "));
             remove_classes(&n, &["language-plaintext"]);
         }
         if name(&n).as_deref() != Some("span") || strict {
             continue;
         }
-        if !has_ancestor(&n, |p| name(p).as_deref() == Some("pre") && classes(p).iter().any(|c| c == "code")) {
+        if !has_ancestor(&n, |p| {
+            name(p).as_deref() == Some("pre") && classes(p).iter().any(|c| c == "code")
+        }) {
             continue;
         }
         if classes(&n).iter().any(|c| c == "line") {
@@ -239,7 +277,8 @@ fn normalize_code(root: &NodeRef<'_>, strict: bool, registry: bool) {
 fn flatten(root: &NodeRef<'_>) -> Vec<String> {
     let mut out = Vec::new();
     // (node, depth)
-    let mut stack: Vec<(NodeRef<'_>, usize)> = root.children().into_iter().rev().map(|c| (c, 0)).collect();
+    let mut stack: Vec<(NodeRef<'_>, usize)> =
+        root.children().into_iter().rev().map(|c| (c, 0)).collect();
     let mut pending_text = String::new();
     let mut pending_depth = 0;
     let flush = |out: &mut Vec<String>, text: &mut String, depth: usize| {
@@ -270,7 +309,10 @@ fn flatten(root: &NodeRef<'_>) -> Vec<String> {
         }
         let tag = el.name.local.to_string();
         drop(el);
-        let attrs: Vec<String> = attrs.into_iter().map(|(k, v)| format!("{k}={v:?}")).collect();
+        let attrs: Vec<String> = attrs
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v:?}"))
+            .collect();
         out.push(format!("{}<{tag} {}>", "  ".repeat(depth), attrs.join(" ")));
         stack.extend(n.children().into_iter().rev().map(|c| (c, depth + 1)));
     }
@@ -311,7 +353,11 @@ fn diff(a: &[String], b: &[String], max_d: usize) -> Option<Vec<(char, String)>>
         let mut k = -d;
         while k <= d {
             let idx = (k + offset) as usize;
-            let mut x = if k == -d || (k != d && v[idx - 1] < v[idx + 1]) { v[idx + 1] } else { v[idx - 1] + 1 };
+            let mut x = if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
+                v[idx + 1]
+            } else {
+                v[idx - 1] + 1
+            };
             let mut y = x - k;
             while x < n && y < m && line_eq(&a[x as usize], &b[y as usize]) {
                 x += 1;
@@ -335,7 +381,12 @@ fn diff(a: &[String], b: &[String], max_d: usize) -> Option<Vec<(char, String)>>
     for d in (1..=d_final).rev() {
         let v = &trace[d as usize];
         let k = x - y;
-        let prev_k = if k == -d || (k != d && v[(k - 1 + offset) as usize] < v[(k + 1 + offset) as usize]) { k + 1 } else { k - 1 };
+        let prev_k =
+            if k == -d || (k != d && v[(k - 1 + offset) as usize] < v[(k + 1 + offset) as usize]) {
+                k + 1
+            } else {
+                k - 1
+            };
         let prev_x = v[(prev_k + offset) as usize];
         let prev_y = prev_x - prev_k;
         while x > prev_x && y > prev_y {
@@ -362,7 +413,9 @@ fn diff(a: &[String], b: &[String], max_d: usize) -> Option<Vec<(char, String)>>
 
 fn trim_root_whitespace(root: &NodeRef<'_>) {
     for c in root.children() {
-        let ws = c.query(|t| matches!(&t.data, NodeData::Text { contents } if contents.trim().is_empty())).unwrap_or(false);
+        let ws = c
+            .query(|t| matches!(&t.data, NodeData::Text { contents } if contents.trim().is_empty()))
+            .unwrap_or(false);
         if ws {
             c.remove_from_parent();
         }
@@ -389,7 +442,10 @@ fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool, live: boo
     let oracle_doc = Document::fragment(oracle_html);
     let mut oracle = oracle_doc.html_root();
     if blob {
-        if let Some(fc) = all_elements(&oracle).into_iter().find(|n| classes(n).iter().any(|c| c == "file-content")) {
+        if let Some(fc) = all_elements(&oracle)
+            .into_iter()
+            .find(|n| classes(n).iter().any(|c| c == "file-content"))
+        {
             oracle = fc;
         }
     }
@@ -401,7 +457,12 @@ fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool, live: boo
     let b = flatten(&oracle);
     let lines = a.len().max(b.len());
     match diff(&a, &b, 3000) {
-        None => Outcome { name: name.to_owned(), differing: usize::MAX, lines, report: "  (more than 3000 differences)\n".into() },
+        None => Outcome {
+            name: name.to_owned(),
+            differing: usize::MAX,
+            lines,
+            report: "  (more than 3000 differences)\n".into(),
+        },
         Some(edits) => {
             let differing = edits.iter().filter(|(c, _)| *c != ' ').count();
             let mut report = String::new();
@@ -420,7 +481,12 @@ fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool, live: boo
                 report.push_str(&format!("  {c} {}\n", truncate(l)));
                 shown += 1;
             }
-            Outcome { name: name.to_owned(), differing, lines, report }
+            Outcome {
+                name: name.to_owned(),
+                differing,
+                lines,
+                report,
+            }
         }
     }
 }
@@ -436,13 +502,30 @@ fn truncate(s: &str) -> String {
 /// Known residuals: (file, reason). These may differ; everything else must match exactly.
 const BLOB_RESIDUALS: &[(&str, &str)] = &[];
 const ISSUE_RESIDUALS: &[(&str, &str)] = &[
-    ("issue_374563", "stale cached render: older comrak list end sourcepos (prototype differs too)"),
-    ("issue_388801", "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)"),
-    ("issue_424022", "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)"),
-    ("issue_630440", "needs GitLab services: PlantUML image, group custom emoji, `+` reference"),
+    (
+        "issue_374563",
+        "stale cached render: older comrak list end sourcepos (prototype differs too)",
+    ),
+    (
+        "issue_388801",
+        "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)",
+    ),
+    (
+        "issue_424022",
+        "stale cached render: pre-17.0 heading markup and sourcepos (GL §14)",
+    ),
+    (
+        "issue_630440",
+        "needs GitLab services: PlantUML image, group custom emoji, `+` reference",
+    ),
 ];
 
-fn run_set(dir: &Path, subdir: &str, mode: Mode, residuals: &[(&str, &str)]) -> (usize, usize, Vec<String>) {
+fn run_set(
+    dir: &Path,
+    subdir: &str,
+    mode: Mode,
+    residuals: &[(&str, &str)],
+) -> (usize, usize, Vec<String>) {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir.join("gitlab").join(subdir))
         .expect("read fixture dir")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -452,10 +535,17 @@ fn run_set(dir: &Path, subdir: &str, mode: Mode, residuals: &[(&str, &str)]) -> 
     let mut pass = 0;
     let mut total = 0;
     let mut unexpected = Vec::new();
-    println!("\n{:<44} {:>8} {:>8}  result", format!("gitlab/{subdir}"), "lines", "diffs");
+    println!(
+        "\n{:<44} {:>8} {:>8}  result",
+        format!("gitlab/{subdir}"),
+        "lines",
+        "diffs"
+    );
     for md_path in names {
         let html_path = md_path.with_extension("html");
-        let Ok(oracle) = std::fs::read_to_string(&html_path) else { continue };
+        let Ok(oracle) = std::fs::read_to_string(&html_path) else {
+            continue;
+        };
         let md = std::fs::read_to_string(&md_path).expect("read md");
         let stem = md_path.file_stem().unwrap().to_string_lossy().to_string();
         let mut opts = RenderOptions::new(Flavor::Gitlab);
@@ -476,7 +566,11 @@ fn run_set(dir: &Path, subdir: &str, mode: Mode, residuals: &[(&str, &str)]) -> 
                 "FAIL".to_owned()
             }
         };
-        let diffs = if o.differing == usize::MAX { ">3000".to_owned() } else { o.differing.to_string() };
+        let diffs = if o.differing == usize::MAX {
+            ">3000".to_owned()
+        } else {
+            o.differing.to_string()
+        };
         println!("{:<44} {:>8} {:>8}  {status}", o.name, o.lines, diffs);
         if o.differing != 0 && std::env::var("GOLDEN_VERBOSE").is_ok_and(|v| v == "1") {
             print!("{}", o.report);
@@ -493,7 +587,10 @@ fn gitlab_golden_blobs() {
         return;
     };
     let (_, _, unexpected) = run_set(&dir, "samples", Mode::Readme, BLOB_RESIDUALS);
-    assert!(unexpected.is_empty(), "unexpected golden differences: {unexpected:?} (GOLDEN_VERBOSE=1 shows diffs)");
+    assert!(
+        unexpected.is_empty(),
+        "unexpected golden differences: {unexpected:?} (GOLDEN_VERBOSE=1 shows diffs)"
+    );
 }
 
 #[test]
@@ -503,7 +600,10 @@ fn gitlab_golden_issues() {
         return;
     };
     let (_, _, unexpected) = run_set(&dir, "issue_samples", Mode::Comment, ISSUE_RESIDUALS);
-    assert!(unexpected.is_empty(), "unexpected golden differences: {unexpected:?} (GOLDEN_VERBOSE=1 shows diffs)");
+    assert!(
+        unexpected.is_empty(),
+        "unexpected golden differences: {unexpected:?} (GOLDEN_VERBOSE=1 shows diffs)"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -529,7 +629,9 @@ fn glpost_render(dir: &Path, inputs: &[String]) -> Option<Vec<Option<String>>> {
     use std::io::Write;
     std::env::var_os("GLFM_HARNESS")?;
     let tools = dir.join("gitlab/tools");
-    let python = std::env::var_os("GLPOST_PYTHON").map(PathBuf::from).unwrap_or_else(|| tools.join(".venv/bin/python"));
+    let python = std::env::var_os("GLPOST_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| tools.join(".venv/bin/python"));
     let mut child = std::process::Command::new(python)
         .arg("-c")
         .arg(GLPOST_DRIVER)
@@ -553,7 +655,9 @@ fn differential_inputs(dir: &Path) -> Vec<(String, String)> {
     if let Ok(s) = std::fs::read_to_string(g.join("comrak_raw/features.md")) {
         inputs.push(("features.md".to_owned(), s));
     }
-    if let Ok(s) = std::fs::read_to_string(g.join("glfm_specification_2024-09-23/output_example_snapshots/markdown.yml")) {
+    if let Ok(s) = std::fs::read_to_string(
+        g.join("glfm_specification_2024-09-23/output_example_snapshots/markdown.yml"),
+    ) {
         if let Ok(docs) = yaml_rust2::YamlLoader::load_from_str(&s) {
             if let Some(map) = docs.first().and_then(|d| d.as_hash()) {
                 for (k, v) in map {
@@ -568,12 +672,16 @@ fn differential_inputs(dir: &Path) -> Vec<(String, String)> {
         let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
         files.sort();
         for f in files {
-            let Ok(s) = std::fs::read_to_string(&f) else { continue };
+            let Ok(s) = std::fs::read_to_string(&f) else {
+                continue;
+            };
             let stem = f.file_stem().unwrap().to_string_lossy().to_string();
             let fence = "````````````````````````````````";
             let mut n = 0;
             for block in s.split(&format!("{fence} example\n")).skip(1) {
-                let Some(body) = block.split(&format!("\n{fence}")).next() else { continue };
+                let Some(body) = block.split(&format!("\n{fence}")).next() else {
+                    continue;
+                };
                 let md = body.split("\n.\n").next().unwrap_or("").replace('→', "\t");
                 n += 1;
                 inputs.push((format!("{stem}#{n}"), format!("{md}\n")));
@@ -611,7 +719,10 @@ fn gitlab_differential_glpost() {
             failed.push((name.clone(), o.differing, o.report));
         }
     }
-    println!("differential vs glpost.py: {pass}/{} identical", pass + failed.len());
+    println!(
+        "differential vs glpost.py: {pass}/{} identical",
+        pass + failed.len()
+    );
     for (name, d, report) in &failed {
         println!("{name}: {d} differing lines");
         if std::env::var("GOLDEN_VERBOSE").is_ok_and(|v| v == "1") {

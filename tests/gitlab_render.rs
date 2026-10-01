@@ -28,7 +28,10 @@ fn fixtures() {
     let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("fixture dir")
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "md") && !p.file_stem().unwrap().to_string_lossy().starts_with('_'))
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "md")
+                && !p.file_stem().unwrap().to_string_lossy().starts_with('_')
+        })
         .collect();
     names.sort();
     assert!(!names.is_empty());
@@ -47,7 +50,10 @@ fn fixtures() {
         }
         let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
         if highlight_neutral(&html) != highlight_neutral(&expected) {
-            failures.push(format!("{}:\n--- expected\n{expected}\n--- got\n{html}", md_path.display()));
+            failures.push(format!(
+                "{}:\n--- expected\n{expected}\n--- got\n{html}",
+                md_path.display()
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
@@ -73,7 +79,13 @@ fn highlight_neutral(html: &str) -> String {
         let class = pre.attr("class").unwrap_or_default().to_string();
         let class: Vec<&str> = class
             .split_ascii_whitespace()
-            .map(|c| if c.starts_with("language-") { "language-*" } else { c })
+            .map(|c| {
+                if c.starts_with("language-") {
+                    "language-*"
+                } else {
+                    c
+                }
+            })
             .collect();
         pre.set_attr("class", &class.join(" "));
     }
@@ -120,9 +132,17 @@ fn includes_in_readme_mode_only() {
     o.source_path = Some(dir.path().join("main.md"));
     o.root = Some(dir.path().to_path_buf());
     let r = render(md, &o);
-    assert!(r.html.contains("<strong data-sourcepos=\"3:1-3:12\">included</strong>"), "{}", r.html);
+    assert!(
+        r.html
+            .contains("<strong data-sourcepos=\"3:1-3:12\">included</strong>"),
+        "{}",
+        r.html
+    );
     assert!(r.html.contains("Error including '"), "{}", r.html);
-    assert_eq!(r.warnings, vec!["::include{file=missing.md}: not found".to_owned()]);
+    assert_eq!(
+        r.warnings,
+        vec!["::include{file=missing.md}: not found".to_owned()]
+    );
     let files = md_render::render::gitlab::included_files(md, &o);
     assert_eq!(files.len(), 1);
 
@@ -144,7 +164,11 @@ fn includes_cannot_escape_the_root() {
     let mut o = opts();
     o.source_path = Some(root.join("README.md"));
     o.root = Some(root.clone());
-    for md in ["::include{file=../secret.md}", "::include{file=/../secret.md}", "::include{file=link.md}"] {
+    for md in [
+        "::include{file=../secret.md}",
+        "::include{file=/../secret.md}",
+        "::include{file=link.md}",
+    ] {
         let r = render(md, &o);
         assert!(!r.html.contains("SECRET"), "{md}: {}", r.html);
     }
@@ -205,14 +229,22 @@ fn nasty_inputs() {
         "<p dir=rtl align=right>x</p><h7>h7</h7><bdo dir=rtl>y</bdo>".into(),
     ];
     corpus.push("> ".repeat(500) + "deep quote");
-    corpus.push((0..400).map(|i| format!("{}- item\n", "  ".repeat(i))).collect());
+    corpus.push(
+        (0..400)
+            .map(|i| format!("{}- item\n", "  ".repeat(i)))
+            .collect(),
+    );
     corpus.push("<div>".repeat(3000) + "x");
     corpus.push("[".repeat(5000) + &"]".repeat(5000));
     corpus.push("*".repeat(10_000));
     corpus.push("x".repeat(10_000));
     corpus.push(format!("{}\n", "a ".repeat(5000)));
     corpus.push("| a | b |\n|---|---|\n".to_owned() + &"| 1 | 2 |\n".repeat(3000));
-    corpus.push(format!("| {} |\n|{}|\n", vec!["h"; 500].join(" | "), vec!["-"; 500].join("|")));
+    corpus.push(format!(
+        "| {} |\n|{}|\n",
+        vec!["h"; 500].join(" | "),
+        vec!["-"; 500].join("|")
+    ));
     corpus.push(":smile: ".repeat(1500));
     corpus.push("😄".repeat(1500));
     corpus.push("$x$ ".repeat(1500));
@@ -223,12 +255,37 @@ fn nasty_inputs() {
         let b = gl(md);
         assert_eq!(a, b, "non-deterministic output for {:?}", truncate(md));
         let lower = a.html.to_ascii_lowercase();
-        assert!(!lower.contains("<script"), "script survived: {:?}", truncate(md));
-        assert!(!lower.contains("javascript:"), "javascript: survived: {:?} -> {}", truncate(md), truncate(&a.html));
-        assert!(!lower.contains("vbscript:"), "vbscript: survived: {:?}", truncate(md));
-        assert!(!has_event_handler(&lower), "event handler survived: {:?}", truncate(md));
-        assert!(!lower.contains("<iframe"), "iframe survived: {:?}", truncate(md));
-        assert!(!lower.contains("<style"), "style survived: {:?}", truncate(md));
+        assert!(
+            !lower.contains("<script"),
+            "script survived: {:?}",
+            truncate(md)
+        );
+        assert!(
+            !lower.contains("javascript:"),
+            "javascript: survived: {:?} -> {}",
+            truncate(md),
+            truncate(&a.html)
+        );
+        assert!(
+            !lower.contains("vbscript:"),
+            "vbscript: survived: {:?}",
+            truncate(md)
+        );
+        assert!(
+            !has_event_handler(&lower),
+            "event handler survived: {:?}",
+            truncate(md)
+        );
+        assert!(
+            !lower.contains("<iframe"),
+            "iframe survived: {:?}",
+            truncate(md)
+        );
+        assert!(
+            !lower.contains("<style"),
+            "style survived: {:?}",
+            truncate(md)
+        );
         let mut o = opts();
         o.sourcepos = false;
         o.mode = Mode::Comment;
@@ -246,9 +303,12 @@ fn has_event_handler(html: &str) -> bool {
             b'>' => in_tag = false,
             b' ' | b'\n' | b'\t' if in_tag => {
                 let rest = &html[i + 1..];
-                if rest.starts_with("on") {
-                    let name: String = rest[2..].chars().take_while(|c| c.is_ascii_alphabetic()).collect();
-                    if !name.is_empty() && rest[2 + name.len()..].starts_with('=') {
+                if let Some(after) = rest.strip_prefix("on") {
+                    let name: String = after
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphabetic())
+                        .collect();
+                    if !name.is_empty() && after[name.len()..].starts_with('=') {
                         return true;
                     }
                 }
@@ -290,7 +350,15 @@ fn speed_20kb_readme() {
         std::hint::black_box(render(std::hint::black_box(&md), &o));
     }
     let per = start.elapsed() / runs;
-    println!("gitlab render of {} bytes: {:?} per render (steady state)", md.len(), per);
-    let bound = if cfg!(debug_assertions) { Duration::from_secs(5) } else { Duration::from_millis(100) };
+    println!(
+        "gitlab render of {} bytes: {:?} per render (steady state)",
+        md.len(),
+        per
+    );
+    let bound = if cfg!(debug_assertions) {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(100)
+    };
     assert!(per < bound, "too slow: {per:?}");
 }

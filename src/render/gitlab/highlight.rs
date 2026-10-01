@@ -10,10 +10,36 @@ use super::{dom, filters};
 /// `math`, `suggestion` and asciidoctor-kroki's `SUPPORTED_DIAGRAM_NAMES` bypass Rouge
 /// (GL §8.1): the tag is the language as written and the lines are plain text.
 pub(super) const NO_ROUGE: &[&str] = &[
-    "math", "suggestion", "actdiag", "blockdiag", "bpmn", "bytefield", "c4plantuml", "d2", "dbml",
-    "ditaa", "erd", "excalidraw", "graphviz", "mermaid", "nomnoml", "nwdiag", "packetdiag",
-    "pikchr", "plantuml", "rackdiag", "seqdiag", "svgbob", "symbolator", "umlet", "vega",
-    "vegalite", "wavedrom", "structurizr", "diagramsnet", "wireviz",
+    "math",
+    "suggestion",
+    "actdiag",
+    "blockdiag",
+    "bpmn",
+    "bytefield",
+    "c4plantuml",
+    "d2",
+    "dbml",
+    "ditaa",
+    "erd",
+    "excalidraw",
+    "graphviz",
+    "mermaid",
+    "nomnoml",
+    "nwdiag",
+    "packetdiag",
+    "pikchr",
+    "plantuml",
+    "rackdiag",
+    "seqdiag",
+    "svgbob",
+    "symbolator",
+    "umlet",
+    "vega",
+    "vegalite",
+    "wavedrom",
+    "structurizr",
+    "diagramsnet",
+    "wireviz",
 ];
 
 /// Title of the bidi warning span (`Gitlab::Unicode.bidi_warning`).
@@ -26,7 +52,10 @@ fn is_bidi_control(c: char) -> bool {
 
 /// Non-ASCII `\p{Space_Separator}`.
 fn is_non_ascii_space(c: char) -> bool {
-    matches!(c, '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}')
+    matches!(
+        c,
+        '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
 }
 
 /// `replace_space_characters` + `highlight_unicode_control_characters` on one line of escaped
@@ -40,7 +69,9 @@ pub(super) fn fix_unicode(line: &str) -> String {
         if is_non_ascii_space(c) {
             out.push(' ');
         } else if is_bidi_control(c) {
-            out.push_str("<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"");
+            out.push_str(
+                "<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"",
+            );
             out.push_str(BIDI_WARNING);
             out.push_str("\">");
             out.push(c);
@@ -71,7 +102,11 @@ pub(super) fn highlight_block(lang: Option<&str>, code: &str) -> (String, Vec<St
                 return (tag, Vec::new());
             }
             let res = crate::render::highlight::gitlab(code, lang.unwrap_or(""));
-            let tag = if res.tag.is_empty() { "plaintext".to_owned() } else { res.tag };
+            let tag = if res.tag.is_empty() {
+                "plaintext".to_owned()
+            } else {
+                res.tag
+            };
             let expected = plain_lines(code).len();
             if res.lines.len() == expected {
                 (tag, res.lines)
@@ -91,13 +126,20 @@ pub(super) fn syntax_highlight(root: &NodeRef<'_>) {
             continue;
         }
         let Some(pre) = code.parent() else { continue };
-        if pre.has_attr("data-kroki-style") || pre.parent().is_none() || !dom::is_attached(&pre, root) {
+        if pre.has_attr("data-kroki-style")
+            || pre.parent().is_none()
+            || !dom::is_attached(&pre, root)
+        {
             continue;
         }
         let lang = dom::attr(&pre, "data-canonical-lang");
         let text = dom::text(&code);
         let (tag, lines) = highlight_block(lang.as_deref(), &text);
-        let data_lang = if tag.is_empty() { "plaintext" } else { tag.as_str() };
+        let data_lang = if tag.is_empty() {
+            "plaintext"
+        } else {
+            tag.as_str()
+        };
         let mut inner = String::with_capacity(text.len() * 2 + lines.len() * 48);
         for (i, line) in lines.iter().enumerate() {
             if i > 0 {
@@ -126,7 +168,11 @@ pub(super) fn syntax_highlight(root: &NodeRef<'_>) {
             dom::add_class(&pre, &format!("language-{tag}"));
         }
         pre.set_attr("v-pre", "true");
-        let wrapper = dom::new_element(root.tree, "div", &[("class", "gl-relative markdown-code-block js-markdown-code")]);
+        let wrapper = dom::new_element(
+            root.tree,
+            "div",
+            &[("class", "gl-relative markdown-code-block js-markdown-code")],
+        );
         pre.insert_before(&wrapper);
         wrapper.append_child(&pre);
         if tag != "suggestion" {
@@ -169,7 +215,9 @@ mod tests {
 
     #[test]
     fn diagrams_keep_their_tag() {
-        let out = run("<pre data-canonical-lang=\"mermaid\"><code class=\"js-render-mermaid\">graph TD\n</code></pre>");
+        let out = run(
+            "<pre data-canonical-lang=\"mermaid\"><code class=\"js-render-mermaid\">graph TD\n</code></pre>",
+        );
         assert!(out.contains("language-mermaid"), "{out}");
         assert!(out.contains("<code class=\"js-render-mermaid\"><span id=\"LC1\" class=\"line\" data-lang=\"mermaid\">graph TD</span></code>"), "{out}");
     }

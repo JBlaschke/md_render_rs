@@ -39,7 +39,10 @@ struct Db {
 
 static DB: LazyLock<Db> = LazyLock::new(|| {
     let raw: RawDb = serde_json::from_str(include_str!("../../../data/gitlab/emoji.json"))
-        .unwrap_or(RawDb { emoji: Vec::new(), aliases: Vec::new() });
+        .unwrap_or(RawDb {
+            emoji: Vec::new(),
+            aliases: Vec::new(),
+        });
     let mut db = Db {
         entries: Vec::with_capacity(raw.emoji.len()),
         by_name: HashMap::with_capacity(raw.emoji.len() + raw.aliases.len()),
@@ -52,11 +55,19 @@ static DB: LazyLock<Db> = LazyLock::new(|| {
         let plain: String = chars.chars().filter(|&c| c != VS16).collect();
         db.by_chars.entry(plain).or_insert(i);
         for c in chars.chars() {
-            if !c.is_ascii() && !is_modifier(c) && !matches!(c, VS15 | VS16 | ZWJ | KEYCAP | TAG_START..=TAG_END) {
+            if !c.is_ascii()
+                && !is_modifier(c)
+                && !matches!(c, VS15 | VS16 | ZWJ | KEYCAP | TAG_START..=TAG_END)
+            {
                 db.emoji_chars.insert(c);
             }
         }
-        db.entries.push(Emoji { name, chars, description, unicode_version });
+        db.entries.push(Emoji {
+            name,
+            chars,
+            description,
+            unicode_version,
+        });
     }
     for (alias, name) in raw.aliases {
         if let Some(&i) = db.by_name.get(&name) {
@@ -97,7 +108,11 @@ fn element_end(chars: &[char], i: usize) -> Option<usize> {
     let c = *chars.get(i)?;
     let at = |j: usize| chars.get(j).copied();
     if is_regional_indicator(c) {
-        return Some(if at(i + 1).is_some_and(is_regional_indicator) { i + 2 } else { i + 1 });
+        return Some(if at(i + 1).is_some_and(is_regional_indicator) {
+            i + 2
+        } else {
+            i + 1
+        });
     }
     if matches!(c, '0'..='9' | '#' | '*') {
         let mut j = i + 1;
@@ -160,7 +175,9 @@ fn unicode_pass(text: &str, budget: &mut usize) -> Vec<Piece<'static>> {
     let mut replaced = 0usize;
     while i < chars.len() {
         let c = chars[i];
-        let candidate = !c.is_ascii() || (matches!(c, '0'..='9' | '#' | '*') && matches!(chars.get(i + 1), Some(&VS16 | &KEYCAP)));
+        let candidate = !c.is_ascii()
+            || (matches!(c, '0'..='9' | '#' | '*')
+                && matches!(chars.get(i + 1), Some(&VS16 | &KEYCAP)));
         if candidate && replaced < FILTER_ITEM_LIMIT {
             if let Some(end) = sequence_end(&chars, i) {
                 let seq: String = chars[i..end].iter().collect();
@@ -208,11 +225,19 @@ fn alpha_pass(text: &str, out: &mut Vec<Piece<'static>>, budget: &mut usize, rep
             i += 1;
             continue;
         }
-        let before_ok = text[..i].chars().next_back().is_none_or(|p| p == '\n' || !(is_alnum(p) || p == ':'));
-        let Some(rel) = text[i + 1..].find(':') else { break };
+        let before_ok = text[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|p| p == '\n' || !(is_alnum(p) || p == ':'));
+        let Some(rel) = text[i + 1..].find(':') else {
+            break;
+        };
         let j = i + 1 + rel;
         let name = &text[i + 1..j];
-        let after_ok = text[j + 1..].chars().next().is_none_or(|n| n == '\n' || !(is_alnum(n) || n == ':'));
+        let after_ok = text[j + 1..]
+            .chars()
+            .next()
+            .is_none_or(|n| n == '\n' || !(is_alnum(n) || n == ':'));
         if before_ok && after_ok && !name.is_empty() {
             if let Some(e) = by_name(name) {
                 if last < i {
@@ -239,7 +264,11 @@ pub(super) fn rewrite(text: &str, budget: &mut usize) -> Option<Vec<Piece<'stati
     if text.is_ascii() && !has_colon {
         return None;
     }
-    let pieces = if text.is_ascii() { vec![Piece::Text(text.to_owned())] } else { unicode_pass(text, budget) };
+    let pieces = if text.is_ascii() {
+        vec![Piece::Text(text.to_owned())]
+    } else {
+        unicode_pass(text, budget)
+    };
     let mut changed = pieces.iter().any(|p| matches!(p, Piece::Emoji(_)));
     let pieces = if has_colon {
         let mut out = Vec::with_capacity(pieces.len());
@@ -268,7 +297,11 @@ fn gl_emoji<'a>(root: &NodeRef<'a>, e: &Emoji) -> NodeRef<'a> {
     let el = dom::new_element(
         root.tree,
         "gl-emoji",
-        &[("title", &e.description), ("data-name", &e.name), ("data-unicode-version", &e.unicode_version)],
+        &[
+            ("title", &e.description),
+            ("data-name", &e.name),
+            ("data-unicode-version", &e.unicode_version),
+        ],
     );
     el.append_child(&dom::new_text(root.tree, &e.chars));
     el
@@ -307,7 +340,9 @@ pub(super) fn filter(root: &NodeRef<'_>) {
         if in_backref {
             continue;
         }
-        let Some(pieces) = rewrite(&content, &mut count) else { continue };
+        let Some(pieces) = rewrite(&content, &mut count) else {
+            continue;
+        };
         for p in pieces {
             let node = match p {
                 Piece::Text(s) => dom::new_text(root.tree, &s),
@@ -337,7 +372,11 @@ mod tests {
         assert_eq!(smile.chars, "😄");
         assert_eq!(smile.description, "grinning face with smiling eyes");
         assert_eq!(smile.unicode_version, "6.0");
-        assert_eq!(by_name("grinning_face_with_smiling_eyes"), Some(smile), "alias");
+        assert_eq!(
+            by_name("grinning_face_with_smiling_eyes"),
+            Some(smile),
+            "alias"
+        );
         assert!(by_name(":) ").is_none());
     }
 
@@ -349,9 +388,15 @@ mod tests {
         );
         assert_eq!(run("<p>a:smile:</p>"), "<p>a:smile:</p>");
         assert_eq!(run("<p>:smile::smile:</p>"), "<p>:smile::smile:</p>");
-        assert_eq!(run("<p>:nonexistent_emoji:</p>"), "<p>:nonexistent_emoji:</p>");
+        assert_eq!(
+            run("<p>:nonexistent_emoji:</p>"),
+            "<p>:nonexistent_emoji:</p>"
+        );
         assert!(run("<p>(:+1:)</p>").contains("data-name=\"thumbsup\""));
-        assert_eq!(run("<code>:smile:</code><pre>:smile:</pre>"), "<code>:smile:</code><pre>:smile:</pre>");
+        assert_eq!(
+            run("<code>:smile:</code><pre>:smile:</pre>"),
+            "<code>:smile:</code><pre>:smile:</pre>"
+        );
     }
 
     #[test]
@@ -375,6 +420,9 @@ mod tests {
 
     #[test]
     fn footnote_backrefs_skipped() {
-        assert_eq!(run("<a data-footnote-backref=\"\">↩</a>"), "<a data-footnote-backref=\"\">↩</a>");
+        assert_eq!(
+            run("<a data-footnote-backref=\"\">↩</a>"),
+            "<a data-footnote-backref=\"\">↩</a>"
+        );
     }
 }

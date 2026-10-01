@@ -20,7 +20,10 @@
 mod dom;
 mod emoji;
 mod filters;
+// Ported from the gitlab-glfm-markdown gem; kept verbatim, so not reformatted.
+#[rustfmt::skip]
 mod formatter;
+#[rustfmt::skip]
 mod glfm;
 mod highlight;
 mod postjs;
@@ -72,11 +75,16 @@ fn gitlab_options() -> glfm::RenderOptions {
 }
 
 /// Stage A + B: the Markdown text GitLab hands to comrak, and comrak's (rstripped) HTML.
-fn markdown_to_html(markdown: &str, opts: &RenderOptions, included: &mut preprocess::Included) -> String {
+fn markdown_to_html(
+    markdown: &str,
+    opts: &RenderOptions,
+    included: &mut preprocess::Included,
+) -> String {
     let text = preprocess::normalize_source(markdown);
     let text = preprocess::front_matter(text);
     let text = if opts.mode == Mode::Readme {
-        let ctx = preprocess::IncludeContext::new(opts.source_path.as_deref(), opts.root.as_deref());
+        let ctx =
+            preprocess::IncludeContext::new(opts.source_path.as_deref(), opts.root.as_deref());
         match preprocess::includes(&text, &ctx, included) {
             std::borrow::Cow::Borrowed(_) => text,
             std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
@@ -90,7 +98,8 @@ fn markdown_to_html(markdown: &str, opts: &RenderOptions, included: &mut preproc
         return String::new();
     }
     let html = glfm::render(&text, &gitlab_options()).unwrap_or_default();
-    html.trim_end_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0B' | '\x0C' | '\r' | '\0')).to_owned()
+    html.trim_end_matches([' ', '\t', '\n', '\x0B', '\x0C', '\r', '\0'])
+        .to_owned()
 }
 
 /// Raw comrak + GitLab formatter output after Stage A (debugging aid and test oracle).
@@ -117,7 +126,10 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let mut included = preprocess::Included::default();
     let html = markdown_to_html(markdown, opts, &mut included);
     if html.is_empty() {
-        return Rendered { warnings: included.warnings, ..Default::default() };
+        return Rendered {
+            warnings: included.warnings,
+            ..Default::default()
+        };
     }
 
     let doc = Document::fragment(html);
@@ -129,10 +141,13 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         postjs::strip_sourcepos(&root);
     }
 
-    let title = dom::elements_named(&root, &["h1"]).into_iter().next().map(|id| {
-        let h1 = root.tree.get_unchecked(&id);
-        dom::ruby_strip(&dom::text(&h1)).to_owned()
-    });
+    let title = dom::elements_named(&root, &["h1"])
+        .into_iter()
+        .next()
+        .map(|id| {
+            let h1 = root.tree.get_unchecked(&id);
+            dom::ruby_strip(&dom::text(&h1)).to_owned()
+        });
     let features = features(&root);
     Rendered {
         html: root.inner_html().to_string(),

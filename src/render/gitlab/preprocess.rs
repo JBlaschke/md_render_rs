@@ -52,7 +52,10 @@ pub(super) fn front_matter(text: &str) -> Cow<'_, str> {
         lang => lang,
     };
     let mut before = caps.name("before").map_or("", |m| m.as_str()).to_owned();
-    if caps.name("encoding").is_some_and(|m| !m.as_str().is_empty()) {
+    if caps
+        .name("encoding")
+        .is_some_and(|m| !m.as_str().is_empty())
+    {
         before.insert(0, '\n');
     }
     let body = caps.name("front_matter").map_or("", |m| m.as_str());
@@ -91,7 +94,11 @@ impl IncludeContext {
             .map(Path::to_path_buf)
             .or_else(|| source_path.and_then(Path::parent).map(Path::to_path_buf));
         let Some(root) = root.and_then(|r| {
-            let r = if r.as_os_str().is_empty() { PathBuf::from(".") } else { r };
+            let r = if r.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                r
+            };
             r.canonicalize().ok()
         }) else {
             return IncludeContext::default();
@@ -104,9 +111,16 @@ impl IncludeContext {
             };
             let parent = abs.parent()?.canonicalize().ok()?;
             let name = abs.file_name()?;
-            parent.join(name).strip_prefix(&root).ok().map(Path::to_path_buf)
+            parent
+                .join(name)
+                .strip_prefix(&root)
+                .ok()
+                .map(Path::to_path_buf)
         });
-        IncludeContext { root: Some(root), requested }
+        IncludeContext {
+            root: Some(root),
+            requested,
+        }
     }
 }
 
@@ -122,7 +136,11 @@ pub(super) struct Included {
 /// `IncludeFilter` (GL §3.3). Not recursive (included text is not scanned again), at most
 /// [`MAX_INCLUDES`] directives are replaced, URLs become links (gitlab.com does not fetch them),
 /// and files are read only from inside the served root.
-pub(super) fn includes<'t>(text: &'t str, ctx: &IncludeContext, out: &mut Included) -> Cow<'t, str> {
+pub(super) fn includes<'t>(
+    text: &'t str,
+    ctx: &IncludeContext,
+    out: &mut Included,
+) -> Cow<'t, str> {
     if !text.contains("::include{file=") {
         return Cow::Borrowed(text);
     }
@@ -131,10 +149,15 @@ pub(super) fn includes<'t>(text: &'t str, ctx: &IncludeContext, out: &mut Includ
     let mut replaced = 0usize;
     let mut line_start = 0usize;
     while line_start <= text.len() {
-        let line_end = text[line_start..].find('\n').map_or(text.len(), |i| line_start + i);
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |i| line_start + i);
         let line = &text[line_start..line_end];
         let at_eos = line_end == text.len();
-        match (replaced < MAX_INCLUDES).then(|| match_include(line)).flatten() {
+        match (replaced < MAX_INCLUDES)
+            .then(|| match_include(line))
+            .flatten()
+        {
             Some((file, consumed)) => {
                 let content = cache
                     .entry(file.to_owned())
@@ -157,7 +180,10 @@ pub(super) fn includes<'t>(text: &'t str, ctx: &IncludeContext, out: &mut Includ
 
 /// Line terminators accepted by Ruby's `\R` lookahead (other than `\n`, which ends the line).
 fn is_ruby_r(c: char) -> bool {
-    matches!(c, '\r' | '\x0B' | '\x0C' | '\u{85}' | '\u{2028}' | '\u{2029}')
+    matches!(
+        c,
+        '\r' | '\x0B' | '\x0C' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// Ruby `^::include\{file=(?<include>.{1,1024})}(?=\R|\z)` on one line (no `\n` inside).
@@ -196,7 +222,8 @@ fn markdown_link(url: &str) -> String {
 
 /// `error_message` of IncludeFilter.
 fn error_message(file: &str, reason: &str, out: &mut Included) -> String {
-    out.warnings.push(format!("::include{{file={file}}}: {reason}"));
+    out.warnings
+        .push(format!("::include{{file={file}}}: {reason}"));
     format!("**Error including '{}': {reason}**", markdown_link(file))
 }
 
@@ -296,26 +323,50 @@ mod tests {
     #[test]
     fn front_matter_variants() {
         // toml / json defaults, explicit language, `...` closing, leading blank lines.
-        assert_eq!(front_matter("+++\na = 1\n+++\n"), "```toml:frontmatter\na = 1\n```\n");
-        assert_eq!(front_matter(";;;\n{}\n;;;\n"), "```json:frontmatter\n{}\n```\n");
-        assert_eq!(front_matter("--- toml\na\n...\nx"), "```toml:frontmatter\na\n```\nx");
-        assert_eq!(front_matter("\n\n---\na\n---"), "\n\n```yaml:frontmatter\na\n```\n");
+        assert_eq!(
+            front_matter("+++\na = 1\n+++\n"),
+            "```toml:frontmatter\na = 1\n```\n"
+        );
+        assert_eq!(
+            front_matter(";;;\n{}\n;;;\n"),
+            "```json:frontmatter\n{}\n```\n"
+        );
+        assert_eq!(
+            front_matter("--- toml\na\n...\nx"),
+            "```toml:frontmatter\na\n```\nx"
+        );
+        assert_eq!(
+            front_matter("\n\n---\na\n---"),
+            "\n\n```yaml:frontmatter\na\n```\n"
+        );
         // Mixed closing delimiters are accepted (RE2 has no back-references).
-        assert_eq!(front_matter("---\na\n+++\n"), "```yaml:frontmatter\na\n```\n");
+        assert_eq!(
+            front_matter("---\na\n+++\n"),
+            "```yaml:frontmatter\na\n```\n"
+        );
         // Encoding line is dropped, a newline keeps the line count.
         assert_eq!(
             front_matter("# coding: utf-8\n---\na\n---\n"),
             "\n```yaml:frontmatter\na\n```\n"
         );
         // CRLF line ends.
-        assert_eq!(front_matter("---\r\na\r\n---\r\n"), "```yaml:frontmatter\na\r\n```\n");
+        assert_eq!(
+            front_matter("---\r\na\r\n---\r\n"),
+            "```yaml:frontmatter\na\r\n```\n"
+        );
     }
 
     #[test]
     fn no_front_matter() {
-        assert!(matches!(front_matter("# x\n---\na\n---\n"), Cow::Borrowed(_)));
+        assert!(matches!(
+            front_matter("# x\n---\na\n---\n"),
+            Cow::Borrowed(_)
+        ));
         assert!(matches!(front_matter("  ---\na\n---\n"), Cow::Borrowed(_)));
-        assert!(matches!(front_matter("---\nunterminated"), Cow::Borrowed(_)));
+        assert!(matches!(
+            front_matter("---\nunterminated"),
+            Cow::Borrowed(_)
+        ));
         assert!(matches!(front_matter(""), Cow::Borrowed(_)));
     }
 
@@ -332,10 +383,22 @@ mod tests {
     #[test]
     fn relative_paths() {
         let p = |a: &str, b: &str| resolve_relative_path(a, Path::new(b));
-        assert_eq!(p("users.md", "doc/api/README.md"), Some(PathBuf::from("doc/api/users.md")));
-        assert_eq!(p("users.md", "doc/api"), Some(PathBuf::from("doc/api/users.md")));
-        assert_eq!(p("../u/x.md", "doc/api/README.md"), Some(PathBuf::from("doc/u/x.md")));
-        assert_eq!(p("/top.md", "doc/api/README.md"), Some(PathBuf::from("top.md")));
+        assert_eq!(
+            p("users.md", "doc/api/README.md"),
+            Some(PathBuf::from("doc/api/users.md"))
+        );
+        assert_eq!(
+            p("users.md", "doc/api"),
+            Some(PathBuf::from("doc/api/users.md"))
+        );
+        assert_eq!(
+            p("../u/x.md", "doc/api/README.md"),
+            Some(PathBuf::from("doc/u/x.md"))
+        );
+        assert_eq!(
+            p("/top.md", "doc/api/README.md"),
+            Some(PathBuf::from("top.md"))
+        );
         assert_eq!(p("../../../etc/passwd", "doc/README.md"), None);
     }
 
