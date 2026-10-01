@@ -721,7 +721,13 @@ impl ApiRenderer {
             if let Some(b) = block.as_ref() {
                 match b.until {
                     Some(until) if SystemTime::now() >= until => *block = None,
-                    _ => return Err(b.error.clone()),
+                    _ => {
+                        tracing::debug!(
+                            "{} API skipped after an earlier error",
+                            site_name(self.cfg.flavor)
+                        );
+                        return Err(b.error.clone());
+                    }
                 }
             }
         }
@@ -753,6 +759,11 @@ impl ApiRenderer {
                 Ok(html)
             }
             Err(err) => {
+                // Logged once here, not on every render while the API stays blocked. Without
+                // the fallback the caller reports the error itself.
+                if self.cfg.fallback_offline {
+                    tracing::warn!("{err}; rendering offline instead");
+                }
                 if let Some(block) = block_for(&err) {
                     *self.lock_block() = Some(block);
                 }
@@ -807,7 +818,6 @@ impl Renderer for ApiRenderer {
         match self.render_api(markdown, opts) {
             Ok(rendered) => Ok(rendered),
             Err(err) if self.cfg.fallback_offline => {
-                tracing::warn!("{err}; using the offline renderer");
                 let mut rendered = super::render(markdown, opts);
                 rendered.warnings.insert(
                     0,
