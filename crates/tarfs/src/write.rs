@@ -201,7 +201,9 @@ pub(crate) fn atomic_gz(
         .tempfile_in(dir)
         .map_err(|e| io_context(e, "creating a temporary file in", dir))?;
     let tmp_path = tmp.path().to_owned();
-    let write_failed = |e: io::Error| io_context(e, "writing", &tmp_path);
+    // "writing out.tar.gz via ./.tarfs-XXXX.tmp: No space left on device"
+    let write_failed =
+        |e: io::Error| io_context(e, &format!("writing {} via", path.display()), &tmp_path);
 
     let mut gz = GzBuilder::new()
         .mtime(0)
@@ -450,6 +452,40 @@ mod tests {
             write_extended(&fs, Vec::new()),
             Err(Error::InvalidPath { ref path, .. }) if path == "a"
         ));
+    }
+
+    #[test]
+    fn atomic_gz_failure_names_the_target_and_leaves_no_litter() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.tar.gz");
+        std::fs::write(&target, b"original").unwrap();
+        let err = atomic_gz(&target, |w| {
+            w.write_all(b"partial")?;
+            Err(io::Error::new(io::ErrorKind::StorageFull, "disk full").into())
+        })
+        .unwrap_err();
+        let Error::Io(e) = err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::StorageFull);
+        let msg = e.to_string();
+        assert!(
+            msg.starts_with("writing ") && msg.contains("out.tar.gz via "),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(".tarfs-") && msg.ends_with(": disk full"),
+            "{msg}"
+        );
+        // Non-I/O errors pass through unchanged.
+        let err = atomic_gz(&target, |_| Err(Error::PathTooLong("p".into()))).unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(ref p) if p == "p"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["out.tar.gz"]);
     }
 
     #[test]
