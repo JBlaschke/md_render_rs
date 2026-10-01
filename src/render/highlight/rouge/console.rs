@@ -11,7 +11,7 @@
 
 use super::classes::ForLang;
 use super::{Segment, select_syntax};
-use crate::render::highlight::engine::{self, Event, Limits, LineTokenizer};
+use crate::render::highlight::engine::{self, Deadline, Event, Limits, LineTokenizer};
 
 /// Rouge's default prompt end characters (`$ # > ;`).
 fn prompt_end(line: &str) -> Option<usize> {
@@ -35,10 +35,12 @@ pub(super) fn segments(
         return Err(engine::Error);
     }
     let syntax = select_syntax("shell", "sh");
+    let deadline = Deadline::start(&Limits::DEFAULT);
     engine::guarded(|| {
         let mut tokenizer = syntax.map(LineTokenizer::new);
         let mut start = 0usize;
         for line in code.split_inclusive('\n') {
+            deadline.check()?;
             let base = start;
             start += line.len();
             if is_elision(line) {

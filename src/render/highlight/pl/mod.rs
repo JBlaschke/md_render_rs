@@ -89,7 +89,7 @@ const SCOPE_ALIASES: &[(&str, &str)] = &[
 ];
 
 /// Linguist scopes whose same-named two-face syntax is a worse match than another one.
-const SCOPE_OVERRIDES: &[(&str, &str)] = &[];
+const SCOPE_OVERRIDES: &[(&str, &str)] = &[("source.shell", "source.shell.bash")];
 
 /// Pick the grammar for a Linguist `tm_scope` (CQ §1.7): explicit override → same scope in
 /// two-face → alias table → `find_syntax_by_token` on the language name. `None`: no grammar

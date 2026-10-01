@@ -37,9 +37,28 @@ impl Segment {
 }
 
 /// Rouge tag → two-face syntax scope (`None`: no grammar, plain lines), for tags where the
-/// generic selection below picks nothing or the wrong grammar. Reviewed against the full table
+/// generic selection below picks nothing or the wrong grammar (a shared file extension:
+/// `apex` → TeX via `.cls`, `prolog` → Pascal via `.pro`, ...). Reviewed against the full table
 /// of 234 Rouge lexers.
-const TAG_SYNTAX: &[(&str, Option<&str>)] = &[];
+const TAG_SYNTAX: &[(&str, Option<&str>)] = &[
+    ("apache", Some("source.apacheconf")),
+    ("apex", None),
+    ("cisco_ios", None),
+    ("cobol", None),
+    ("conf", None),
+    ("fsharp", Some("source.fsharp")),
+    ("json-doc", Some("source.json")),
+    ("jsx", Some("source.js")),
+    ("kick_assembler", None),
+    ("mason", None),
+    ("mathematica", None),
+    ("openedge", None),
+    ("plsql", Some("source.sql")),
+    ("prolog", None),
+    ("reasonml", None),
+    ("supercollider", None),
+    ("systemverilog", Some("source.systemverilog")),
+];
 
 /// Pick the syntect syntax for a Rouge tag (GL §8.1: tag, then the user's string, then the
 /// lexer's file extensions).

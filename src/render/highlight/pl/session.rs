@@ -24,7 +24,7 @@ use regex::Regex;
 
 use super::classes::{Overlay, Scheme};
 use super::{SpanWriter, shell_syntax};
-use crate::render::highlight::engine::{self, Limits, LineTokenizer};
+use crate::render::highlight::engine::{self, Deadline, Limits, LineTokenizer};
 
 
 /// The prompt rule. TextMate matches it against the line *including* its terminator, so the
@@ -56,8 +56,10 @@ pub(super) fn render(
     }
     let shell = shell_syntax();
     let mut w = SpanWriter::new(scheme, overlay, code.len() * 2);
+    let deadline = Deadline::start(&Limits::DEFAULT);
     engine::guarded(|| {
         for line in code.split_inclusive('\n') {
+            deadline.check()?;
             let (content, newline) = match line.strip_suffix('\n') {
                 Some(c) => (c, true),
                 None => (line, false),

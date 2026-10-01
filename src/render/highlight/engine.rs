@@ -17,6 +17,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use syntect::parsing::{
     BasicScopeStackOp, ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet,
@@ -52,28 +53,46 @@ pub(crate) fn syntax_by_extension(ext: &str) -> Option<&'static SyntaxReference>
 }
 
 /// Upper bounds on the work done for one code block. Inputs beyond them are not tokenized (the
-/// caller emits plain escaped text). GitHub and GitLab do not document their own limits for
-/// fenced code; these values keep a pathological block well under the render budget
-/// (docs/DESIGN.md §3.2) while covering every realistic README block.
+/// caller emits plain escaped text). GitHub and GitLab do not document size limits for fenced
+/// code (both cap highlighting time instead: GitLab's `SyntaxHighlightFilter` runs under
+/// `TimeoutFilterHandler`); these values keep a pathological block well under the render
+/// budget (docs/DESIGN.md §3.2) while covering every realistic README block.
+///
+/// Measured (release, two-face grammars): the regexes of several grammars (SCSS, JavaScript,
+/// Makefile, shell) are quadratic in the length of a run of whitespace or word characters
+/// (SCSS: 100 lines of 600 spaces take 10 s), hence the [`Limits::max_run_cost`] budget; and
+/// a few patterns hit fancy-regex's backtracking limit on otherwise harmless lines (JavaScript:
+/// ~15 ms per line indented ≥ 16 spaces and starting with an operator), hence the time net.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Limits {
     /// Maximum size of the whole block in bytes.
     pub max_bytes: usize,
-    /// Maximum length of a single line in bytes (syntect's regex scanning is super-linear in the
-    /// line length for some grammars).
+    /// Maximum length of a single line in bytes.
     pub max_line_bytes: usize,
     /// Maximum number of lines.
     pub max_lines: usize,
+    /// Maximum of Σ run² over all maximal runs of whitespace or of word characters (the
+    /// deterministic estimate of the super-linear regex work).
+    pub max_run_cost: u64,
+    /// Safety net for grammar pathologies the estimate cannot see: tokenizing stops (and the
+    /// block is rendered plain) once this much time has been spent on it. Every input
+    /// tokenized within the budget gives the same output on every run; only a block whose
+    /// tokenizing time is near the budget can come out differently on different machines.
+    pub max_time: Option<Duration>,
 }
 
 impl Limits {
     pub(crate) const DEFAULT: Limits = Limits {
-        max_bytes: 512 * 1024,
-        max_line_bytes: 8 * 1024,
-        max_lines: 20_000,
+        max_bytes: 256 * 1024,
+        max_line_bytes: 4 * 1024,
+        max_lines: 10_000,
+        max_run_cost: 1 << 22,
+        // The first use of a grammar includes compiling its regexes (TypeScript: ~60 ms in
+        // release, seconds in unoptimized builds), hence the larger budget for debug builds.
+        max_time: Some(Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 3 })),
     };
 
-    /// Whether `code` is small enough to be tokenized.
+    /// Whether `code` is small enough to be tokenized (the deterministic limits).
     pub(crate) fn admits(&self, code: &str) -> bool {
         if code.len() > self.max_bytes {
             return false;
@@ -85,7 +104,57 @@ impl Limits {
                 return false;
             }
         }
-        true
+        run_cost(code) <= self.max_run_cost
+    }
+}
+
+/// Σ run² over the maximal runs of whitespace bytes and of word bytes (ASCII alphanumerics,
+/// `_`, and all non-ASCII bytes).
+fn run_cost(code: &str) -> u64 {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Kind {
+        Space,
+        Word,
+        Other,
+    }
+    let kind = |b: u8| {
+        if b.is_ascii_whitespace() {
+            Kind::Space
+        } else if b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80 {
+            Kind::Word
+        } else {
+            Kind::Other
+        }
+    };
+    let (mut cost, mut run, mut last) = (0u64, 0u64, Kind::Other);
+    for b in code.bytes() {
+        let k = kind(b);
+        if k == last && k != Kind::Other {
+            run += 1;
+        } else {
+            cost += run * run;
+            run = u64::from(k != Kind::Other);
+            last = k;
+        }
+    }
+    cost + run * run
+}
+
+/// Wall-clock guard for [`Limits::max_time`], checked between lines.
+#[derive(Debug)]
+pub(crate) struct Deadline(Option<Instant>);
+
+impl Deadline {
+    pub(crate) fn start(limits: &Limits) -> Self {
+        Deadline(limits.max_time.and_then(|d| Instant::now().checked_add(d)))
+    }
+
+    /// `Err` once the budget is spent.
+    pub(crate) fn check(&self) -> Result<(), Error> {
+        match self.0 {
+            Some(end) if Instant::now() >= end => Err(Error),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -188,9 +257,11 @@ pub(crate) fn tokenize<'c>(
     if !limits.admits(code) {
         return Err(Error);
     }
+    let deadline = Deadline::start(&limits);
     guarded(|| {
         let mut tokenizer = LineTokenizer::new(syntax);
         for line in code.split_inclusive('\n') {
+            deadline.check()?;
             tokenizer.feed(line, &mut sink)?;
         }
         Ok(())
@@ -268,6 +339,30 @@ mod tests {
         let many = "x\n".repeat(Limits::DEFAULT.max_lines + 1);
         assert_eq!(tokenize(&many, rust(), Limits::DEFAULT, |_, _| {}), Err(Error));
         assert!(Limits::DEFAULT.admits(""));
+        // 100 lines of 600 spaces: 36M run cost (10 s for SCSS without the budget).
+        let spaces = (" ".repeat(600) + "x\n").repeat(100);
+        assert!(!Limits::DEFAULT.admits(&spaces));
+        // Ordinary code is far below the budget.
+        let code = "    let value = compute(items.iter().map(|x| x * 2));\n".repeat(2000);
+        assert!(run_cost(&code) < Limits::DEFAULT.max_run_cost / 8, "{}", run_cost(&code));
+        assert!(Limits::DEFAULT.admits(&code));
+    }
+
+    #[test]
+    fn run_cost_counts_runs() {
+        assert_eq!(run_cost(""), 0);
+        assert_eq!(run_cost("ab  cd"), 4 + 4 + 4);
+        assert_eq!(run_cost("a+b"), 1 + 1);
+        assert_eq!(run_cost("é"), 4, "non-ASCII bytes are word bytes");
+    }
+
+    #[test]
+    fn deadline_expires() {
+        let limits = Limits { max_time: Some(Duration::ZERO), ..Limits::DEFAULT };
+        assert_eq!(Deadline::start(&limits).check(), Err(Error));
+        let limits = Limits { max_time: None, ..Limits::DEFAULT };
+        assert_eq!(Deadline::start(&limits).check(), Ok(()));
+        assert_eq!(tokenize("x\n", rust(), Limits { max_time: Some(Duration::ZERO), ..Limits::DEFAULT }, |_, _| {}), Err(Error));
     }
 
     #[test]

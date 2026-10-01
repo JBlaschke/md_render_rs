@@ -203,6 +203,56 @@ fn gitlab_dump() {
     }
 }
 
+/// Where the time goes: syntect alone vs. the full GitHub/GitLab rendering
+/// (`cargo test --release --lib highlight::eval::overhead -- --ignored --nocapture`).
+#[test]
+#[ignore = "timing; run explicitly in release mode"]
+fn overhead() {
+    let code = "use std::collections::HashMap;\n#[derive(Debug)]\npub struct P<T> { x: T }\nfn main() {\n    let mut m: HashMap<&str, i32> = HashMap::new();\n    m.insert(\"one\", 1); // c\n    println!(\"{:?}\", m.get(\"one\"));\n}\n".repeat(10);
+    let syntax = super::engine::syntax_by_scope("source.rust").unwrap();
+    let runs = 50;
+    let time = |f: &dyn Fn()| {
+        f();
+        let t = std::time::Instant::now();
+        for _ in 0..runs {
+            f();
+        }
+        t.elapsed() / runs
+    };
+    let raw = time(&|| {
+        let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |_, _| {});
+    });
+    let gh = time(&|| {
+        std::hint::black_box(pl::highlight_with(&code, "rust", pl::DEFAULT_VARIANT));
+    });
+    let gl = time(&|| {
+        std::hint::black_box(rouge::highlight_with(&code, "rust", rouge::DEFAULT_VARIANT));
+    });
+    println!("{} bytes: syntect {raw:?}, github {gh:?}, gitlab {gl:?}", code.len());
+}
+
+/// Review aid: `MDR_HL_TABLES=1` prints the syntax chosen for every Rouge tag and every Linguist
+/// language with a `tm_scope`.
+#[test]
+fn grammar_tables() {
+    if std::env::var_os("MDR_HL_TABLES").is_none() {
+        return;
+    }
+    for tag in rouge::registry::tags() {
+        let s = rouge::select_syntax(tag, tag).map(|s| s.name.clone());
+        println!("ROUGE\t{tag}\t{}", s.unwrap_or_else(|| "-".into()));
+    }
+    for lang in pl::linguist::languages() {
+        let Some(scope) = lang.tm_scope.as_deref() else { continue };
+        let g = match pl::grammar(scope, &lang.name) {
+            Some(pl::Grammar::Syntect(s)) => s.name.clone(),
+            Some(other) => format!("{other:?}"),
+            None => "-".into(),
+        };
+        println!("LINGUIST\t{}\t{scope}\t{g}", lang.name);
+    }
+}
+
 #[test]
 fn gitlab_variants() {
     let Some(dir) = golden_dir() else {

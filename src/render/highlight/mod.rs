@@ -10,13 +10,20 @@
 //!
 //! Both entry points are pure, deterministic and never panic: tokenizer failures, pathological
 //! input and oversized blocks ([`engine::Limits`]) degrade to escaped text without token spans.
+//! Results are memoized per `(code, lang)` ([`memo`]), so unchanged blocks cost nothing when the
+//! live server re-renders a document.
 
 mod engine;
 #[cfg(test)]
 mod eval;
+mod memo;
 mod pl;
 mod rouge;
 mod rules;
+
+use std::sync::OnceLock;
+
+use memo::{Memo, Weigh};
 
 /// GitHub code block highlighting result.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,7 +46,21 @@ pub struct GithubCode {
 /// * Otherwise `html` is the highlighted code. If tokenizing is refused (oversized input) or
 ///   fails, it is the escaped code without spans.
 pub fn github(code: &str, lang: &str) -> GithubCode {
-    pl::highlight_with(code, lang, pl::DEFAULT_VARIANT)
+    static MEMO: OnceLock<Memo<GithubCode>> = OnceLock::new();
+    MEMO.get_or_init(Memo::new)
+        .get_or(code, lang, || pl::highlight_with(code, lang, pl::DEFAULT_VARIANT))
+}
+
+impl Weigh for GithubCode {
+    fn weight(&self) -> usize {
+        self.scope.as_ref().map_or(0, String::len) + self.html.as_ref().map_or(0, String::len)
+    }
+}
+
+impl Weigh for GitlabCode {
+    fn weight(&self) -> usize {
+        self.tag.len() + self.lines.iter().map(|l| l.len() + 24).sum::<usize>()
+    }
 }
 
 /// Code escaped exactly as GitHub escapes highlighted code (`&`, `<`, `>`; quotes literal;
@@ -68,7 +89,9 @@ pub struct GitlabCode {
 /// `<span id="LC{i+1}" class="line" data-lang="{tag}">`; a trailing newline does not produce an
 /// extra line and empty code has no lines (GL §6.8).
 pub fn gitlab(code: &str, lang: &str) -> GitlabCode {
-    rouge::highlight_with(code, lang, rouge::DEFAULT_VARIANT)
+    static MEMO: OnceLock<Memo<GitlabCode>> = OnceLock::new();
+    MEMO.get_or_init(Memo::new)
+        .get_or(code, lang, || rouge::highlight_with(code, lang, rouge::DEFAULT_VARIANT))
 }
 
 /// Minimal HTML text escaping (`&`, `<`, `>`, `"`).
