@@ -248,7 +248,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                     _ => None,
                 });
                 if let Some(d) = fndef.filter(|_| node.next_sibling().is_none()) {
-                    write_backrefs(context, &d.name, d.total_references)?;
+                    write_backrefs(context, &d.name, d.total_references, true)?;
                 }
                 if !tight {
                     context.write_str("</p>\n")?;
@@ -390,7 +390,16 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 let rid = context.user.run_id.clone();
                 write!(context, "<li{mark} id=\"user-content-fn-{label}-{rid}\">\n")?;
             } else {
+                // A definition not ending in a paragraph gets its backrefs on their own
+                // line (cmark-gfm; `S/ctx/joseph_*` `[^rich]`).
+                let last_is_para = node
+                    .last_child()
+                    .is_some_and(|c| matches!(c.data().value, NodeValue::Paragraph));
                 context.cr()?;
+                if !last_is_para {
+                    write_backrefs(context, &d.name, d.total_references, false)?;
+                    context.cr()?;
+                }
                 context.write_str("</li>\n")?;
             }
         }
@@ -485,7 +494,12 @@ fn cell_alignment(cell: &AstNode<'_>) -> &'static str {
 }
 
 /// Footnote backrefs at the end of a definition's last paragraph (GH §8.4).
-fn write_backrefs(context: &mut Ctxt<'_, '_>, name: &str, total: u32) -> fmt::Result {
+fn write_backrefs(
+    context: &mut Ctxt<'_, '_>,
+    name: &str,
+    total: u32,
+    leading_space: bool,
+) -> fmt::Result {
     let mark = context.user.mark.clone();
     let label = footnote_label(name);
     let rid = context.user.run_id.clone();
@@ -496,9 +510,10 @@ fn write_backrefs(context: &mut Ctxt<'_, '_>, name: &str, total: u32) -> fmt::Re
         } else {
             (String::new(), String::new())
         };
+        let space = if k > 1 || leading_space { " " } else { "" };
         write!(
             context,
-            r##" <a{mark} href="#user-content-fnref-{label}{sfx}-{rid}" data-footnote-backref="" aria-label="Back to reference {ix}{sfx}" class="data-footnote-backref">↩{sup}</a>"##
+            r##"{space}<a{mark} href="#user-content-fnref-{label}{sfx}-{rid}" data-footnote-backref="" aria-label="Back to reference {ix}{sfx}" class="data-footnote-backref">↩{sup}</a>"##
         )?;
     }
     Ok(())
@@ -509,17 +524,20 @@ fn footnotes_sourcepos(state: &FmtState, first: &AstNode<'_>) -> String {
     if !state.sourcepos || !is_top_level(first) {
         return String::new();
     }
-    let start = first.data().sourcepos;
-    let mut end = start;
+    let first_sp = first.data().sourcepos;
+    let (mut start, mut end) = (first_sp.start, first_sp.end);
     let mut cur = first.next_sibling();
     while let Some(n) = cur {
         if matches!(n.data().value, NodeValue::FootnoteDefinition(_)) {
-            end = n.data().sourcepos;
+            let sp = n.data().sourcepos;
+            if (sp.start.line, sp.start.column) < (start.line, start.column) {
+                start = sp.start;
+            }
+            if (sp.end.line, sp.end.column) > (end.line, end.column) {
+                end = sp.end;
+            }
         }
         cur = n.next_sibling();
     }
-    let mut s = String::from(" data-sourcepos=\"");
-    let _ = write!(s, "{}:{}-{}:{}", start.start.line, start.start.column, end.end.line, end.end.column);
-    s.push('"');
-    s
+    format!(" data-sourcepos=\"{}:{}-{}:{}\"", start.line, start.column, end.line, end.column)
 }

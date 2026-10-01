@@ -9,7 +9,9 @@
 //! attributes" scheme this keeps raw lookalikes (`<div class="markdown-alert">`, `<input>`)
 //! from surviving, as on github.com.
 
-use dom_query::{Document, NodeData, NodeRef};
+use std::collections::HashSet;
+
+use dom_query::{Document, NodeData, NodeId, NodeRef};
 
 use super::{Ctx, MARK_ATTR, SOURCEPOS_COMMENT, dom};
 
@@ -81,8 +83,10 @@ fn prefixed(value: &str) -> String {
     if lower.starts_with("user-content-") { lower } else { format!("user-content-{lower}") }
 }
 
-/// Runs the sanitizer over the whole fragment.
-pub(super) fn run(doc: &Document, ctx: &Ctx) {
+/// Runs the sanitizer over the whole fragment. Returns the raw HTML elements that were kept
+/// (text inside them, or directly under the root, came from raw HTML).
+pub(super) fn run(doc: &Document, ctx: &Ctx) -> HashSet<NodeId> {
+    let mut raw = HashSet::new();
     let tree_token = format!("{}-t", ctx.token);
     let marker_prefix = format!("{SOURCEPOS_COMMENT}{}:", ctx.token);
     let root = dom::root(doc);
@@ -117,11 +121,16 @@ pub(super) fn run(doc: &Document, ctx: &Ctx) {
                         n.remove_attr(MARK_ATTR);
                         strip_markers(&n);
                     }
-                    _ => raw_element(&n, &mut stack),
+                    _ => {
+                        if raw_element(&n, &mut stack) {
+                            raw.insert(n.id);
+                        }
+                    }
                 }
             }
         }
     }
+    raw
 }
 
 fn push_children<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) {
@@ -140,14 +149,15 @@ fn strip_markers(n: &NodeRef<'_>) {
     }
 }
 
-fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) {
+/// Sanitizes one raw element; returns whether it was kept.
+fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) -> bool {
     let (local, html_ns) = match n.qual_name_ref() {
         Some(q) => (q.local.to_string(), &*q.ns == HTML_NS),
-        None => return,
+        None => return false,
     };
     if !html_ns || !KEPT.contains(&local.as_str()) {
         unwrap_raw(n, stack);
-        return;
+        return false;
     }
     n.update(|t| {
         let Some(el) = t.as_element_mut() else { return };
@@ -182,49 +192,25 @@ fn raw_element<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) {
         });
     });
     push_children(n, stack);
+    true
 }
 
-const TABLE_PARTS: &[&str] = &["table", "thead", "tbody", "tfoot", "tr"];
-
-/// Unwraps a disallowed raw element. Inside table structure, non-table content is moved in
-/// front of the table, mirroring the HTML parser's foster parenting (GitHub hoists
-/// `<caption>` text this way, `S/probes/attrs.gfm.html` CASE-caption).
+/// Unwraps a disallowed raw element (content kept). Text left directly inside table
+/// structure (e.g. from `<caption>`) is foster-parented by the browser when the output is
+/// parsed, exactly as github.com's own re-serialized HTML is (`S/probes/attrs` CASE-caption).
 fn unwrap_raw<'a>(n: &NodeRef<'a>, stack: &mut Vec<NodeRef<'a>>) {
-    let in_table = n
-        .parent()
-        .and_then(|p| dom::name(&p))
-        .is_some_and(|p| TABLE_PARTS.contains(&&*p));
     let template = n.element_ref().and_then(|e| e.template_contents);
     let mut children = Vec::new();
     if let Some(t) = template {
         children.extend(NodeRef::new(t, n.tree).children());
     }
     children.extend(n.children());
-    let table = if in_table {
-        let mut cur = n.parent();
-        while let Some(p) = cur {
-            if p.has_name("table") {
-                break;
-            }
-            cur = p.parent();
-        }
-        cur
-    } else {
-        None
-    };
     for c in &children {
-        let is_table_part = dom::name(c).is_some_and(|nm| {
-            matches!(&*nm, "tr" | "td" | "th" | "thead" | "tbody" | "tfoot" | "table")
-        });
-        match &table {
-            Some(t) if !is_table_part => t.insert_before(c),
-            _ => n.insert_before(c),
-        }
+        n.insert_before(c);
     }
     n.remove_from_parent();
-    let mut rev = children;
-    rev.reverse();
-    stack.extend(rev);
+    children.reverse();
+    stack.extend(children);
 }
 
 #[cfg(test)]
@@ -290,10 +276,10 @@ mod tests {
     }
 
     #[test]
-    fn caption_text_is_hoisted() {
+    fn caption_is_unwrapped() {
         assert_eq!(
             clean("<table><caption>cap</caption><tbody><tr><td>x</td></tr></tbody></table>"),
-            "cap<table><tbody><tr><td>x</td></tr></tbody></table>"
+            "<table>cap<tbody><tr><td>x</td></tr></tbody></table>"
         );
     }
 

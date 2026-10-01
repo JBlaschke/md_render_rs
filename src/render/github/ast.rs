@@ -107,10 +107,30 @@ pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>, ctx: &C
 // ------------------------------------------------------------------------------------------
 // tagfilter (GH §8.11)
 
+/// Raw tags renamed before HTML parsing: github.com's HTML parser predates the rule that
+/// `<dialog>` / `<search>` close an open `<p>`; both are removed by the sanitizer anyway, so
+/// an unknown name reproduces GitHub's tree (`S/probes/tags.gfm.html` T30, T101).
+const LEGACY_INLINE: [&str; 2] = ["dialog", "search"];
+
 const TAGFILTER: [&str; 9] =
     ["title", "textarea", "style", "xmp", "iframe", "noembed", "noframes", "script", "plaintext"];
 
-/// Escapes the `<` of every filtered tag (any case); `None` when nothing matched.
+fn tag_at(b: &[u8], j: usize, names: &[&str]) -> bool {
+    names.iter().any(|t| {
+        let end = j + t.len();
+        end <= b.len()
+            && b[j..end].eq_ignore_ascii_case(t.as_bytes())
+            && match b.get(end) {
+                None => false,
+                Some(&c) => {
+                    c.is_ascii_whitespace() || c == b'>' || (c == b'/' && b.get(end + 1) == Some(&b'>'))
+                }
+            }
+    })
+}
+
+/// Escapes the `<` of every filtered tag (any case) and renames [`LEGACY_INLINE`] tags;
+/// `None` when nothing matched.
 fn tagfilter(literal: &str) -> Option<String> {
     let b = literal.as_bytes();
     let mut out: Option<String> = None;
@@ -120,23 +140,18 @@ fn tagfilter(literal: &str) -> Option<String> {
         if b.get(j) == Some(&b'/') {
             j += 1;
         }
-        let hit = TAGFILTER.iter().any(|t| {
-            let end = j + t.len();
-            end <= b.len()
-                && b[j..end].eq_ignore_ascii_case(t.as_bytes())
-                && match b.get(end) {
-                    None => false,
-                    Some(&c) => {
-                        c.is_ascii_whitespace()
-                            || c == b'>'
-                            || (c == b'/' && b.get(end + 1) == Some(&b'>'))
-                    }
-                }
-        });
-        if hit {
-            let s = out.get_or_insert_with(|| String::with_capacity(literal.len() + 8));
-            s.push_str(&literal[last..i]);
-            s.push_str("&lt;");
+        let replacement = if tag_at(b, j, &TAGFILTER) {
+            "&lt;"
+        } else if tag_at(b, j, &LEGACY_INLINE) {
+            if j == i + 1 { "<mdr-legacy-" } else { "</mdr-legacy-" }
+        } else {
+            continue;
+        };
+        let s = out.get_or_insert_with(|| String::with_capacity(literal.len() + 16));
+        s.push_str(&literal[last..i]);
+        s.push_str(replacement);
+        last = j;
+        if replacement == "&lt;" {
             last = i + 1;
         }
     }
@@ -254,8 +269,15 @@ pub(super) fn math_html(ctx: &Ctx, tex: &str, delim: &str, display: bool) -> Str
     s
 }
 
-/// A paragraph consisting only of `$$…$$` (single or multi-line) is display math.
+/// A paragraph consisting only of `$$…$$` (single or multi-line) is display math — except
+/// inside list items, where github.com applies the inline rules (`S/pages/atapas_*`).
 fn display_math<'a>(arena: &'a Arena<'a>, para: &'a AstNode<'a>, ctx: &Ctx, info: &mut AstInfo) {
+    if para
+        .ancestors()
+        .any(|a| matches!(a.data().value, NodeValue::Item(_) | NodeValue::TaskItem(_)))
+    {
+        return;
+    }
     let mut text = String::new();
     for child in para.children() {
         match child.data().value {
@@ -391,6 +413,7 @@ mod tests {
         assert_eq!(tagfilter("<scripts>"), None);
         assert_eq!(tagfilter("<div>ok</div>"), None);
         assert_eq!(tagfilter("<title"), None);
+        assert_eq!(tagfilter("a <dialog>b</DIALOG>").as_deref(), Some("a <mdr-legacy-dialog>b</mdr-legacy-DIALOG>"));
     }
 
     #[test]

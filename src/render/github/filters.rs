@@ -70,7 +70,10 @@ pub(super) fn tables(doc: &Document, ctx: &Ctx) {
         if ctx.comment && !table.has_attr("role") {
             table.set_attr("role", "table");
         }
-        if table.parent().is_some_and(|p| p.has_name("markdown-accessiblity-table")) {
+        // Only outermost tables are wrapped (`S/pages/lifeparticle_*`: nested raw tables).
+        if table.parent().is_some_and(|p| p.has_name("markdown-accessiblity-table"))
+            || dom::has_ancestor(&table, |a| a.has_name("table"))
+        {
             continue;
         }
         let wrapper = doc.tree.new_element("markdown-accessiblity-table");
@@ -122,17 +125,45 @@ fn would_camo(url: &str) -> bool {
     })
 }
 
+/// `https://github.com/O/R/blob/REF/path` image URLs are served from `/raw/` (GH §2.3).
+fn blob_to_raw(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let mut parts = rest.splitn(4, '/');
+    let (owner, repo, kind, tail) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    (kind == "blob" && !owner.is_empty() && !repo.is_empty())
+        .then(|| format!("https://github.com/{owner}/{repo}/raw/{tail}"))
+}
+
+/// GitHub user-attachment URLs (`/user-attachments/assets/<uuid>`, `/O/R/assets/<n>/<uuid>`).
+fn is_attachment(url: &str) -> bool {
+    url.strip_prefix("https://github.com/").is_some_and(|rest| {
+        rest.starts_with("user-attachments/assets/") || rest.split('/').nth(2) == Some("assets")
+    })
+}
+
 pub(super) fn images(doc: &Document) {
+    let root = dom::root(doc);
+    for source in dom::elements_named(doc, "source") {
+        if let Some(set) = source.attr("srcset").map(|s| s.to_string()) {
+            if let Some(r) = blob_to_raw(&set) {
+                source.set_attr("srcset", &r);
+            }
+        }
+    }
     for img in dom::elements_named(doc, "img") {
         if img.has_class("emoji") {
             continue;
         }
+        let mut href = None;
         if let Some(src) = img.attr("src").map(|s| s.to_string()) {
             if !url_allowed(&src, &["http", "https"]) {
                 img.remove_attr("src");
             } else if src.starts_with("//") {
                 // camo cannot proxy protocol-relative URLs; GitHub empties them.
                 img.set_attr("src", "");
+            } else if let Some(r) = blob_to_raw(&src) {
+                img.set_attr("src", &r);
+                href = Some(src);
             }
         }
         if dom::has_ancestor(&img, |a| a.has_name("picture")) {
@@ -158,13 +189,21 @@ pub(super) fn images(doc: &Document) {
         if dom::has_ancestor(&img, |a| a.has_name("a")) {
             continue;
         }
-        let src = img.attr("src").map(|s| s.to_string()).unwrap_or_default();
+        let src = href.or_else(|| img.attr("src").map(|s| s.to_string())).unwrap_or_default();
         let a = doc.tree.new_element("a");
         a.set_attr("target", "_blank");
         let nofollow = would_camo(&src) || is_external(&src);
         a.set_attr("rel", if nofollow { "noopener noreferrer nofollow" } else { "noopener noreferrer" });
         a.set_attr("href", &src);
+        let top_level = img.parent().is_some_and(|p| p.id == root.id);
         dom::wrap(&img, &a);
+        // A raw `<img>` that is a whole HTML block ends up in a paragraph on github.com
+        // (`S/pages/lifeparticle_*` after `<!-- … -->`, `S/probes/attrs` CASE-img), except
+        // user attachments, which GitHub turns into its own media markup.
+        if top_level && !is_attachment(&src) {
+            let p = doc.tree.new_element("p");
+            dom::wrap(&a, &p);
+        }
     }
     for picture in dom::elements_named(doc, "picture") {
         if picture.parent().is_some_and(|p| p.has_name("themed-picture")) {

@@ -11,6 +11,7 @@
 //! 6. top-level `data-sourcepos` bookkeeping and serialization.
 
 mod ast;
+mod autolink;
 mod code;
 mod dom;
 mod emoji;
@@ -145,8 +146,9 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
 
     // 4.–5. DOM stage.
     let doc = Document::fragment(html);
-    sanitize::run(&doc, &ctx);
+    let raw = sanitize::run(&doc, &ctx);
     headings::run(&doc, &ctx);
+    autolink::run(&doc, &raw);
     let mut enrichments = state.enrichments;
     let mut feats = (false, false);
     code::raw_pre(&doc, &ctx, &mut enrichments, &mut feats);

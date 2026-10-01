@@ -30,7 +30,10 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
     // RAW / TOKENS drop exactly one final newline (GH §7.1).
     let raw = literal.strip_suffix('\n').unwrap_or(literal);
     if lang == "math" {
-        let mut html = math_html(ctx, raw, "$$", true);
+        // github.com doubles a backslash that ends a line inside ```` ```math ```` (`\\` at
+        // the end of a matrix row becomes `\\\`; `S/ctx/aaddrick_*`, `S/ctx/joseph_*`).
+        let tex = raw.replace("\\\n", "\\\\\n");
+        let mut html = math_html(ctx, &tex, "$$", true);
         insert_attrs(&mut html, "<math-renderer", sp);
         return Block { html, math: true, ..Block::default() };
     }
