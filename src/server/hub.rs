@@ -181,16 +181,117 @@ pub struct Dep {
     pub kind: DepKind,
 }
 
+/// What to watch for the document itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DocWatch {
+    /// Directories to watch (canonical).
+    dirs: BTreeSet<PathBuf>,
+    /// Paths whose events re-check the document: the directory entry it is requested by
+    /// and, for a symlinked document, the file the link points to.
+    files: BTreeSet<PathBuf>,
+    /// The canonical path the document will have once its missing directories exist; an
+    /// event on any of its ancestors re-checks the document.
+    pending: Option<PathBuf>,
+}
+
+impl DocWatch {
+    /// The watch for the document at `path` (absolute, below `root`): the directory of its
+    /// entry and of its symlink target, or, while its directory does not exist, the nearest
+    /// existing ancestor directory inside the root.
+    fn of(path: &Path, root: &Path, follow_symlinks: bool) -> DocWatch {
+        let mut w = DocWatch::default();
+        let contained = |dir: &Path| paths::check_contained(root, dir, follow_symlinks).is_ok();
+        for (dir, file) in [paths::entry_watch_target(path), paths::watch_target(path)]
+            .into_iter()
+            .flatten()
+        {
+            if contained(&dir) {
+                w.dirs.insert(dir);
+                w.files.insert(file);
+            }
+        }
+        if w.dirs.is_empty()
+            && let Some((dir, file)) = paths::ancestor_watch_target(root, path, follow_symlinks)
+        {
+            w.dirs.insert(dir);
+            w.pending = Some(file);
+        }
+        w
+    }
+
+    fn matches(&self, p: &Path) -> bool {
+        // A directory-level event (rescan, a watched directory deleted) re-checks too; the
+        // hash makes that cheap.
+        self.files.contains(p)
+            || self.dirs.contains(p)
+            || self.pending.as_ref().is_some_and(|f| f.starts_with(p))
+    }
+}
+
 #[derive(Default)]
 struct Tracking {
     subscribers: usize,
-    /// Watched directory of the document itself (holds one watcher reference).
-    doc_dir: Option<PathBuf>,
-    doc_file: Option<PathBuf>,
+    /// What is watched for the document itself (one watcher reference per directory).
+    doc: DocWatch,
     /// Latest dependencies (always tracked; watched only while subscribed).
     deps: Vec<Dep>,
     /// Directories this document holds a watcher reference on for its dependencies.
     dep_dirs: BTreeSet<PathBuf>,
+}
+
+impl Tracking {
+    /// Switch the document's watch to `want`, keeping the references balanced. Returns
+    /// whether a directory started being watched. When a directory cannot be watched the
+    /// previous ones are kept, so the next change still re-checks (and retries).
+    fn set_doc_watch(&mut self, want: DocWatch, w: &FsWatcher) -> bool {
+        let mut added = false;
+        let mut failed = false;
+        let mut held = BTreeSet::new();
+        for dir in &want.dirs {
+            if self.doc.dirs.contains(dir) {
+                held.insert(dir.clone());
+                continue;
+            }
+            match w.add(dir) {
+                Ok(()) => {
+                    held.insert(dir.clone());
+                    added = true;
+                }
+                Err(e) => {
+                    tracing::warn!("cannot watch {}: {e}", dir.display());
+                    failed = true;
+                }
+            }
+        }
+        for dir in &self.doc.dirs {
+            if held.contains(dir) {
+                continue;
+            }
+            if failed {
+                held.insert(dir.clone());
+            } else {
+                w.remove(dir);
+            }
+        }
+        self.doc = DocWatch { dirs: held, ..want };
+        added
+    }
+
+    /// Watch exactly the directories of the current dependencies.
+    fn sync_dep_dirs(&mut self, w: &FsWatcher) {
+        let wanted: BTreeSet<PathBuf> = self.deps.iter().map(|d| d.dir.clone()).collect();
+        let held = std::mem::take(&mut self.dep_dirs);
+        let mut now = BTreeSet::new();
+        for dir in &wanted {
+            if held.contains(dir) || w.add(dir).is_ok() {
+                now.insert(dir.clone());
+            }
+        }
+        for dir in held.difference(&now) {
+            w.remove(dir);
+        }
+        self.dep_dirs = now;
+    }
 }
 
 /// Live state of one document.
@@ -280,28 +381,18 @@ impl DocEntry {
         let _ = self.events.send(ev);
     }
 
-    fn add_subscriber(&self, watcher: Option<&FsWatcher>) {
+    fn add_subscriber(&self, ctx: &RenderCtx) {
         let mut t = self.lock();
         t.subscribers += 1;
         if t.subscribers > 1 {
             return;
         }
-        let Some(w) = watcher else { return };
-        if let Some((dir, file)) = paths::watch_target(&self.path) {
-            match w.add(&dir) {
-                Ok(()) => {
-                    t.doc_dir = Some(dir);
-                    t.doc_file = Some(file);
-                }
-                Err(e) => tracing::warn!("cannot watch {}: {e}", dir.display()),
-            }
-        }
-        let wanted: BTreeSet<PathBuf> = t.deps.iter().map(|d| d.dir.clone()).collect();
-        for dir in wanted {
-            if w.add(&dir).is_ok() {
-                t.dep_dirs.insert(dir);
-            }
-        }
+        let Some(w) = ctx.watcher.as_deref() else {
+            return;
+        };
+        let want = DocWatch::of(&self.path, &ctx.root, ctx.follow_symlinks);
+        t.set_doc_watch(want, w);
+        t.sync_dep_dirs(w);
     }
 
     fn remove_subscriber(&self, watcher: Option<&FsWatcher>) {
@@ -310,14 +401,31 @@ impl DocEntry {
         if t.subscribers > 0 {
             return;
         }
-        t.doc_file = None;
-        let doc_dir = t.doc_dir.take();
+        let doc = std::mem::take(&mut t.doc);
         let dep_dirs = std::mem::take(&mut t.dep_dirs);
         if let Some(w) = watcher {
-            for dir in doc_dir.iter().chain(dep_dirs.iter()) {
+            for dir in doc.dirs.iter().chain(dep_dirs.iter()) {
                 w.remove(dir);
             }
         }
+    }
+
+    /// Re-evaluate the document's own watch while subscribed: its directory may have been
+    /// created (a page opened before `newdir/` existed) or deleted, or a symlinked document
+    /// re-pointed. Returns whether a new directory started being watched.
+    fn refresh_doc_watch(&self, ctx: &RenderCtx) -> bool {
+        let Some(w) = ctx.watcher.as_deref() else {
+            return false;
+        };
+        if self.subscribers() == 0 {
+            return false;
+        }
+        let want = DocWatch::of(&self.path, &ctx.root, ctx.follow_symlinks);
+        let mut t = self.lock();
+        if t.subscribers == 0 || t.doc == want {
+            return false;
+        }
+        t.set_doc_watch(want, w)
     }
 
     /// Replace the dependency list, updating dependency watches while subscribed.
@@ -327,19 +435,9 @@ impl DocEntry {
         if t.subscribers == 0 {
             return;
         }
-        let Some(w) = watcher else { return };
-        let wanted: BTreeSet<PathBuf> = t.deps.iter().map(|d| d.dir.clone()).collect();
-        let held = std::mem::take(&mut t.dep_dirs);
-        let mut now = BTreeSet::new();
-        for dir in &wanted {
-            if held.contains(dir) || w.add(dir).is_ok() {
-                now.insert(dir.clone());
-            }
+        if let Some(w) = watcher {
+            t.sync_dep_dirs(w);
         }
-        for dir in held.difference(&wanted) {
-            w.remove(dir);
-        }
-        t.dep_dirs = now;
     }
 
     /// Match changed paths: (re-check the document?, changed dependency URLs).
@@ -348,11 +446,9 @@ impl DocEntry {
         if t.subscribers == 0 {
             return (false, Vec::new());
         }
-        // A directory-level event (rescan) re-checks the document; the hash makes it cheap.
-        // So does a change of a file the source includes.
+        // A change of a file the source includes re-renders as well.
         let doc = changed.iter().any(|p| {
-            t.doc_file.as_ref() == Some(p)
-                || t.doc_dir.as_ref() == Some(p)
+            t.doc.matches(p)
                 || t.deps
                     .iter()
                     .any(|d| d.kind == DepKind::Source && (d.file == *p || d.dir == *p))
@@ -437,15 +533,9 @@ impl Hub {
     /// Subscribe to live updates of `key`.
     pub fn subscribe(&self, key: &str) -> Subscription {
         let entry = self.entry(key);
-        entry.add_subscriber(self.ctx.watcher.as_deref());
+        entry.add_subscriber(&self.ctx);
         entry.trigger();
-        if self.ctx.watcher.as_ref().is_some_and(|w| !w.is_polling()) {
-            let e = entry.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(RECHECK_AFTER_WATCH).await;
-                e.trigger();
-            });
-        }
+        recheck_after_watch(&entry, &self.ctx);
         Subscription {
             entry,
             watcher: self.ctx.watcher.clone(),
@@ -493,6 +583,18 @@ impl Hub {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.docs.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+/// FSEvents may miss changes made right after a directory starts being watched (CR §5):
+/// re-check the document once more a little later.
+fn recheck_after_watch(entry: &Arc<DocEntry>, ctx: &RenderCtx) {
+    if ctx.watcher.as_ref().is_some_and(|w| !w.is_polling()) {
+        let e = entry.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RECHECK_AFTER_WATCH).await;
+            e.trigger();
+        });
     }
 }
 
@@ -666,6 +768,9 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
         }
         if entry.retired.load(Ordering::SeqCst) {
             break;
+        }
+        if entry.refresh_doc_watch(&ctx) {
+            recheck_after_watch(&entry, &ctx);
         }
         match process(&entry, &ctx, stale_drops >= MAX_STALE_DROPS).await {
             Outcome::Done => stale_drops = 0,

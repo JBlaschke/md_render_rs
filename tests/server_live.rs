@@ -353,6 +353,49 @@ async fn graceful_shutdown_ends_every_stream() {
     assert!(tokio::net::TcpStream::connect(s.addr).await.is_err());
 }
 
+/// LIVE-4: a document whose directory does not exist yet is watched through its nearest
+/// existing ancestor, so creating the directory and the file pushes the content, and later
+/// saves keep arriving (also after the directory is deleted and created again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_in_a_directory_created_later() {
+    let f = Fixture::new();
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("newdir/sub/new.md").await;
+    std::fs::create_dir_all(s.path("newdir/sub")).unwrap();
+    write(&s.path("newdir/sub/new.md"), "hello");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("hello"))
+    })
+    .await;
+    write_atomic(&s.path("newdir/sub/new.md"), "hello again");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("hello again"))
+    })
+    .await;
+
+    // A second tab subscribing now gets the live updates too.
+    let (mut second, _) = s.subscribe("newdir/sub/new.md").await;
+    write_atomic(&s.path("newdir/sub/new.md"), "third save");
+    for sse in [&mut sse, &mut second] {
+        sse.wait_until("content", |c| {
+            c["html"].as_str().is_some_and(|h| h.contains("third save"))
+        })
+        .await;
+    }
+
+    // The directory goes away and comes back.
+    std::fs::remove_dir_all(s.path("newdir")).unwrap();
+    sse.wait_for("deleted").await;
+    std::fs::create_dir_all(s.path("newdir/sub")).unwrap();
+    write(&s.path("newdir/sub/new.md"), "reborn");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("reborn"))
+    })
+    .await;
+}
+
 /// LIVE-1 / Q-INCLUDE-1: editing a GitLab `::include`d file pushes new content, and a page
 /// load shows it too (the dedup hash covers the included files).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -452,10 +452,46 @@ pub fn watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
     {
         return Some((parent.to_path_buf(), canon));
     }
+    entry_watch_target(path)
+}
+
+/// The directory that holds the directory entry `path` and the path events for that entry
+/// carry, without resolving a symlink at `path` itself (re-pointing a symlinked document
+/// changes this entry, not the old target).
+pub fn entry_watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let name = path.file_name()?;
     let parent = std::fs::canonicalize(path.parent()?).ok()?;
     let file = parent.join(name);
     Some((parent, file))
+}
+
+/// Where to wait for a file whose directory does not exist yet: the nearest existing
+/// ancestor directory (canonical, inside `root` per [`check_contained`]) and the canonical
+/// path the file will have once the missing directories are created. None when an
+/// ancestor is not a directory (the file can never appear) or escapes the root.
+pub fn ancestor_watch_target(
+    root: &Path,
+    path: &Path,
+    follow_symlinks: bool,
+) -> Option<(PathBuf, PathBuf)> {
+    let mut missing = vec![path.file_name()?];
+    let mut dir = path.parent()?;
+    loop {
+        match std::fs::canonicalize(dir) {
+            Ok(canon) => {
+                if !canon.is_dir() || check_contained(root, &canon, follow_symlinks).is_err() {
+                    return None;
+                }
+                let mut file = canon.clone();
+                file.extend(missing.iter().rev());
+                return Some((canon, file));
+            }
+            Err(_) => {
+                missing.push(dir.file_name()?);
+                dir = dir.parent()?;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -734,5 +770,32 @@ mod tests {
         let (_, f) = watch_target(&dir.path().join("x.md")).unwrap();
         assert_eq!(f, canon.join("x.md"));
         assert!(watch_target(&dir.path().join("no/such/dir.md")).is_none());
+    }
+
+    #[test]
+    fn ancestor_watch_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("a")).unwrap();
+        assert_eq!(
+            ancestor_watch_target(&root, &dir.path().join("a/b/c/x.md"), false),
+            Some((root.join("a"), root.join("a/b/c/x.md")))
+        );
+        assert_eq!(
+            ancestor_watch_target(&root, &root.join("new/x.md"), false),
+            Some((root.clone(), root.join("new/x.md")))
+        );
+        // A file where a directory would have to be: the path can never exist.
+        std::fs::write(root.join("f"), "x").unwrap();
+        assert_eq!(
+            ancestor_watch_target(&root, &root.join("f/x.md"), false),
+            None
+        );
+        // Outside the root.
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(
+            ancestor_watch_target(&root, &other.path().join("n/x.md"), false),
+            None
+        );
     }
 }
