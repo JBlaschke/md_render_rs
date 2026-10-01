@@ -51,6 +51,7 @@ Environment:
     about = ABOUT,
     long_about = LONG_ABOUT,
     after_help = AFTER_HELP,
+    override_usage = "md-render [OPTIONS] [PATH] [ADDRESS]\n       md-render [OPTIONS] <COMMAND>",
     disable_help_subcommand = true,
     max_term_width = 100
 )]
@@ -245,8 +246,10 @@ pub enum Command {
     #[command(
         long_about = "Download the site stylesheets, fonts and client libraries into the style \
                       bundle.\n\nSelect the flavors with the global --flavor github|gitlab|all \
-                      (default: all). Re-vendoring one flavor keeps the other one in the bundle; \
-                      running servers pick up the new styles automatically."
+                      (default: all; MD_RENDER_FLAVOR does not apply here). Re-vendoring one \
+                      flavor keeps the other one in the bundle; running servers pick up the new \
+                      styles automatically.\n\nThe bundle is written to -o FILE, else --styles / \
+                      MD_RENDER_STYLES, else the cache directory (see `md-render cache path`)."
     )]
     Vendor(VendorArgs),
 

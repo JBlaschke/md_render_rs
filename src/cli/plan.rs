@@ -305,22 +305,21 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
 
     let quiet = g.quiet;
     let cwd = host.cwd().map_err(|e| runtime(format!("cannot determine the current directory: {e}")))?;
-    let flavor_arg = match g.flavor {
-        Some(f) => Some(f),
-        None => env_flavor(host)?,
-    };
-    let bundle = bundle_path(g, host, &cwd)?;
+    let bundle = bundle_path(g, host, &cwd);
 
     let plan = match &cli.command {
         Some(cmd) => {
             reject_serve_args(&cli.serve, cmd)?;
             match cmd {
                 Command::Export(a) => {
-                    let render = render_plan(g, flavor_arg, &bundle.0, &cwd, true, &mut warnings)?;
+                    let flavor = render_flavor(g, host)?;
+                    let render = render_plan(g, flavor, &bundle.0, &cwd, true, &mut warnings)?;
                     let inline = !(a.no_inline || cli.serve.no_inline);
                     Plan::Export(export_plan(a, inline, render, host, &cwd, &mut warnings)?)
                 }
-                Command::Vendor(a) => Plan::Vendor(vendor_plan(a, flavor_arg, bundle, &cwd, quiet)?),
+                // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the
+                // rendering flavor, while one bundle holds both (D9).
+                Command::Vendor(a) => Plan::Vendor(vendor_plan(a, g.flavor, bundle, &cwd, quiet)?),
                 Command::Cache(c) => match c.action {
                     CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
                     CacheAction::Path => Plan::CachePath(bundle.0),
@@ -331,7 +330,8 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
         None if cli.serve.clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
         None if cli.serve.export => {
             reject_with_export(&cli.serve)?;
-            let render = render_plan(g, flavor_arg, &bundle.0, &cwd, true, &mut warnings)?;
+            let flavor = render_flavor(g, host)?;
+            let render = render_plan(g, flavor, &bundle.0, &cwd, true, &mut warnings)?;
             // grip: no address resolution in export mode; the 2nd positional is the output.
             let args = ExportArgs {
                 path: cli.serve.path.clone(),
@@ -348,7 +348,8 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
                     "'--no-inline' only applies to exports (md-render export --no-inline, or --export)",
                 ));
             }
-            let render = render_plan(g, flavor_arg, &bundle.0, &cwd, false, &mut warnings)?;
+            let flavor = render_flavor(g, host)?;
+            let render = render_plan(g, flavor, &bundle.0, &cwd, false, &mut warnings)?;
             Plan::Serve(serve_plan(&cli.serve, render, host, &cwd, &mut warnings)?)
         }
     };
@@ -366,30 +367,42 @@ fn env_string(host: &dyn Host, name: &str) -> Result<Option<String>, CliError> {
     }
 }
 
-fn env_flavor(host: &dyn Host) -> Result<Option<FlavorArg>, CliError> {
-    let Some(v) = env_string(host, "MD_RENDER_FLAVOR")? else { return Ok(None) };
-    FlavorArg::from_str(v.trim(), true).map(Some).map_err(|_| {
-        usage(
+/// The rendering flavor: `--flavor` > `MD_RENDER_FLAVOR` > github. `all` is rejected (it only
+/// makes sense for `vendor`).
+fn render_flavor(g: &GlobalArgs, host: &dyn Host) -> Result<Flavor, CliError> {
+    match g.flavor {
+        Some(FlavorArg::Github) => Ok(Flavor::Github),
+        Some(FlavorArg::Gitlab) => Ok(Flavor::Gitlab),
+        Some(FlavorArg::All) => Err(usage(
             ErrorKind::InvalidValue,
-            format!("invalid value '{v}' in MD_RENDER_FLAVOR (expected github or gitlab)"),
-        )
-    })
+            "'--flavor all' is only valid for 'md-render vendor'; choose github or gitlab",
+        )),
+        None => {
+            let Some(v) = env_string(host, "MD_RENDER_FLAVOR")? else { return Ok(Flavor::Github) };
+            Flavor::from_str(v.trim(), true).map_err(|_| {
+                usage(
+                    ErrorKind::InvalidValue,
+                    format!("invalid value '{v}' in MD_RENDER_FLAVOR (expected github or gitlab)"),
+                )
+            })
+        }
+    }
 }
 
 /// `--styles` > `MD_RENDER_STYLES` > `<cache dir>/md-render/styles.tar.gz` (D9).
-fn bundle_path(g: &GlobalArgs, host: &dyn Host, cwd: &Path) -> Result<(PathBuf, BundleSource), CliError> {
+fn bundle_path(g: &GlobalArgs, host: &dyn Host, cwd: &Path) -> (PathBuf, BundleSource) {
     if let Some(p) = &g.styles {
-        return Ok((absolutize(cwd, p), BundleSource::Flag));
+        return (absolutize(cwd, p), BundleSource::Flag);
     }
     if let Some(v) = host.var("MD_RENDER_STYLES").filter(|v| !v.is_empty()) {
-        return Ok((absolutize(cwd, Path::new(&v)), BundleSource::Env));
+        return (absolutize(cwd, Path::new(&v)), BundleSource::Env);
     }
     let path = match host.cache_dir() {
         Some(dir) => dir.join(BUNDLE_FILE_NAME),
         // Same last resort as `styles::default_bundle_path`.
         None => cwd.join("md-render-styles.tar.gz"),
     };
-    Ok((path, BundleSource::Default))
+    (path, BundleSource::Default)
 }
 
 fn subcommand_name(cmd: &Command) -> &'static str {
@@ -463,22 +476,12 @@ fn reject_with_export(s: &ServeArgs) -> Result<(), CliError> {
 
 fn render_plan(
     g: &GlobalArgs,
-    flavor_arg: Option<FlavorArg>,
+    flavor: Flavor,
     bundle_path: &Path,
     cwd: &Path,
     for_export: bool,
     warnings: &mut Vec<String>,
 ) -> Result<RenderPlan, CliError> {
-    let flavor = match flavor_arg {
-        None | Some(FlavorArg::Github) => Flavor::Github,
-        Some(FlavorArg::Gitlab) => Flavor::Gitlab,
-        Some(FlavorArg::All) => {
-            return Err(usage(
-                ErrorKind::InvalidValue,
-                "'--flavor all' is only valid for 'md-render vendor'; choose github or gitlab",
-            ));
-        }
-    };
     let mode = match (g.mode, g.user_content) {
         (Some(Mode::Readme), true) => {
             return Err(usage(
@@ -611,10 +614,23 @@ fn invalid_address(addr: &str) -> CliError {
     let mut msg = format!(
         "invalid address '{addr}': expected <host>[:<port>], <port>, or [<ipv6>][:<port>]"
     );
-    if addr.matches(':').count() > 1 && !addr.starts_with('[') {
-        msg.push_str(&format!(" (put IPv6 addresses in brackets, e.g. [{addr}]:{DEFAULT_PORT})"));
+    if let Some(fixed) = bracketed_ipv6_suggestion(addr) {
+        msg.push_str(&format!(" (put IPv6 addresses in brackets: {fixed})"));
     }
     usage(ErrorKind::ValueValidation, msg)
+}
+
+/// `::1` → `[::1]:6419`, `fe80::1:8080` → `[fe80::1]:8080`; `None` if `addr` is no bare IPv6.
+fn bracketed_ipv6_suggestion(addr: &str) -> Option<String> {
+    use std::net::Ipv6Addr;
+    if addr.starts_with('[') {
+        return None;
+    }
+    if addr.parse::<Ipv6Addr>().is_ok() {
+        return Some(format!("[{addr}]:{DEFAULT_PORT}"));
+    }
+    let (ip, port) = addr.rsplit_once(':')?;
+    (ip.parse::<Ipv6Addr>().is_ok() && address::valid_port(port)).then(|| format!("[{ip}]:{port}"))
 }
 
 /// GRIP §2.3 + C10: positionals → (path, host, port); invalid addresses exit 2.
@@ -703,10 +719,12 @@ fn canonical_root(cwd: &Path, root: &Path) -> Result<PathBuf, CliError> {
 fn not_found(path: &Path) -> CliError {
     let shown = path.display().to_string();
     let mut msg = format!("File not found: {shown}");
-    if address::split_address(&shown).is_some_and(|hp| hp.host.is_some() && hp.port.is_none())
-        && !shown.contains('/')
-        && !shown.contains('.') | shown.chars().all(|c| c.is_ascii_digit() || c == '.')
-    {
+    let host_only =
+        address::split_address(&shown).is_some_and(|hp| hp.host.is_some() && hp.port.is_none());
+    // `localhost`, `myhost`, `0.0.0.0`, `[::1]` — but not `notes.md` or `docs/x`.
+    let looks_like_host = !shown.contains('/')
+        && (!shown.contains('.') || shown.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    if host_only && looks_like_host {
         msg.push_str(&format!(
             " (to listen on host '{shown}' give both a path and an address, e.g. `md-render . {shown}`)"
         ));

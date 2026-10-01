@@ -56,9 +56,11 @@ pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
 
 /// Install the global tracing subscriber (stderr). Safe to call more than once.
 fn init_logging(quiet: bool, verbose: u8) {
+    use std::io::IsTerminal as _;
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_filter(quiet, verbose)));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(io::stderr);
+    let ansi = io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(io::stderr).with_ansi(ansi);
     // A previously installed subscriber (tests, embedding) is kept.
     let _ = if verbose == 0 {
         builder.without_time().with_target(false).try_init()
