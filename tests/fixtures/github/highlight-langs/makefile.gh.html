@@ -1,0 +1,24 @@
+<div class="highlight highlight-source-makefile" dir="auto"><pre class="notranslate"><span class="pl-c1">.PHONY</span>: all clean test
+<span class="pl-smi">CC</span> ?= gcc
+<span class="pl-smi">CFLAGS</span> := -O2 -Wall
+<span class="pl-smi">SRCS</span> = <span class="pl-s">$(<span class="pl-c1">wildcard</span> src/<span class="pl-c1">*</span>.c)</span>
+<span class="pl-smi">OBJS</span> = <span class="pl-s">$(<span class="pl-smi">SRCS:.c=.o</span>)</span>
+
+<span class="pl-en">all</span>: app
+
+<span class="pl-en">app</span>: <span class="pl-s">$(<span class="pl-smi">OBJS</span>)</span>
+	<span class="pl-s">$(<span class="pl-smi">CC</span>)</span> <span class="pl-s">$(<span class="pl-smi">CFLAGS</span>)</span> -o <span class="pl-c1">$@</span> <span class="pl-c1">$^</span>
+
+<span class="pl-en"><span class="pl-c1">%</span>.o</span>: <span class="pl-c1">%</span>.c
+	<span class="pl-s">$(<span class="pl-smi">CC</span>)</span> <span class="pl-s">$(<span class="pl-smi">CFLAGS</span>)</span> -c <span class="pl-c1">$&lt;</span> -o <span class="pl-c1">$@</span>
+
+<span class="pl-en">test</span>: all
+	./app --test
+	@echo <span class="pl-s"><span class="pl-pds">"</span>done<span class="pl-pds">"</span></span>
+
+<span class="pl-k">ifeq</span> (<span class="pl-s">$(<span class="pl-smi">OS</span>)</span>,Windows_NT)
+  <span class="pl-smi">EXE</span> = .exe
+<span class="pl-k">endif</span>
+
+<span class="pl-en">clean</span>:
+	rm -f <span class="pl-s">$(<span class="pl-smi">OBJS</span>)</span> app  <span class="pl-c"><span class="pl-c">#</span> comment</span></pre></div>

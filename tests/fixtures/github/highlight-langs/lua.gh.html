@@ -1,0 +1,7 @@
+<div class="highlight highlight-source-lua" dir="auto"><pre class="notranslate"><span class="pl-k">local</span> <span class="pl-smi">M</span> <span class="pl-k">=</span> {}
+<span class="pl-k">function</span> <span class="pl-en">M</span>.<span class="pl-en">greet</span>(<span class="pl-smi">name</span>)
+  <span class="pl-k">if</span> <span class="pl-smi">name</span> <span class="pl-k">==</span> <span class="pl-c1">nil</span> <span class="pl-k">then</span> <span class="pl-k">return</span> <span class="pl-s"><span class="pl-pds">"</span>hi<span class="pl-pds">" </span></span><span class="pl-k">end</span>
+  <span class="pl-k">for</span> <span class="pl-smi">i</span> <span class="pl-k">=</span> <span class="pl-c1">1</span>, <span class="pl-c1">10</span> <span class="pl-k">do</span> <span class="pl-c1">print</span>(<span class="pl-smi">i</span>) <span class="pl-k">end</span>
+  <span class="pl-k">return</span> <span class="pl-c1">string.format</span>(<span class="pl-s"><span class="pl-pds">"</span>Hello %s<span class="pl-pds">"</span></span>, <span class="pl-smi">name</span>) <span class="pl-c"><span class="pl-c">--</span> comment</span>
+<span class="pl-k">end</span>
+<span class="pl-k">return</span> <span class="pl-smi">M</span></pre></div>

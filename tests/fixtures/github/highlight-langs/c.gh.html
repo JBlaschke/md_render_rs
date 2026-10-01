@@ -1,0 +1,25 @@
+<div class="highlight highlight-source-c" dir="auto"><pre class="notranslate"><span class="pl-k">#include</span> <span class="pl-s">&lt;stdio.h&gt;</span>
+<span class="pl-k">#include</span> <span class="pl-s">"local.h"</span>
+<span class="pl-k">#define</span> <span class="pl-en">MAX</span>(<span class="pl-s1">a</span>, <span class="pl-s1">b</span>) ((a) &gt; (b) ? (a) : (b))
+
+<span class="pl-k">typedef</span> <span class="pl-k">struct</span> <span class="pl-smi">node</span> {
+    <span class="pl-smi">int</span> <span class="pl-c1">value</span>;
+    <span class="pl-k">struct</span> <span class="pl-smi">node</span> <span class="pl-c1">*</span><span class="pl-c1">next</span>;
+} <span class="pl-smi">node_t</span>;
+
+<span class="pl-k">static</span> <span class="pl-k">const</span> <span class="pl-smi">char</span> <span class="pl-c1">*</span><span class="pl-s1">names</span>[] <span class="pl-c1">=</span> {<span class="pl-s">"a"</span>, <span class="pl-s">"b"</span>, <span class="pl-c1">NULL</span>};
+
+<span class="pl-smi">int</span> <span class="pl-en">main</span>(<span class="pl-smi">int</span> <span class="pl-s1">argc</span>, <span class="pl-smi">char</span> <span class="pl-c1">*</span><span class="pl-c1">*</span><span class="pl-s1">argv</span>) {
+    <span class="pl-smi">unsigned long</span> <span class="pl-s1">n</span> <span class="pl-c1">=</span> <span class="pl-c1">10UL</span>;
+    <span class="pl-smi">float</span> <span class="pl-s1">f</span> <span class="pl-c1">=</span> <span class="pl-c1">1.5f</span>;
+    <span class="pl-smi">node_t</span> <span class="pl-c1">*</span><span class="pl-s1">head</span> <span class="pl-c1">=</span> <span class="pl-en">malloc</span>(<span class="pl-k">sizeof</span>(<span class="pl-s1">node_t</span>));
+    <span class="pl-k">if</span> (<span class="pl-s1">head</span> <span class="pl-c1">==</span> <span class="pl-c1">NULL</span>) {
+        <span class="pl-en">fprintf</span>(<span class="pl-s1">stderr</span>, <span class="pl-s">"oom: %s\n"</span>, <span class="pl-s1">argv</span>[<span class="pl-c1">0</span>]);
+        <span class="pl-k">return</span> <span class="pl-c1">-1</span>;
+    }
+    <span class="pl-k">for</span> (<span class="pl-smi">int</span> <span class="pl-s1">i</span> <span class="pl-c1">=</span> <span class="pl-c1">0</span>; <span class="pl-s1">i</span> <span class="pl-c1">&lt;</span> <span class="pl-s1">argc</span>; <span class="pl-c1">++</span><span class="pl-s1">i</span>) {
+        <span class="pl-k">switch</span> (<span class="pl-s1">i</span>) { <span class="pl-k">case</span> <span class="pl-c1">0</span>: <span class="pl-k">break</span>; <span class="pl-k">default</span>: <span class="pl-k">continue</span>; }
+    }
+    <span class="pl-c">/* comment */</span>
+    <span class="pl-k">return</span> <span class="pl-en">MAX</span>(<span class="pl-s1">n</span>, <span class="pl-c1">0</span>) <span class="pl-c1">&amp;</span> <span class="pl-c1">0x0F</span>;
+}</pre></div>

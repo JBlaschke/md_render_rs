@@ -1,0 +1,20 @@
+<div class="highlight highlight-source-dockerfile" dir="auto"><pre class="notranslate"><span class="pl-c"><span class="pl-c">#</span> syntax=docker/dockerfile:1</span>
+<span class="pl-k">FROM</span> rust:1.80-slim AS build
+<span class="pl-k">ARG</span> VERSION=1.0
+<span class="pl-k">ENV</span> CARGO_HOME=/cargo \
+    PATH=<span class="pl-s">"/cargo/bin:$PATH"</span>
+<span class="pl-k">WORKDIR</span> /src
+<span class="pl-k">COPY</span> --from=deps /cargo /cargo
+<span class="pl-k">COPY</span> . .
+<span class="pl-k">RUN</span> apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+      ca-certificates \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+<span class="pl-k">RUN</span> cargo build --release
+
+<span class="pl-k">FROM</span> debian:bookworm-slim
+<span class="pl-k">LABEL</span> org.opencontainers.image.source=<span class="pl-s">"https://github.com/x/y"</span>
+<span class="pl-k">EXPOSE</span> 8080/tcp
+<span class="pl-k">USER</span> 1000:1000
+<span class="pl-k">HEALTHCHECK</span> CMD curl -f http://localhost:8080/ || exit 1
+<span class="pl-k">ENTRYPOINT</span> [<span class="pl-s">"/usr/local/bin/app"</span>]
+<span class="pl-k">CMD</span> [<span class="pl-s">"--port"</span>, <span class="pl-s">"8080"</span>]</pre></div>

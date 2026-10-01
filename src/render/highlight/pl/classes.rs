@@ -298,6 +298,9 @@ const JAVASCRIPT: &[(&str, Class)] = &[
     ("entity.other.inherited-class", Some("pl-v")),
     ("storage.type.function.arrow", Some("pl-c1")),
     ("keyword.operator.ternary", None),
+    // tree-sitter-javascript captures no `...` (spread and rest alike).
+    ("keyword.operator.spread", None),
+    ("keyword.operator.rest", None),
     ("meta.string", Some("pl-s")),
     ("meta.string string", None),
     ("string.regexp", Some("pl-pds")),
@@ -331,10 +334,15 @@ const TYPESCRIPT: &[(&str, Class)] = &[
     ("meta.embedded.line", None),
 ];
 
-/// JSX in TSX: tag names `pl-s1`, tag brackets and attribute names `pl-c1`.
+/// JSX in TSX (and in JavaScript containing JSX, which is tokenized with the TSX grammar): tag
+/// names `pl-s1` (components `pl-v`, [`JSX_BY_TEXT`]), `<` and `>` `pl-c1` (tree-sitter captures
+/// them as operators), `</` and `/>` `pl-kos`, attribute names `pl-c1`, text and character
+/// references unclassified.
 const TSX: &[(&str, Class)] = &[
     ("meta.tag entity.name.tag", Some("pl-s1")),
+    ("meta.tag support.class.component", None),
     ("meta.tag punctuation.definition.tag", Some("pl-c1")),
+    ("meta.tag constant.character.entity", None),
     ("entity.other.attribute-name", Some("pl-c1")),
     ("variable.other.constant entity.name.function", None),
 ];
@@ -728,6 +736,7 @@ const BY_TEXT: &[(&str, TextTable)] = &[
     ("source.js", JS_BY_TEXT),
     ("source.ts", JS_BY_TEXT),
     ("source.tsx", JS_BY_TEXT),
+    ("source.tsx", JSX_BY_TEXT),
     ("source.rust", RUST_BY_TEXT),
     (
         "source.sql",
@@ -752,6 +761,17 @@ const JS_BY_TEXT: &[(&str, TextIs, &str)] = &[
     ("entity.name.function", Capitalized, "pl-v"),
     ("variable.other.constant", Capitalized, "pl-v"),
     ("variable.other.readwrite", Capitalized, "pl-v"),
+];
+
+/// tree-sitter-javascript's JSX rules: capitalized tag names are constructors, `</` and `/>`
+/// are brackets (`<` and `>` are operators, as everywhere).
+const JSX_BY_TEXT: &[(&str, TextIs, &str)] = &[
+    ("meta.tag entity.name.tag", Capitalized, "pl-v"),
+    (
+        "meta.tag punctuation.definition.tag",
+        OneOf(&["</", "/>"]),
+        "pl-kos",
+    ),
 ];
 
 /// Sublime's Rust scopes keywords like `let` and primitive types alike (`storage.type`), and

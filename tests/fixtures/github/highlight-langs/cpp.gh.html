@@ -1,0 +1,26 @@
+<div class="highlight highlight-source-c++" dir="auto"><pre class="notranslate">#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">&lt;</span>iostream<span class="pl-pds">&gt;</span></span>
+#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">&lt;</span>vector<span class="pl-pds">&gt;</span></span>
+
+<span class="pl-k">namespace</span> <span class="pl-en">app</span> {
+
+<span class="pl-k">template </span>&lt;<span class="pl-k">typename</span> T, std::<span class="pl-c1">size_t</span> N = <span class="pl-c1">4</span>&gt;
+<span class="pl-k">class</span> <span class="pl-en">Buffer</span> : <span class="pl-k">public</span> <span class="pl-en">Base</span> {
+<span class="pl-k">public:</span>
+    <span class="pl-k">explicit</span> <span class="pl-en">Buffer</span>(std::initializer_list&lt;T&gt; init) : data_(init) {}
+    <span class="pl-k">virtual</span> <span class="pl-en">~Buffer</span>() <span class="pl-k">override</span> = <span class="pl-k">default</span>;
+    T&amp; <span class="pl-k">operator</span>[](std::<span class="pl-c1">size_t</span> i) <span class="pl-k">noexcept</span> { <span class="pl-k">return</span> data_[i]; }
+    <span class="pl-k">constexpr</span> <span class="pl-k">static</span> <span class="pl-k">int</span> <span class="pl-c1">kSize</span> = N;
+<span class="pl-k">private:</span>
+    std::vector&lt;T&gt; data_;
+};
+
+}  <span class="pl-c"><span class="pl-c">//</span> namespace app</span>
+
+<span class="pl-k">int</span> <span class="pl-en">main</span>() {
+    <span class="pl-k">auto</span> buf = app::Buffer&lt;<span class="pl-k">int</span>&gt;{<span class="pl-c1">1</span>, <span class="pl-c1">2</span>, <span class="pl-c1">3</span>};
+    <span class="pl-k">const</span> std::string s = <span class="pl-s"><span class="pl-pds">R"(</span>raw<span class="pl-pds">)"</span></span>;
+    std::cout &lt;&lt; buf[<span class="pl-c1">0</span>] &lt;&lt; std::endl;
+    <span class="pl-k">auto</span> lam = [&amp;](<span class="pl-k">int</span> x) -&gt; <span class="pl-k">bool</span> { <span class="pl-k">return</span> x &gt; <span class="pl-c1">0</span>; };
+    <span class="pl-c1">nullptr_t</span> p = <span class="pl-c1">nullptr</span>;
+    <span class="pl-k">return</span> <span class="pl-c1">lam</span>(<span class="pl-c1">1</span>) ? <span class="pl-c1">0</span> : <span class="pl-c1">1</span>;
+}</pre></div>

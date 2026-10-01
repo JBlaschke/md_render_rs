@@ -1,0 +1,28 @@
+<div class="highlight highlight-source-cs" dir="auto"><pre class="notranslate"><span class="pl-k">using</span> <span class="pl-s1">System</span><span class="pl-kos">;</span>
+<span class="pl-k">using</span> <span class="pl-s1">System</span><span class="pl-kos">.</span><span class="pl-s1">Collections</span><span class="pl-kos">.</span><span class="pl-s1">Generic</span><span class="pl-kos">;</span>
+
+<span class="pl-k">namespace</span> <span class="pl-v">Demo</span>
+<span class="pl-kos">{</span>
+    <span class="pl-kos">[</span><span class="pl-c1">Serializable</span><span class="pl-kos">]</span>
+    <span class="pl-k">public</span> <span class="pl-k">sealed</span> <span class="pl-k">class</span> <span class="pl-smi">Person</span> <span class="pl-c1">:</span> <span class="pl-smi">IComparable</span><span class="pl-c1">&lt;</span><span class="pl-smi">Person</span><span class="pl-c1">&gt;</span>
+    <span class="pl-kos">{</span>
+        <span class="pl-k">public</span> <span class="pl-smi">string</span> <span class="pl-s1">Name</span> <span class="pl-kos">{</span> <span class="pl-k">get</span><span class="pl-kos">;</span> <span class="pl-k">init</span><span class="pl-kos">;</span> <span class="pl-kos">}</span> <span class="pl-c1">=</span> <span class="pl-s">"x"</span><span class="pl-kos">;</span>
+        <span class="pl-k">private</span> <span class="pl-k">readonly</span> <span class="pl-smi">int</span> <span class="pl-s1">_age</span><span class="pl-kos">;</span>
+
+        <span class="pl-k">public</span> <span class="pl-v">Person</span><span class="pl-kos">(</span><span class="pl-smi">string</span> <span class="pl-s1">name</span><span class="pl-kos">,</span> <span class="pl-smi">int</span> <span class="pl-s1">age</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">(</span><span class="pl-s1">Name</span><span class="pl-kos">,</span> <span class="pl-s1">_age</span><span class="pl-kos">)</span> <span class="pl-c1">=</span> <span class="pl-kos">(</span><span class="pl-s1">name</span><span class="pl-kos">,</span> <span class="pl-s1">age</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+
+        <span class="pl-k">public</span> <span class="pl-smi">int</span> <span class="pl-en">CompareTo</span><span class="pl-kos">(</span><span class="pl-smi">Person</span><span class="pl-c1">?</span> <span class="pl-s1">other</span><span class="pl-kos">)</span>
+        <span class="pl-kos">{</span>
+            <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">other</span> <span class="pl-k">is</span> <span class="pl-c1">null</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-c1">1</span><span class="pl-kos">;</span>
+            <span class="pl-k">var</span> <span class="pl-s1">s</span> <span class="pl-c1">=</span> <span class="pl-s"><span class="pl-s">$</span>"Hello <span class="pl-kos">{</span><span class="pl-s1">Name</span><span class="pl-kos">}</span>, <span class="pl-kos">{</span><span class="pl-s1">_age</span><span class="pl-c1">:</span>D3<span class="pl-kos">}</span>"</span><span class="pl-kos">;</span>
+            <span class="pl-k">var</span> <span class="pl-s1">v</span> <span class="pl-c1">=</span> <span class="pl-s">@"verbatim\path"</span><span class="pl-kos">;</span>
+            <span class="pl-k">return</span> <span class="pl-smi">string</span><span class="pl-kos">.</span><span class="pl-en">Compare</span><span class="pl-kos">(</span><span class="pl-s1">Name</span><span class="pl-kos">,</span> <span class="pl-s1">other</span><span class="pl-kos">.</span><span class="pl-s1">Name</span><span class="pl-kos">,</span> <span class="pl-s1">StringComparison</span><span class="pl-kos">.</span><span class="pl-s1">Ordinal</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-kos">}</span>
+
+        <span class="pl-k">public</span> <span class="pl-k">async</span> <span class="pl-smi">Task</span><span class="pl-c1">&lt;</span><span class="pl-smi">List</span><span class="pl-c1">&lt;</span><span class="pl-smi">int</span><span class="pl-c1">&gt;</span><span class="pl-c1">&gt;</span> <span class="pl-en">LoadAsync</span><span class="pl-kos">(</span><span class="pl-kos">)</span>
+        <span class="pl-kos">{</span>
+            <span class="pl-k">await</span> <span class="pl-s1">Task</span><span class="pl-kos">.</span><span class="pl-en">Delay</span><span class="pl-kos">(</span><span class="pl-c1">100</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+            <span class="pl-k">return</span> <span class="pl-k">new</span> <span class="pl-smi">List</span><span class="pl-c1">&lt;</span><span class="pl-smi">int</span><span class="pl-c1">&gt;</span> <span class="pl-kos">{</span> <span class="pl-c1">1</span><span class="pl-kos">,</span> <span class="pl-c1">2</span><span class="pl-kos">,</span> <span class="pl-c1">3</span> <span class="pl-kos">}</span><span class="pl-kos">.</span><span class="pl-en">Where</span><span class="pl-kos">(</span>x <span class="pl-c1">=&gt;</span> <span class="pl-s1">x</span> <span class="pl-c1">&gt;</span> <span class="pl-c1">1</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">ToList</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-kos">}</span>
+    <span class="pl-kos">}</span>
+<span class="pl-kos">}</span></pre></div>

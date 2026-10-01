@@ -1,0 +1,16 @@
+<div class="highlight highlight-source-swift" dir="auto"><pre class="notranslate"><span class="pl-k">import</span> Foundation
+
+<span class="pl-k">struct</span> <span class="pl-smi">Point</span><span class="pl-kos">:</span> <span class="pl-smi">Codable</span> <span class="pl-kos">{</span>
+    <span class="pl-k">var</span> <span class="pl-s1"><span class="pl-c1">x</span></span><span class="pl-kos">:</span> <span class="pl-smi">Double</span>
+    <span class="pl-k">let</span> <span class="pl-s1"><span class="pl-c1">y</span></span><span class="pl-kos">:</span> <span class="pl-smi">Double</span>
+<span class="pl-kos">}</span>
+
+<span class="pl-en">func</span> greet<span class="pl-kos">(</span>_ name<span class="pl-kos">:</span> <span class="pl-smi">String</span><span class="pl-kos">,</span> times<span class="pl-kos">:</span> <span class="pl-smi">Int</span> <span class="pl-c1">=</span> <span class="pl-c1">1</span><span class="pl-kos">)</span> <span class="pl-c1">-&gt;</span> <span class="pl-smi">String</span> <span class="pl-kos">{</span>
+    <span class="pl-k">guard</span> !name<span class="pl-kos">.</span>isEmpty <span class="pl-k">else</span> <span class="pl-kos">{</span> <span class="pl-k">return</span> <span class="pl-s">"</span><span class="pl-s">"</span> <span class="pl-kos">}</span>
+    <span class="pl-k">return</span> <span class="pl-s">"</span><span class="pl-s">Hello </span><span class="pl-kos">\(</span>name<span class="pl-kos">)</span><span class="pl-s">"</span>
+<span class="pl-kos">}</span>
+
+<span class="pl-k">class</span> <span class="pl-smi">ViewModel</span><span class="pl-kos">:</span> <span class="pl-smi">ObservableObject</span> <span class="pl-kos">{</span>
+    <span class="pl-s1">@<span class="pl-smi">Published</span></span> <span class="pl-k">var</span> <span class="pl-s1"><span class="pl-c1">items</span></span><span class="pl-kos">:</span> <span class="pl-kos">[</span><span class="pl-smi">String</span><span class="pl-kos">]</span> <span class="pl-c1">=</span> <span class="pl-kos">[</span><span class="pl-kos">]</span>
+    <span class="pl-k">private</span> <span class="pl-k">let</span> <span class="pl-s1"><span class="pl-c1">id</span></span> <span class="pl-c1">=</span> <span class="pl-en">UUID</span><span class="pl-kos">(</span><span class="pl-kos">)</span>
+<span class="pl-kos">}</span></pre></div>

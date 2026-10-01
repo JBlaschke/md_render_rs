@@ -148,8 +148,9 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
     } else {
         code
     };
+    let (grammar, overlay_scope) = with_jsx(grammar, tm_scope, code);
     let scheme = Scheme::get(variant);
-    let overlay = scheme.overlay(tm_scope);
+    let overlay = scheme.overlay(overlay_scope);
     let html = match grammar {
         Grammar::Syntect(syntax) => render(code, syntax, scheme, overlay),
         Grammar::ShellSession => session::render(code, scheme, overlay),
@@ -167,6 +168,20 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
         scope,
         html: Some(html),
     }
+}
+
+/// The grammar and the overlay scope for a block: JavaScript containing JSX is tokenized with
+/// the TypeScriptReact grammar and classified like TSX (github.com's tree-sitter output for JSX
+/// is the same in `source.js` and `source.tsx` blocks), see [`jsx`](super::jsx). The block keeps
+/// its Linguist scope (`highlight-source-js`).
+fn with_jsx<'a>(grammar: Grammar, tm_scope: &'a str, code: &str) -> (Grammar, &'a str) {
+    const JSX_SCOPE: &str = "source.tsx";
+    if tm_scope == "source.js" && super::jsx::contains_jsx(code) {
+        if let Some(tsx) = engine::syntax_by_scope(JSX_SCOPE) {
+            return (Grammar::Syntect(tsx), JSX_SCOPE);
+        }
+    }
+    (grammar, tm_scope)
 }
 
 /// Linguist scopes github.com highlights with tree-sitter (GH §7.7, confirmed by output shape:
@@ -466,6 +481,78 @@ mod tests {
         let a = gh("let x = 1;\r\nlet y = 2;\r\n", "rust");
         let b = gh("let x = 1;\nlet y = 2;\n", "rust");
         assert_eq!(a, b);
+    }
+
+    /// GH-HL-1: JSX in ```jsx / ```js blocks. With two-face's JavaScript grammar `</div>` was a
+    /// division plus a regex literal (string color over the rest of the block) and the closing
+    /// brackets after JSX `invalid.illegal` (`pl-ii`).
+    #[test]
+    fn jsx_in_javascript() {
+        for lang in ["jsx", "js", "javascript"] {
+            let r = gh("const a = <div>x</div>;\nconst b = 1;\n", lang);
+            assert_eq!(r.scope.as_deref(), Some("source.js"), "{lang}");
+            let html = r.html.unwrap();
+            assert!(!html.contains("pl-pds"), "{lang}: {html}");
+            assert!(!html.contains("pl-ii"), "{lang}: {html}");
+            // github.com (tree-sitter-javascript): `<`/`>` pl-c1, `</` pl-kos, names pl-s1.
+            assert_eq!(
+                html,
+                "<span class=\"pl-k\">const</span> <span class=\"pl-s1\">a</span> \
+                 <span class=\"pl-c1\">=</span> <span class=\"pl-c1\">&lt;</span>\
+                 <span class=\"pl-s1\">div</span><span class=\"pl-c1\">&gt;</span>x\
+                 <span class=\"pl-kos\">&lt;/</span><span class=\"pl-s1\">div</span>\
+                 <span class=\"pl-c1\">&gt;</span><span class=\"pl-kos\">;</span>\n\
+                 <span class=\"pl-k\">const</span> <span class=\"pl-s1\">b</span> \
+                 <span class=\"pl-c1\">=</span> <span class=\"pl-c1\">1</span>\
+                 <span class=\"pl-kos\">;</span>",
+                "{lang}"
+            );
+        }
+        let component = "export function App({ items }) {\n  return (\n    <ul className=\"x\">\
+            \n      {items.map((i) => <Item key={i.id} {...i} />)}\n      <p>n: {n}</p>\n    \
+            </ul>\n  );\n}\n";
+        let html = gh(component, "jsx").html.unwrap();
+        assert!(
+            !html.contains("pl-ii") && !html.contains("pl-pds"),
+            "{html}"
+        );
+        assert!(html.ends_with("<span class=\"pl-kos\">}</span>"), "{html}");
+        assert!(
+            html.contains(
+                "<span class=\"pl-c1\">&lt;</span><span class=\"pl-v\">Item</span> \
+                 <span class=\"pl-c1\">key</span>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"pl-kos\">{</span>...<span class=\"pl-s1\">i</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"pl-kos\">/&gt;</span>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn jsx_grammar_only_for_jsx() {
+        let js = engine::syntax_by_scope("source.js").unwrap();
+        let pick = |code: &str| match with_jsx(Grammar::Syntect(js), "source.js", code) {
+            (Grammar::Syntect(s), overlay) => (s.scope.build_string(), overlay),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            pick("if (a < b) f(a);\n"),
+            ("source.js".into(), "source.js")
+        );
+        assert_eq!(pick("x = '<b>';\n"), ("source.js".into(), "source.js"));
+        assert_eq!(pick("x = <b>y</b>;\n"), ("source.tsx".into(), "source.tsx"));
+        // Other scopes never switch.
+        let ts = engine::syntax_by_scope("source.ts").unwrap();
+        assert!(matches!(
+            with_jsx(Grammar::Syntect(ts), "source.ts", "x = <b>y</b>;\n"),
+            (Grammar::Syntect(s), "source.ts") if s.scope.build_string() == "source.ts"
+        ));
     }
 
     #[test]
