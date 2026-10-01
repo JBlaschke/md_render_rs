@@ -176,16 +176,15 @@ impl InMemoryFileSystem {
     /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        let with_path = |err| match err {
+            Error::Io(e) => error::io_context(e, "reading", path),
+            Error::Corrupt(msg) => Error::Corrupt(format!("{}: {msg}", path.display())),
+            other => other,
+        };
         let file = File::open(path).map_err(|e| error::io_context(e, "opening", path))?;
-        match read::gunzip(file) {
-            Err(Error::Io(e)) => Err(error::io_context(e, "reading", path)),
-            Err(Error::Corrupt(msg)) => Err(Error::Corrupt(format!("{}: {msg}", path.display()))),
-            Err(other) => Err(other),
-            Ok(raw) => Self::from_tar_bytes(raw).map_err(|e| match e {
-                Error::Corrupt(msg) => Error::Corrupt(format!("{}: {msg}", path.display())),
-                other => other,
-            }),
-        }
+        read::gunzip(file)
+            .and_then(Self::from_tar_bytes)
+            .map_err(with_path)
     }
 
     /// Decompress a `.tar.gz` stream (multi-member gzip supported) and index it.
