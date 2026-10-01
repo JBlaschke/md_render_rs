@@ -4,8 +4,9 @@
 //!   listener(s), starts the file watcher and returns a [`RunningServer`] at once.
 //! * Routes (`routes`): documents and directories (README lookup, listings, `/dir` -> `/dir/`),
 //!   raw files, `/__/md-render/{static,bundle,css,events,render}`; path safety in `paths`.
-//! * Live updates (`hub`, `events`, `watch`): one watcher, per-document workers that render
-//!   once per real change, SSE fan-out to every subscriber (DESIGN §7).
+//! * Live updates (`hub`, `events`, `watcher`, `deps`): one watcher, per-document workers
+//!   that render once per real change, SSE fan-out to every subscriber (DESIGN §7); the
+//!   browser side is `assets/client/live.js`.
 //! * Shutdown: every SSE stream receives `shutdown` and ends, then axum's graceful shutdown
 //!   completes (CR §3).
 
@@ -42,6 +43,12 @@ use watcher::FsWatcher;
 /// How long graceful shutdown may take before remaining connections are dropped.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
+/// Default bind host (grip's default, GRIP C7).
+pub const DEFAULT_HOST: &str = "localhost";
+
+/// Default port (grip's default, GRIP C7).
+pub const DEFAULT_PORT: u16 = 6419;
+
 /// What `/` shows. Paths are relative to `ServeConfig::root`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -58,14 +65,19 @@ pub enum Target {
 pub struct ServeConfig {
     /// Served root directory.
     pub root: PathBuf,
+    /// What `/` shows.
     pub target: Target,
     /// Host name or IP address to bind (`localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, ...).
     pub host: String,
     /// Port (0 = pick a free one).
     pub port: u16,
+    /// Site whose rendering and styles are reproduced.
     pub flavor: Flavor,
+    /// README/file view or comment rendering.
     pub mode: Mode,
+    /// Color theme selection.
     pub theme: ThemeSel,
+    /// Page chrome.
     pub layout: Layout,
     /// Page `<title>` override (default: the file name).
     pub title: Option<String>,
@@ -75,6 +87,8 @@ pub struct ServeConfig {
     pub live: bool,
     /// Open the browser once the listener is bound.
     pub open_browser: bool,
+    /// No startup banner, change log lines or hints (warnings about broken input still
+    /// appear).
     pub quiet: bool,
     /// Style bundle file (watched while serving).
     pub bundle_path: PathBuf,
@@ -82,11 +96,40 @@ pub struct ServeConfig {
     pub auto_vendor: bool,
     /// `--css` values: URLs, or local files (served and watched by the server).
     pub extra_css: Vec<String>,
+    /// Offline or API renderer.
     pub renderer: Arc<dyn Renderer>,
     /// Use a polling watcher with this interval (`--poll[=MS]`).
     pub poll: Option<Duration>,
     /// Allow symlinks that point outside the root.
     pub follow_symlinks: bool,
+}
+
+impl ServeConfig {
+    /// A configuration with grip's defaults (`localhost:6419`, GitHub flavor, live updates,
+    /// default style bundle) for `root` and `target`; adjust the public fields as needed.
+    pub fn new(root: PathBuf, target: Target, renderer: Arc<dyn Renderer>) -> ServeConfig {
+        ServeConfig {
+            root,
+            target,
+            host: DEFAULT_HOST.to_owned(),
+            port: DEFAULT_PORT,
+            flavor: Flavor::Github,
+            mode: Mode::Readme,
+            theme: ThemeSel::default(),
+            layout: Layout::default(),
+            title: None,
+            context: None,
+            live: true,
+            open_browser: false,
+            quiet: false,
+            bundle_path: crate::styles::default_bundle_path(),
+            auto_vendor: false,
+            extra_css: Vec::new(),
+            renderer,
+            poll: None,
+            follow_symlinks: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for ServeConfig {
@@ -749,6 +792,18 @@ mod tests {
         assert!(target_rel(&root, Path::new("../x.md")).is_err());
         assert!(target_rel(&root, Path::new("/")).is_err());
         assert!(target_rel(&root, Path::new(".git/config")).is_err());
+    }
+
+    #[test]
+    fn config_defaults_follow_grip() {
+        let cfg = ServeConfig::new(
+            ".".into(),
+            Target::Dir(PathBuf::new()),
+            Arc::new(crate::render::OfflineRenderer),
+        );
+        assert_eq!((cfg.host.as_str(), cfg.port), ("localhost", 6419));
+        assert!(cfg.live && !cfg.open_browser && !cfg.follow_symlinks && cfg.poll.is_none());
+        assert_eq!(cfg.bundle_path, crate::styles::default_bundle_path());
     }
 
     #[test]

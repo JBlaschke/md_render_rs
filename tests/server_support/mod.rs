@@ -17,8 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use md_render::flavor::{Flavor, Mode, ThemeSel};
-use md_render::page::Layout;
+use md_render::flavor::Flavor;
 use md_render::render::{RenderOptions, Rendered, Renderer};
 use md_render::server::{RunningServer, ServeConfig, Target};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -119,27 +118,12 @@ impl Fixture {
     /// Default test configuration: `127.0.0.1:0`, live, quiet, no browser, test renderer,
     /// a (missing) bundle inside the fixture so the user's cache is never touched.
     pub fn config(&self, renderer: Arc<TestRenderer>) -> ServeConfig {
-        ServeConfig {
-            root: self.root.clone(),
-            target: Target::Dir(PathBuf::new()),
-            host: "127.0.0.1".into(),
-            port: 0,
-            flavor: Flavor::Github,
-            mode: Mode::Readme,
-            theme: ThemeSel::default(),
-            layout: Layout::Readme,
-            title: None,
-            context: None,
-            live: true,
-            open_browser: false,
-            quiet: true,
-            bundle_path: self.tmp.join("styles").join("styles.tar.gz"),
-            auto_vendor: false,
-            extra_css: Vec::new(),
-            renderer,
-            poll: None,
-            follow_symlinks: false,
-        }
+        let mut cfg = ServeConfig::new(self.root.clone(), Target::Dir(PathBuf::new()), renderer);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 0;
+        cfg.quiet = true;
+        cfg.bundle_path = self.tmp.join("styles").join("styles.tar.gz");
+        cfg
     }
 
     /// Start a server with the default configuration adjusted by `tweak`.
