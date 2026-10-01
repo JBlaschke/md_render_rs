@@ -325,6 +325,66 @@ fn fallback_styles() {
     );
 }
 
+/// PAGE-3: a bundle whose GitLab flavor has no dark application/highlight CSS (vendoring treats
+/// both as optional) links the light sheets in every colour mode, without the light media
+/// query, and renders as `gl-light`: no gl-dark bootstrap, so light CSS never meets dark tokens.
+#[test]
+fn bundle_without_dark_css_renders_light() {
+    let dir = tempfile::tempdir().unwrap();
+    let light_only = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1111.css",
+            "app",
+            Some("light"),
+            ".md{color:#333}",
+        )
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/tailwind-3333.css",
+            "tailwind",
+            None,
+            ".gl-sr-only{position:absolute}",
+        )
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/highlight/themes/white-6666.css",
+            "highlight",
+            Some("light"),
+            ".code.white{color:#3a383d}",
+        )
+        .open(dir.path());
+    for mode in [Theme::Auto, Theme::Dark, Theme::Light] {
+        let mut page = Page::new(Flavor::Gitlab);
+        page.theme = theme(mode, "light", "dark");
+        let html = page.render(&light_only);
+        let doc = Document::from(html.as_str());
+        assert_eq!(
+            sheets(&doc),
+            [
+                (format!("{B}gitlab/assets/application-1111.css"), None),
+                (
+                    format!("{B}gitlab/assets/tailwind-3333.css"),
+                    Some("all".into())
+                ),
+                (
+                    format!("{B}gitlab/assets/highlight/themes/white-6666.css"),
+                    None
+                ),
+            ],
+            "{mode:?}"
+        );
+        assert_eq!(
+            attr(&doc, "html", "class").as_deref(),
+            Some("gl-light ui-neutral"),
+            "{mode:?}"
+        );
+        assert!(!html.contains("gl-dark"), "{mode:?}: no gl-dark anywhere");
+        assert_eq!(doc.select("meta[name=color-scheme]").length(), 0);
+        assert_eq!(config(&doc)["theme"], "light");
+    }
+}
+
 #[test]
 fn listing_fragment() {
     let entries = vec![

@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use regex::Regex;
 
-use crate::flavor::{Flavor, Mode, ThemeSel};
+use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
 use crate::render::Rendered;
 use crate::styles::Bundle;
 
@@ -161,6 +161,12 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         Some(s) => (s.light.clone(), s.dark.clone()),
         None => (input.theme.light.clone(), input.theme.dark.clone()),
     };
+    // The colour mode the page is built for: a GitLab bundle without dark application CSS
+    // renders light only (sheets::Selection::has_dark_app), never light CSS under gl-dark.
+    let color_mode = match &selection {
+        Some(s) if !s.has_dark_app => Theme::Light,
+        _ => input.theme.theme,
+    };
     let live = match input.assets {
         AssetMode::Server { .. } => input.live,
         _ => None,
@@ -197,7 +203,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     let mut head = String::with_capacity(4096);
     head.push_str("<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     if input.flavor == Flavor::Gitlab {
-        head.push_str(&gitlab::head_pre(input.theme.theme));
+        head.push_str(&gitlab::head_pre(color_mode));
     }
     head.push_str(&format!("<title>{}</title>\n", html::text(input.title)));
     assets.favicon(&mut head)?;
@@ -269,7 +275,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
                 Some(path) if !assets.is_inline() => assets.bundle_url(path)?,
                 _ => None,
             };
-            gitlab::html_open(input.theme.theme, sprite.as_deref())
+            gitlab::html_open(color_mode, sprite.as_deref())
         }
     };
 
@@ -300,7 +306,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         "flavor": input.flavor.as_str(),
         "mode": input.mode.as_str(),
         "layout": input.layout.as_str(),
-        "theme": input.theme.theme.as_str(),
+        "theme": color_mode.as_str(),
         "themes": { "light": light, "dark": dark },
         "scripts": scripts,
         "live": live.map(|l| serde_json::json!({
