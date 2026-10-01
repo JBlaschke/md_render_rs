@@ -1,8 +1,7 @@
 //! The neutral HTML formatter (CQ §3.1 step 3, CR §1.6 `create_formatter!`).
 //!
 //! Emits comrak-like markup in GitHub's shapes where the construct is purely generated
-//! (footnotes GH §8.4, task lists GH §8.1, code blocks GH §7.1, math GH §8.6, enrichment
-//! GH §8.7). Every element it writes carries the sanitizer marker
+//! (footnotes GH §8.4, code blocks GH §7.1, ```` ```math ```` GH §8.6, enrichment GH §8.7). Every element it writes carries the sanitizer marker
 //! ([`Ctx::mark`] / [`Ctx::mark_tree`]) so the raw-HTML allowlist (GH §8.11) applies to raw
 //! HTML only. Only top-level blocks get `data-sourcepos` (DESIGN §5).
 
@@ -29,7 +28,6 @@ pub(super) struct FmtState {
     pub mermaid: bool,
     /// Number of enrichment sections so far (for distinct `data-identity`s).
     pub enrichments: usize,
-    pending_checkbox: Option<&'static str>,
     footnote_ix: u32,
 }
 
@@ -94,14 +92,6 @@ fn tight_paragraph(node: &AstNode<'_>) -> bool {
         })
 }
 
-const CHECKBOX_OPEN: &str = r#"type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> "#;
-const CHECKBOX_DONE: &str = r#"type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked=""> "#;
-
-fn write_checkbox(context: &mut Ctxt<'_, '_>, body: &str) -> fmt::Result {
-    let mark = context.user.mark.clone();
-    write!(context, "<input{mark} {body}")
-}
-
 fn footnote_label(name: &str) -> String {
     let mut s = String::with_capacity(name.len());
     // cmark-gfm `houdini_escape_href` (GH §8.4: labels are percent-encoded UTF-8).
@@ -163,28 +153,6 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 context.write_str("</li>\n")?;
             }
         }
-        NodeValue::TaskItem(t) => {
-            if entering {
-                context.cr()?;
-                write!(context, "<li{mark} class=\"task-list-item\">")?;
-                let body = if t.symbol.is_some() {
-                    CHECKBOX_DONE
-                } else {
-                    CHECKBOX_OPEN
-                };
-                let tight = node.parent().is_some_and(|p| match p.data().value {
-                    NodeValue::List(ref l) => l.tight,
-                    _ => false,
-                });
-                if tight {
-                    write_checkbox(context, body)?;
-                } else {
-                    context.user.pending_checkbox = Some(body);
-                }
-            } else {
-                context.write_str("</li>\n")?;
-            }
-        }
         NodeValue::Paragraph => {
             let tight = tight_paragraph(node);
             if entering {
@@ -192,9 +160,6 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                     context.cr()?;
                     let sp = sourcepos_attr(&context.user, node);
                     write!(context, "<p{mark}{sp}>")?;
-                }
-                if let Some(body) = context.user.pending_checkbox.take() {
-                    write_checkbox(context, body)?;
                 }
             } else {
                 let fndef = node.parent().and_then(|p| match p.data().value {

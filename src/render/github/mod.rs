@@ -6,7 +6,7 @@
 //! 2. comrak 0.55 parse with GitHub's GFM options (GH §10) and AST passes ([`ast`]),
 //! 3. neutral formatter output with sanitizer markers ([`formatter`]),
 //! 4. `dom_query` DOM, sanitized with GitHub's raw-HTML allowlist ([`sanitize`]),
-//! 5. DOM filters in CQ §3.1 order: alerts, dollar math, headings, raw-text autolinks, raw `<pre>`, emoji,
+//! 5. DOM filters in CQ §3.1 order: alerts, dollar math, task lists, headings, raw-text autolinks, raw `<pre>`, emoji,
 //!    tables, images, links, details, comment-mode code classes, `dir="auto"`,
 //! 6. top-level `data-sourcepos` bookkeeping and serialization.
 
@@ -24,6 +24,7 @@ mod math;
 mod octicons;
 mod sanitize;
 mod slug;
+mod tasks;
 mod util;
 
 use std::borrow::Cow;
@@ -147,7 +148,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let options = ast::options();
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, &body, &options);
-    ast::transform(&arena, root);
+    ast::transform(root);
     let state = formatter::FmtState::new(&ctx);
     let (html, state) = formatter::format(root, &options, state);
     let mut features = Features {
@@ -160,6 +161,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let raw = sanitize::run(&doc, &ctx);
     alerts::run(&doc);
     features.math |= math::run(&doc, &ctx);
+    tasks::run(&doc);
     headings::run(&doc, &ctx);
     if !ctx.comment {
         autolink::run(&doc, &raw);

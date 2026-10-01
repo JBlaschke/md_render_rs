@@ -1,24 +1,20 @@
 //! comrak options and the AST passes that run before formatting (CQ §3.1 step 2).
 //!
-//! * tagfilter on raw HTML literals (GH §8.11; comrak's own `tagfilter` is deprecated),
-//! * task-list fixes (GH §8.1: `- [ ]` alone is not a task).
+//! * tagfilter on raw HTML literals (GH §8.11; comrak's own `tagfilter` is deprecated).
 //!
-//! Alerts and dollar math are found later, on the HTML tree, as github.com does
-//! ([`super::alerts`], [`super::math`]).
+//! Alerts, dollar math and task lists are found later, on the HTML tree, as github.com does
+//! ([`super::alerts`], [`super::math`], [`super::tasks`]).
 
-use std::borrow::Cow;
-
+use comrak::Options;
 use comrak::nodes::{AstNode, NodeValue};
-use comrak::{Arena, Options};
 
 /// comrak options for the GitHub flavor (GH §10): GFM extensions without comrak's alerts,
-/// dollar math, shortcodes and heading ids, which we implement ourselves.
+/// dollar math, task lists, shortcodes and heading ids, which we implement on the HTML tree.
 pub(super) fn options() -> Options<'static> {
     let mut o = Options::default();
     o.extension.strikethrough = true;
     o.extension.table = true;
     o.extension.autolink = true;
-    o.extension.tasklist = true;
     o.extension.footnotes = true;
     o.extension.math_code = true;
     o.render.r#unsafe = true;
@@ -26,10 +22,8 @@ pub(super) fn options() -> Options<'static> {
 }
 
 /// Runs all AST passes.
-pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) {
-    let nodes: Vec<&'a AstNode<'a>> = root.descendants().collect();
-
-    for &node in &nodes {
+pub(super) fn transform<'a>(root: &'a AstNode<'a>) {
+    for node in root.descendants() {
         let mut ast = node.data_mut();
         match &mut ast.value {
             NodeValue::HtmlBlock(b) => {
@@ -43,23 +37,6 @@ pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) {
                 }
             }
             _ => {}
-        }
-    }
-
-    for &node in &nodes {
-        if matches!(node.data().value, NodeValue::TaskItem(_)) {
-            fix_task_item(arena, node);
-        }
-    }
-    for &node in &nodes {
-        let is_list = matches!(node.data().value, NodeValue::List(_));
-        if is_list {
-            let any_task = node
-                .children()
-                .any(|c| matches!(c.data().value, NodeValue::TaskItem(_)));
-            if let NodeValue::List(l) = &mut node.data_mut().value {
-                l.is_task_list = any_task;
-            }
         }
     }
 }
@@ -134,35 +111,6 @@ fn tagfilter(literal: &str) -> Option<String> {
         s.push_str(&literal[last..]);
         s
     })
-}
-
-// ------------------------------------------------------------------------------------------
-// task lists (GH §8.1)
-
-/// A `TaskItem` without text (`- [ ]` alone) is a plain item showing the brackets.
-fn fix_task_item<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
-    let first_is_para = node
-        .first_child()
-        .is_some_and(|c| matches!(c.data().value, NodeValue::Paragraph));
-    if first_is_para {
-        return;
-    }
-    let symbol = match node.data().value {
-        NodeValue::TaskItem(ref t) => t.symbol,
-        _ => return,
-    };
-    let list = node.parent().and_then(|p| match p.data().value {
-        NodeValue::List(ref l) => Some(*l),
-        _ => None,
-    });
-    let Some(list) = list else { return };
-    let start = node.data().sourcepos.start;
-    node.data_mut().value = NodeValue::Item(list);
-    let para = arena.alloc(AstNode::from(NodeValue::Paragraph));
-    para.data_mut().sourcepos.start = start;
-    let text = format!("[{}]", symbol.unwrap_or(' '));
-    para.append(arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(text)))));
-    node.prepend(para);
 }
 
 #[cfg(test)]
