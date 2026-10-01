@@ -37,7 +37,7 @@ const MARK_ATTR: &str = "data-mdr-g";
 const SOURCEPOS_COMMENT: &str = "mdr-sp:";
 
 /// Per-render settings shared by the passes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Ctx {
     /// GH §9.B comment context.
     comment: bool,

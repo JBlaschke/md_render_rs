@@ -20,6 +20,8 @@ pub(super) struct Block {
     pub math: bool,
     pub mermaid: bool,
     pub enrichment: bool,
+    /// The `highlight highlight-<scope>` form was used (known Linguist scope).
+    pub highlighted: bool,
 }
 
 /// GitHub markup for a code block. `literal` is the block content (normally ending in a
@@ -59,11 +61,13 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
     };
     let key = mdr_key(&["code", lang, raw]);
     let mut html = String::with_capacity(literal.len() * 2 + 200);
+    let mut highlighted = false;
     match hl {
         Some(highlight::GithubCode {
             scope: Some(scope),
             html: tokens,
         }) => {
+            highlighted = true;
             html.push_str("<div");
             html.push_str(&ctx.mark_tree);
             html.push_str(r#" class="highlight highlight-"#);
@@ -111,6 +115,7 @@ pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: 
     }
     Block {
         html,
+        highlighted,
         ..Block::default()
     }
 }
@@ -159,7 +164,8 @@ fn enrichment_html(ctx: &Ctx, kind: &str, code: &str, sp: &str, index: usize) ->
     push_text(&mut s, code);
     s.push_str("</pre>\n    </div>\n  </div>\n  ");
     s.push_str(octicons::SPINNER);
-    s.push_str("\n</section>");
+    // github.com leaves an empty line after each section (`</section>\n\n`).
+    s.push_str("\n</section>\n");
     s
 }
 
@@ -190,10 +196,10 @@ pub(super) fn raw_pre(
                 .to_owned();
             let code = pre.text().to_string();
             let is_special = lang == "math" || ENRICHMENTS.contains(&lang.as_str());
-            let highlighted =
-                !lang.is_empty() && !is_special && highlight::github(&code, &lang).scope.is_some();
-            if is_special || highlighted {
-                let block = block_html(&plain_ctx, &lang, &code, "", *enrichments);
+            let block = (!lang.is_empty())
+                .then(|| block_html(&plain_ctx, &lang, &code, "", *enrichments))
+                .filter(|b| is_special || b.highlighted);
+            if let Some(block) = block {
                 if block.enrichment {
                     *enrichments += 1;
                 }

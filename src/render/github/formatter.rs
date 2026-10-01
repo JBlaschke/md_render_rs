@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 use std::fmt::{self, Write as _};
+use std::rc::Rc;
 
 use comrak::html::{ChildRendering, Context, format_node_default};
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue, TableAlignment};
@@ -21,14 +22,11 @@ use super::octicons;
 /// Formatter state (comrak hands it back after formatting).
 #[derive(Default)]
 pub(super) struct FmtState {
-    pub comment: bool,
-    pub sourcepos: bool,
-    pub mark: String,
-    pub mark_tree: String,
-    pub run_id: String,
-    pub token: String,
-    pub bundle_url: String,
-    pub alert_inline: HashSet<usize>,
+    /// Shared render settings (cheap to hand to the markup builders).
+    ctx: Rc<Ctx>,
+    /// The sanitizer marker attribute (cloned per element, hence `Rc`).
+    mark: Rc<str>,
+    alert_inline: HashSet<usize>,
     /// Feature flags for [`crate::render::Features`].
     pub math: bool,
     pub mermaid: bool,
@@ -42,28 +40,10 @@ pub(super) struct FmtState {
 impl FmtState {
     pub(super) fn new(ctx: &Ctx, alert_inline: HashSet<usize>) -> Self {
         FmtState {
-            comment: ctx.comment,
-            sourcepos: ctx.sourcepos,
-            mark: ctx.mark.clone(),
-            mark_tree: ctx.mark_tree.clone(),
-            run_id: ctx.run_id.clone(),
-            token: ctx.token.clone(),
-            bundle_url: ctx.bundle_url.clone(),
+            mark: Rc::from(ctx.mark.as_str()),
+            ctx: Rc::new(ctx.clone()),
             alert_inline,
             ..FmtState::default()
-        }
-    }
-
-    /// A [`Ctx`] view of the state, for the shared markup builders.
-    fn ctx(&self) -> Ctx {
-        Ctx {
-            comment: self.comment,
-            sourcepos: self.sourcepos,
-            run_id: self.run_id.clone(),
-            token: self.token.clone(),
-            mark: self.mark.clone(),
-            mark_tree: self.mark_tree.clone(),
-            bundle_url: self.bundle_url.clone(),
         }
     }
 }
@@ -101,7 +81,7 @@ fn is_top_level(node: &AstNode<'_>) -> bool {
 
 /// ` data-sourcepos="…"` for top-level blocks when enabled (DESIGN §5).
 pub(super) fn sourcepos_attr(state: &FmtState, node: &AstNode<'_>) -> String {
-    if state.sourcepos && is_top_level(node) {
+    if state.ctx.sourcepos && is_top_level(node) {
         let sp = node.data().sourcepos;
         if sp.start.line > 0 {
             return format!(" data-sourcepos=\"{sp}\"");
@@ -170,7 +150,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 let (kind, icon, title) = alert_meta(a.alert_type);
                 context.cr()?;
                 let sp = sourcepos_attr(&context.user, node);
-                let svg = octicons::alert_svg(icon, &context.user.mark_tree);
+                let svg = octicons::alert_svg(icon, &context.user.ctx.mark_tree);
                 write!(
                     context,
                     r#"<div{mark} class="markdown-alert markdown-alert-{kind}"{sp}><p{mark} class="markdown-alert-title">{svg}{title}</p>"#
@@ -288,7 +268,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 let lang = cb.info.split_ascii_whitespace().next().unwrap_or("");
                 let sp = sourcepos_attr(&context.user, node);
                 let index = context.user.enrichments;
-                let ctx = context.user.ctx();
+                let ctx = Rc::clone(&context.user.ctx);
                 let block = code::block_html(&ctx, lang, &cb.literal, &sp, index);
                 context.user.math |= block.math;
                 context.user.mermaid |= block.mermaid;
@@ -302,10 +282,15 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
         NodeValue::HtmlBlock(b) => {
             if entering {
                 context.cr()?;
-                if context.user.sourcepos && is_top_level(node) {
+                if context.user.ctx.sourcepos && is_top_level(node) {
                     let sp = node.data().sourcepos;
-                    let token = context.user.token.clone();
-                    write!(context, "<!--{}{token}:{sp}-->", super::SOURCEPOS_COMMENT)?;
+                    let ctx = Rc::clone(&context.user.ctx);
+                    write!(
+                        context,
+                        "<!--{}{}:{sp}-->",
+                        super::SOURCEPOS_COMMENT,
+                        ctx.token
+                    )?;
                 }
                 context.write_str(&b.literal)?;
                 context.cr()?;
@@ -323,7 +308,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
         }
         NodeValue::SoftBreak => {
             if entering {
-                if context.user.comment {
+                if context.user.ctx.comment {
                     // GH §9.B: every newline in a comment is a hard break.
                     writeln!(context, "<br{mark}>")?;
                 } else {
@@ -377,7 +362,8 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
         NodeValue::FootnoteReference(r) => {
             if entering {
                 let label = footnote_label(&r.name);
-                let rid = context.user.run_id.clone();
+                let ctx = Rc::clone(&context.user.ctx);
+                let rid = &ctx.run_id;
                 let sfx = if r.ref_num > 1 {
                     format!("-{}", r.ref_num)
                 } else {
@@ -402,8 +388,12 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
                 }
                 context.user.footnote_ix += 1;
                 let label = footnote_label(&d.name);
-                let rid = context.user.run_id.clone();
-                writeln!(context, "<li{mark} id=\"user-content-fn-{label}-{rid}\">")?;
+                let ctx = Rc::clone(&context.user.ctx);
+                writeln!(
+                    context,
+                    "<li{mark} id=\"user-content-fn-{label}-{}\">",
+                    ctx.run_id
+                )?;
             } else {
                 // A definition not ending in a paragraph gets its backrefs on their own
                 // line (cmark-gfm; `S/ctx/joseph_*` `[^rich]`).
@@ -421,7 +411,7 @@ fn format_node<'a>(context: &mut Ctxt<'_, '_>, node: &'a AstNode<'a>, entering: 
         NodeValue::Math(m) => {
             if entering {
                 // `$`…`$` (math_code): inline, rendered with `$` delimiters (GH §8.6).
-                let ctx = context.user.ctx();
+                let ctx = Rc::clone(&context.user.ctx);
                 let html = math_html(&ctx, &m.literal, "$", false);
                 context.user.math = true;
                 context.write_str(&html)?;
@@ -521,7 +511,8 @@ fn write_backrefs(
 ) -> fmt::Result {
     let mark = context.user.mark.clone();
     let label = footnote_label(name);
-    let rid = context.user.run_id.clone();
+    let ctx = Rc::clone(&context.user.ctx);
+    let rid = &ctx.run_id;
     let ix = context.user.footnote_ix;
     for k in 1..=total {
         let (sfx, sup) = if k > 1 {
@@ -540,7 +531,7 @@ fn write_backrefs(
 
 /// `data-sourcepos` spanning all (trailing, top-level) footnote definitions.
 fn footnotes_sourcepos(state: &FmtState, first: &AstNode<'_>) -> String {
-    if !state.sourcepos || !is_top_level(first) {
+    if !state.ctx.sourcepos || !is_top_level(first) {
         return String::new();
     }
     let first_sp = first.data().sourcepos;
