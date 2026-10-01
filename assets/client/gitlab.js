@@ -148,11 +148,23 @@
 
   // ------------------------------------------------------------------------------------------
   // Math (GL §10.2): each .js-render-math is replaced by <div data-math-style> holding KaTeX
-  // output; GitLab's limits apply (1000 characters per block, 2000 ms total render time).
+  // output; GitLab's limits apply (1000 characters per block, 2000 ms total render time for the
+  // math on the page).
 
   var MAX_MATH_CHARS = 1000;
   var MAX_RENDER_TIME_MS = 2000;
-  var mathTotalMs = 0;
+  // KaTeX time per placeholder. GitLab's budget is per page load; a live page keeps loading
+  // new content, so only math still on the page counts (like github.js's brace budget).
+  var mathTime = new Map();
+
+  function totalMathMs() {
+    var total = 0;
+    mathTime.forEach(function (ms, placeholder) {
+      if (placeholder.isConnected) total += ms;
+      else mathTime.delete(placeholder); // removed by a live update
+    });
+    return total;
+  }
 
   function katexOptions(style) {
     return {
@@ -180,7 +192,7 @@
         : 'There was an error rendering this math block. ' + message;
       placeholder.className = 'katex-error';
     }
-    mathTotalMs += Date.now() - start;
+    mathTime.set(placeholder, (mathTime.get(placeholder) || 0) + (Date.now() - start));
   }
 
   // render_math.js's placeholder for one .js-render-math element: <div data-math-style> with the
@@ -211,7 +223,7 @@
         if (!el.isConnected || !el.parentNode) return;
         var placeholder = mathPlaceholder(el);
         var text = placeholder.textContent;
-        if (text.length > MAX_MATH_CHARS || mathTotalMs >= MAX_RENDER_TIME_MS) {
+        if (text.length > MAX_MATH_CHARS || totalMathMs() >= MAX_RENDER_TIME_MS) {
           var message = text.length > MAX_MATH_CHARS
             ? 'This math block exceeds ' + MAX_MATH_CHARS + ' characters, and may cause performance issues on this page.'
             : 'Displaying this math block may cause performance issues on this page.';
@@ -241,8 +253,16 @@
   var MAX_MERMAID_BLOCKS = 50;
   var diagrams = new Set();
   var mermaidSeq = 0;
-  var mermaidCount = 0;
   var mermaidQueue = Promise.resolve();
+
+  // Diagrams on the page (started ones, including those still queued). GitLab's limit is per
+  // page load; on a live page replaced diagrams must not count.
+  function liveDiagramCount() {
+    diagrams.forEach(function (item) {
+      if (!item.wrapper.isConnected) diagrams.delete(item);
+    });
+    return diagrams.size;
+  }
 
   function isDark() {
     return document.documentElement.classList.contains('gl-dark');
@@ -287,7 +307,6 @@
   }
 
   function startDiagram(item) {
-    mermaidCount += 1;
     diagrams.add(item);
     drawDiagram(item);
   }
@@ -311,7 +330,7 @@
           item.wrapper.parentNode.insertBefore(alertBox(
             'Warning: Displaying this diagram might cause performance issues on this page.', 'Display',
             function () { startDiagram(item); }), item.wrapper);
-        } else if (mermaidCount >= MAX_MERMAID_BLOCKS) {
+        } else if (liveDiagramCount() >= MAX_MERMAID_BLOCKS) {
           item.wrapper.parentNode.insertBefore(alertBox(
             'Warning: Displaying this diagram might cause performance issues on this page.', 'Display',
             function () { startDiagram(item); }), item.wrapper);

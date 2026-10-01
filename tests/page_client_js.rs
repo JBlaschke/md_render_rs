@@ -262,3 +262,141 @@ fn github_math_with_mathjax_renders_mathml() {
 } };"#,
     );
 }
+
+/// A scenario prelude for live updates of a one-block document: `UPDATE` is the top-level HTML
+/// of the block (`__N__` stands for the update number), and `liveUpdate(window, t, i)` applies
+/// version `i` like live.js's reconcile does: the new node is inserted, every old top-level node
+/// (the previous block, alerts the flavor script added) is removed, and `mdr:content-updated`
+/// is dispatched with the added node.
+fn live_prelude(flavor: Flavor, markdown_template: &str) -> String {
+    let update = rendered(flavor, markdown_template).html;
+    format!(
+        r#"const UPDATE = {};
+async function liveUpdate(window, t, i) {{
+  const d = window.document;
+  const content = d.getElementById('md-content');
+  const old = content.childNodes.slice();
+  const holder = d.createElement('div');
+  holder.innerHTML = UPDATE.replace(/__N__/g, String(i));
+  const next = holder.firstElementChild;
+  content.insertBefore(next, content.firstChild);
+  old.forEach((n) => n.remove());
+  d.dispatchEvent({{ type: 'mdr:content-updated', detail: {{ root: content, added: [next] }} }});
+  await t.flush(2);
+}}
+"#,
+        serde_json::to_string(update.trim()).unwrap()
+    )
+}
+
+/// Q-LIVE-GL-LIMITS: GitLab's "50 diagrams per page" limit counts the diagrams on the page, not
+/// every diagram drawn since the page loaded: 60 live edits of one diagram keep rendering it.
+#[test]
+fn gitlab_mermaid_limit_counts_only_live_diagrams() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = gitlab_lib_bundle(dir.path());
+    let doc = "```mermaid\ngraph TD\n  A --> B__N__\n```\n";
+    let html = page(Flavor::Gitlab, doc, &bundle, AssetMode::Inline);
+    let scenario = format!(
+        r#"{}
+module.exports = {{ async run(window, t) {{
+  const d = window.document;
+  t.equal(d.querySelectorAll('.md-render-mermaid').length, 1, 'initial diagram');
+  for (let i = 1; i <= 60; i++) await liveUpdate(window, t, i);
+  t.equal(d.querySelectorAll('#md-content .js-markdown-code').length, 1, 'one diagram on the page');
+  t.equal(d.querySelectorAll('.md-render-mermaid').length, 1, 'it is rendered');
+  t.equal(d.querySelectorAll('.gl-alert').length, 0, 'no performance warning');
+  t.equal(window.mdrTest.mermaidCalls, 61, 'every version was drawn');
+}} }};"#,
+        live_prelude(Flavor::Gitlab, doc)
+    );
+    run_scenario(
+        "gitlab_mermaid_limit_counts_only_live_diagrams",
+        &html,
+        &scenario,
+    );
+}
+
+/// The 50-diagram limit itself still applies to the diagrams on the page.
+#[test]
+fn gitlab_mermaid_limit_applies_per_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = gitlab_lib_bundle(dir.path());
+    let doc: String = (0..52)
+        .map(|i| format!("```mermaid\ngraph TD\n  A --> B{i}\n```\n\n"))
+        .collect();
+    let html = page(Flavor::Gitlab, &doc, &bundle, AssetMode::Inline);
+    run_scenario(
+        "gitlab_mermaid_limit_applies_per_page",
+        &html,
+        r#"module.exports = { async run(window, t) {
+  const d = window.document;
+  t.equal(d.querySelectorAll('.md-render-mermaid').length, 50, '50 diagrams are drawn');
+  const alerts = d.querySelectorAll('.gl-alert');
+  t.equal(alerts.length, 2, 'the others get a warning');
+  alerts[0].querySelector('button').click();
+  await t.flush();
+  t.equal(d.querySelectorAll('.md-render-mermaid').length, 51, '"Display" draws one more');
+} };"#,
+    );
+}
+
+/// Q-LIVE-GL-LIMITS: the 2000 ms KaTeX budget covers the math on the page: 30 live edits of a
+/// formula that takes 100 ms keep rendering it (the old page-lifetime total stopped at 20).
+#[test]
+fn gitlab_math_time_budget_counts_only_live_math() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = gitlab_lib_bundle(dir.path());
+    let doc = "```math\nx^{__N__}\n```\n";
+    let html = page(Flavor::Gitlab, doc, &bundle, AssetMode::Inline);
+    let scenario = format!(
+        r#"{}
+module.exports = {{
+  before(window) {{
+    window.mdrTest.clock = 0;
+    window.mdrTest.katexCost = 100;
+    window.Date = {{ now: () => window.mdrTest.clock }};
+  }},
+  async run(window, t) {{
+    const d = window.document;
+    for (let i = 1; i <= 30; i++) await liveUpdate(window, t, i);
+    const math = d.querySelectorAll('#md-content [data-math-style]');
+    t.equal(math.length, 1, 'one formula on the page');
+    t.ok(math[0] && /class="katex"/.test(math[0].innerHTML), 'it is rendered: ' + (math[0] && math[0].innerHTML));
+    t.equal(d.querySelectorAll('.gl-alert').length, 0, 'no performance warning');
+    t.equal(window.mdrTest.katexCalls, 31, 'every version was rendered');
+  }}
+}};"#,
+        live_prelude(Flavor::Gitlab, doc)
+    );
+    run_scenario(
+        "gitlab_math_time_budget_counts_only_live_math",
+        &html,
+        &scenario,
+    );
+}
+
+/// The budget itself still applies to the math on the page.
+#[test]
+fn gitlab_math_time_budget_applies_per_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = gitlab_lib_bundle(dir.path());
+    let doc: String = (0..25).map(|i| format!("$`x_{{{i}}}`$\n\n")).collect();
+    let html = page(Flavor::Gitlab, &doc, &bundle, AssetMode::Inline);
+    run_scenario(
+        "gitlab_math_time_budget_applies_per_page",
+        &html,
+        r#"module.exports = {
+  before(window) {
+    window.mdrTest.clock = 0;
+    window.mdrTest.katexCost = 100;
+    window.Date = { now: () => window.mdrTest.clock };
+  },
+  async run(window, t) {
+    const d = window.document;
+    t.equal(window.mdrTest.katexCalls, 20, '2000 ms of rendering');
+    t.equal(d.querySelectorAll('.gl-alert').length, 5, 'the rest gets a warning');
+  }
+};"#,
+    );
+}
