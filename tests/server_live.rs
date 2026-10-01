@@ -223,6 +223,27 @@ async fn changed_images_send_assets_events() {
     sse.expect_none("content", Duration::from_millis(300)).await;
 }
 
+/// LIVE-5: an image in a directory that does not exist when the document is rendered is
+/// still a dependency: creating the directory and the image sends `assets`, and later
+/// changes to the image do too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn images_in_directories_created_later_send_assets_events() {
+    let f = Fixture::new();
+    f.file("img.md", "intro\n![](imgs/deep/b.svg)");
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("img.md").await;
+    std::fs::create_dir_all(s.path("imgs/deep")).unwrap();
+    write(&s.path("imgs/deep/b.svg"), "<svg/>");
+    let assets = sse.wait_for("assets").await.json();
+    assert_eq!(assets["urls"], serde_json::json!(["/imgs/deep/b.svg"]));
+    // Once the directory exists the image is watched like any other.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    write_atomic(&s.path("imgs/deep/b.svg"), "<svg></svg>");
+    let assets = sse.wait_for("assets").await.json();
+    assert_eq!(assets["urls"], serde_json::json!(["/imgs/deep/b.svg"]));
+    sse.expect_none("content", Duration::from_millis(300)).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replacing_the_bundle_sends_styles_and_a_corrupt_one_keeps_the_old() {
     let f = Fixture::new();

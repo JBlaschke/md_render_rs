@@ -179,6 +179,20 @@ pub struct Dep {
     /// Canonical path events will carry.
     pub file: PathBuf,
     pub kind: DepKind,
+    /// The file's directory does not exist yet: `dir` is its nearest existing ancestor and
+    /// `file` the canonical path it will have (re-resolved when an ancestor changes).
+    pub pending: bool,
+}
+
+/// Result of matching a batch of changed paths against one document.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Matched {
+    /// Re-check (and possibly re-render) the document.
+    doc: bool,
+    /// Dependency URLs whose files changed (`assets` event).
+    urls: Vec<String>,
+    /// A directory on the way to a pending dependency changed: re-resolve those.
+    pending: bool,
 }
 
 /// What to watch for the document itself.
@@ -440,11 +454,11 @@ impl DocEntry {
         }
     }
 
-    /// Match changed paths: (re-check the document?, changed dependency URLs).
-    fn match_paths(&self, changed: &[PathBuf]) -> (bool, Vec<String>) {
+    /// Match changed paths against the document, its sources and its dependencies.
+    fn match_paths(&self, changed: &[PathBuf]) -> Matched {
         let t = self.lock();
         if t.subscribers == 0 {
-            return (false, Vec::new());
+            return Matched::default();
         }
         // A change of a file the source includes re-renders as well.
         let doc = changed.iter().any(|p| {
@@ -456,12 +470,55 @@ impl DocEntry {
         let mut urls: Vec<String> = t
             .deps
             .iter()
-            .filter(|d| d.kind == DepKind::Asset && changed.contains(&d.file))
+            .filter(|d| d.kind == DepKind::Asset && !d.pending && changed.contains(&d.file))
             .map(|d| d.url.clone())
             .collect();
         urls.sort();
         urls.dedup();
-        (doc, urls)
+        let pending = t
+            .deps
+            .iter()
+            .any(|d| d.pending && changed.iter().any(|p| d.file.starts_with(p) || d.dir == *p));
+        Matched { doc, urls, pending }
+    }
+
+    /// Re-resolve dependencies whose directory did not exist (LIVE-5), moving their watch
+    /// to the real directory once it does. Returns the URLs of those whose file exists now
+    /// (the page shows a broken image for them) and the URL and path of those whose
+    /// directory appeared but whose file has not (yet).
+    fn refresh_pending_deps(&self, ctx: &RenderCtx) -> (Vec<String>, Vec<(String, PathBuf)>) {
+        let mut appeared = Vec::new();
+        let mut waiting = Vec::new();
+        let Some(w) = ctx.watcher.as_deref() else {
+            return (appeared, waiting);
+        };
+        let mut t = self.lock();
+        if t.subscribers == 0 {
+            return (appeared, waiting);
+        }
+        let mut changed = false;
+        for d in t.deps.iter_mut().filter(|d| d.pending) {
+            let Some((dir, file, pending)) = dep_target(&ctx.root, ctx.follow_symlinks, &d.file)
+            else {
+                continue;
+            };
+            if (&dir, &file, pending) == (&d.dir, &d.file, d.pending) {
+                continue;
+            }
+            changed = true;
+            (d.dir, d.file, d.pending) = (dir, file, pending);
+            if !d.pending {
+                if d.file.is_file() {
+                    appeared.push(d.url.clone());
+                } else {
+                    waiting.push((d.url.clone(), d.file.clone()));
+                }
+            }
+        }
+        if changed {
+            t.sync_dep_dirs(w);
+        }
+        (appeared, waiting)
     }
 
     /// Dependencies currently tracked.
@@ -553,9 +610,20 @@ impl Hub {
             .collect();
         let token = cache_token();
         for e in entries {
-            let (doc, urls) = e.match_paths(changed);
+            let Matched {
+                doc,
+                mut urls,
+                pending,
+            } = e.match_paths(changed);
             if doc {
                 e.trigger();
+            }
+            if pending {
+                let (appeared, waiting) = e.refresh_pending_deps(&self.ctx);
+                urls.extend(appeared);
+                urls.sort();
+                urls.dedup();
+                self.recheck_waiting_deps(&e, waiting);
             }
             if !urls.is_empty() {
                 for u in &urls {
@@ -567,6 +635,27 @@ impl Hub {
                 e.broadcast(Arc::new(WireEvent::assets(&urls, &token)));
             }
         }
+    }
+
+    /// A dependency whose directory was just created and watched may itself be created
+    /// before FSEvents delivers events for that directory (CR §5): look once more a little
+    /// later and refresh it if it exists by then.
+    fn recheck_waiting_deps(&self, entry: &Arc<DocEntry>, waiting: Vec<(String, PathBuf)>) {
+        if waiting.is_empty() || !self.ctx.watcher.as_ref().is_some_and(|w| !w.is_polling()) {
+            return;
+        }
+        let e = entry.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RECHECK_AFTER_WATCH).await;
+            let urls: Vec<String> = waiting
+                .into_iter()
+                .filter(|(_, file)| file.is_file())
+                .map(|(url, _)| url)
+                .collect();
+            if !urls.is_empty() {
+                e.broadcast(Arc::new(WireEvent::assets(&urls, &cache_token())));
+            }
+        });
     }
 
     /// Entry for `key` if it exists.
@@ -748,6 +837,7 @@ fn source_deps(root: &Path, includes: &[PathBuf]) -> Vec<Dep> {
                 dir,
                 file: file.clone(),
                 kind: DepKind::Source,
+                pending: false,
             })
         })
         .collect()
@@ -981,17 +1071,33 @@ fn publish_failure(entry: &DocEntry, t0: u64, v: u64, kind: ErrorKind, message: 
 fn resolve_deps(root: &Path, follow_symlinks: bool, refs: Vec<deps::DepRef>) -> Vec<Dep> {
     refs.into_iter()
         .filter_map(|r| {
-            let (dir, file) = paths::watch_target(&paths::join_rel(root, &r.rel))?;
-            paths::check_contained(root, &dir, follow_symlinks).ok()?;
-            paths::check_contained(root, &file, follow_symlinks).ok()?;
+            let (dir, file, pending) =
+                dep_target(root, follow_symlinks, &paths::join_rel(root, &r.rel))?;
             Some(Dep {
                 url: r.url,
                 dir,
                 file,
                 kind: DepKind::Asset,
+                pending,
             })
         })
         .collect()
+}
+
+/// Watch target of a dependency inside the root: (directory, file, pending). A file whose
+/// directory does not exist yet is watched through its nearest existing ancestor.
+fn dep_target(root: &Path, follow_symlinks: bool, abs: &Path) -> Option<(PathBuf, PathBuf, bool)> {
+    match paths::watch_target(abs) {
+        Some((dir, file)) => {
+            paths::check_contained(root, &dir, follow_symlinks).ok()?;
+            paths::check_contained(root, &file, follow_symlinks).ok()?;
+            Some((dir, file, false))
+        }
+        None => {
+            let (dir, file) = paths::ancestor_watch_target(root, abs, follow_symlinks)?;
+            Some((dir, file, true))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1319,25 +1425,37 @@ mod tests {
                     dir: "/r/img".into(),
                     file: "/r/img/a.png".into(),
                     kind: DepKind::Asset,
+                    pending: false,
                 },
                 Dep {
                     url: "inc.md".into(),
                     dir: "/r/parts".into(),
                     file: "/r/parts/inc.md".into(),
                     kind: DepKind::Source,
+                    pending: false,
+                },
+                Dep {
+                    url: "/new/dir/b.png".into(),
+                    dir: "/r".into(),
+                    file: "/r/new/dir/b.png".into(),
+                    kind: DepKind::Asset,
+                    pending: true,
                 },
             ],
             None,
         );
-        assert_eq!(
-            entry.match_paths(&["/r/parts/inc.md".into()]),
-            (true, Vec::new())
-        );
-        assert_eq!(
-            entry.match_paths(&["/r/img/a.png".into()]),
-            (false, vec!["/a.png".to_owned()])
-        );
-        assert_eq!(entry.match_paths(&["/r/img".into()]), (false, Vec::new()));
+        let m = |p: &str| entry.match_paths(&[p.into()]);
+        let matched = |doc, urls: &[&str], pending| Matched {
+            doc,
+            urls: urls.iter().map(|u| (*u).to_owned()).collect(),
+            pending,
+        };
+        assert_eq!(m("/r/parts/inc.md"), matched(true, &[], false));
+        assert_eq!(m("/r/img/a.png"), matched(false, &["/a.png"], false));
+        assert_eq!(m("/r/img"), matched(false, &[], false));
+        // A directory on the way to a pending dependency, not the dependency itself.
+        assert_eq!(m("/r/new"), matched(false, &[], true));
+        assert_eq!(m("/r/other"), matched(false, &[], false));
         assert!(!may_include(
             b"::include{file=x}",
             &RenderOptions::new(Flavor::Github)
