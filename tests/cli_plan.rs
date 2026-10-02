@@ -1091,6 +1091,36 @@ fn subcommands_reject_serve_arguments() {
     assert!(error(&fx, &["help"]).0.contains("File not found: help"));
 }
 
+/// CLI-21: a bare subcommand next to a file of that name says how to serve the file, like a
+/// port-like name does, before going to the network (`vendor`) or writing README.html.
+#[test]
+fn a_subcommand_shadowing_an_existing_file_warns() {
+    let fx = Fixture::new();
+    let note = |name: &str| {
+        format!("running the '{name}' subcommand; to serve the file '{name}' use ./{name}")
+    };
+    let warnings = |args: &[&str]| run(&fx, args).unwrap().warnings;
+    assert!(!warnings(&["vendor"]).contains(&note("vendor")));
+    fs::write(fx.cwd.join("vendor"), "# a file named vendor").unwrap();
+    fs::write(fx.cwd.join("export"), "# a file named export").unwrap();
+    assert!(warnings(&["vendor"]).contains(&note("vendor")));
+    assert!(warnings(&["-f", "gitlab", "vendor"]).contains(&note("vendor")));
+    assert!(warnings(&["export"]).contains(&note("export")));
+    // Arguments of the subcommand make the intent clear.
+    for args in [
+        &["vendor", "--no-libs"][..],
+        &["vendor", "-o", "b.tar.gz"],
+        &["export", "README.md"],
+        &["export", "--no-inline"],
+    ] {
+        let w = warnings(args);
+        assert!(
+            !w.iter().any(|w| w.contains("subcommand;")),
+            "{args:?}: {w:?}"
+        );
+    }
+}
+
 /// CLI-14: usage errors of a subcommand show its usage line (not the top-level one), and a
 /// serve-only flag after a subcommand gets the same message as before it instead of clap's
 /// lookalike suggestion (`tip: a similar argument exists: '--verbose'`, which also put

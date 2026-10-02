@@ -419,6 +419,20 @@ fn subcommand_plan(
 ) -> Result<Plan, CliError> {
     let g = &cli.global;
     reject_serve_args(&cli.serve, cmd)?;
+    // grip previews a file by its name: next to a file called `vendor`, a bare `md-render vendor`
+    // must not go to the network (or `export` write README.html) without a word, as with a file
+    // named like a port in `serve_plan` (CLI-21).
+    let bare = match cmd {
+        Command::Export(a) => *a == ExportArgs::default(),
+        Command::Vendor(a) => *a == VendorArgs::default(),
+        Command::Cache(_) => false,
+    };
+    let name = subcommand_name(cmd);
+    if bare && fs::symlink_metadata(cwd.join(name)).is_ok() {
+        warnings.push(format!(
+            "running the '{name}' subcommand; to serve the file '{name}' use ./{name}"
+        ));
+    }
     Ok(match cmd {
         Command::Export(a) => {
             let flavor = render_flavor(g, host)?;
