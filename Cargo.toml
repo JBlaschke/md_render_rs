@@ -4,7 +4,9 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# Let-chains (`if let .. && let ..`, stable for edition 2024 since 1.88) set the floor;
+# CI checks it with exactly this toolchain.
+rust-version = "1.88"
 license = "BSD-3-Clause"
 authors = ["Johannes Blaschke"]
 
@@ -16,6 +18,12 @@ thiserror = "2.0.21"
 name = "md-render"
 version = "0.1.0"
 description = "Live-rendering Markdown previewer with GitHub and GitLab flavors and vendored site styles"
+readme = "README.md"
+keywords = ["markdown", "preview", "github", "gitlab", "grip"]
+categories = ["command-line-utilities", "text-processing"]
+# Not published: the path dependency `tarfs` would resolve to an unrelated crates.io crate of the
+# same name. Rename the sub-crate package before a release.
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -53,7 +61,6 @@ tower-http = { version = "0.7.1", features = ["fs"] }
 ureq = { version = "3.4.2", features = ["json", "platform-verifier"] }
 
 # text / html / css utilities
-askama = { version = "0.16.1", features = ["serde_json"] }
 base64 = "0.23.1"
 mime_guess = "2.0.5"
 percent-encoding = "2.3.2"

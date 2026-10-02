@@ -3,6 +3,11 @@ name = "tarfs"
 version = "0.1.0"
 description = "In-memory filesystem view of a .tar.gz archive (Rust port of TarFS.jl)"
 readme = "README.md"
+keywords = ["tar", "filesystem", "in-memory", "archive"]
+categories = ["filesystem", "compression"]
+# Not published: `tarfs` is taken on crates.io by an unrelated crate. Rename the package (and keep
+# `[lib] name = "tarfs"`) before a release.
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,4 +20,3 @@ tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
 thiserror.workspace = true
 
-[dev-dependencies]

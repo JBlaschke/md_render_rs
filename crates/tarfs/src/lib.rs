@@ -833,6 +833,8 @@ where
 mod tests {
     use super::*;
 
+    // Used only by the const items below; rustc before 1.89 reports such functions as unused.
+    #[allow(dead_code)]
     const fn assert_send_sync<T: Send + Sync>() {}
     const _: () = assert_send_sync::<InMemoryFileSystem>();
     const _: () = assert_send_sync::<Error>();

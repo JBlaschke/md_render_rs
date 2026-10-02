@@ -246,7 +246,7 @@ fn generate(rng: &mut Rng) -> String {
                 let pool = attrs();
                 for _ in 0..n {
                     s.push(' ');
-                    s.push_str(rng.pick(&pool));
+                    s.push_str(rng.pick::<String>(&pool));
                 }
                 doc.push_str(&s);
                 doc.push('\n');
@@ -264,7 +264,7 @@ fn generate(rng: &mut Rng) -> String {
                 let pool = attrs();
                 for _ in 0..n {
                     s.push(' ');
-                    s.push_str(rng.pick(&pool));
+                    s.push_str(rng.pick::<String>(&pool));
                 }
                 s.push('>');
                 s.push_str("raw");
@@ -272,7 +272,7 @@ fn generate(rng: &mut Rng) -> String {
             }
             // A plain Markdown block.
             _ => {
-                doc.push_str(rng.pick(BLOCKS));
+                doc.push_str(rng.pick::<&str>(BLOCKS));
             }
         }
         doc.push_str("\n\n");
