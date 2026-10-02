@@ -1,9 +1,13 @@
-//! Autolinking of URLs in raw-HTML text (GH §8.9).
+//! Autolinking of bare URLs (GH §8.9).
 //!
-//! In the README/file context github.com also autolinks bare URLs that end up as text inside
-//! raw HTML (for example the text of a tag-filtered `<iframe>` block, `S/ctx/naskio_*`); the
-//! comment context does not (`S/api_gfm_ctx.html`). Markdown text is autolinked by comrak
-//! already; this pass covers text nodes whose parent is raw HTML. The rules follow cmark-gfm's
+//! comrak's autolink extension requires a dot in the host, while cmark-gfm (and therefore
+//! github.com) links any `http(s)://` URL, including short hosts such as `http://localhost:3000`
+//! or `https://intranet/x` (GH-AUTO-1). This pass links the short-host http(s) URLs comrak
+//! leaves in generated Markdown text, in both contexts.
+//!
+//! In the README/file context github.com additionally autolinks bare URLs that end up as text
+//! inside raw HTML (for example the text of a tag-filtered `<iframe>` block, `S/ctx/naskio_*`);
+//! the comment context does not (`S/api_gfm_ctx.html`). The rules follow cmark-gfm's
 //! `autolink.c` (`www.` and `scheme://` matches, domain check, trailing punctuation trimming),
 //! additionally ending a link at `"` and `>` since the text is markup-like.
 
