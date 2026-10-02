@@ -665,8 +665,17 @@ fn target_rel(root: &Path, p: &Path) -> anyhow::Result<String> {
     Ok(rel)
 }
 
+/// How often binding `localhost:0` picks a new port when the one chosen for the first
+/// loopback family is taken on the other.
+const PICK_PORT_ATTEMPTS: usize = 8;
+
 /// Resolve and bind `host:port`. For `localhost` both loopback families are bound on the
 /// same port when possible (GRIP C7); the first address decides the port.
+///
+/// When another program already listens on the other family's loopback address, the bind
+/// fails like a port in use on the first one (CLI-4): `http://localhost:PORT/` would reach
+/// that program from every client that resolves `localhost` to it. Other errors there (no
+/// IPv6 on this host, ...) only mean serving one family.
 async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host((bare, port))
@@ -677,30 +686,51 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
     let first = *addrs
         .first()
         .with_context(|| format!("host {host:?} has no addresses"))?;
-    let primary = TcpListener::bind(first).await.map_err(|e| {
+    let in_use = |e: std::io::Error, ip: IpAddr| {
         let what = if e.kind() == std::io::ErrorKind::AddrInUse {
-            format!("port {port} is already in use on {}", first.ip())
+            format!("port {port} is already in use on {ip}")
         } else {
-            format!("cannot listen on {first}")
+            format!("cannot listen on {}", SocketAddr::new(ip, port))
         };
         anyhow::Error::new(e).context(what)
-    })?;
-    let bound_port = primary
-        .local_addr()
-        .context("reading the bound address")?
-        .port();
-    let mut out = vec![primary];
-    if bare.eq_ignore_ascii_case("localhost")
-        && let Some(other) = addrs
-            .iter()
-            .find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
-    {
-        match TcpListener::bind(SocketAddr::new(other.ip(), bound_port)).await {
+    };
+    let other = addrs
+        .iter()
+        .find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
+        .filter(|_| bare.eq_ignore_ascii_case("localhost"))
+        .map(SocketAddr::ip);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let primary = TcpListener::bind(first)
+            .await
+            .map_err(|e| in_use(e, first.ip()))?;
+        let bound_port = primary
+            .local_addr()
+            .context("reading the bound address")?
+            .port();
+        let mut out = vec![primary];
+        let Some(other) = other else {
+            return Ok(out);
+        };
+        match TcpListener::bind(SocketAddr::new(other, bound_port)).await {
             Ok(l) => out.push(l),
-            Err(e) => tracing::debug!("not listening on {}: {e}", other.ip()),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                if port != 0 {
+                    return Err(in_use(e, other));
+                }
+                if attempt < PICK_PORT_ATTEMPTS {
+                    continue; // the free port picked on `first` is taken on `other`
+                }
+                tracing::warn!(
+                    "serving {} only: no free port on both loopback addresses",
+                    first.ip()
+                );
+            }
+            Err(e) => tracing::debug!("not listening on {other}: {e}"),
         }
+        return Ok(out);
     }
-    Ok(out)
 }
 
 /// The URL to print and open: wildcard addresses map to `localhost`, IPv6 is bracketed.
@@ -809,6 +839,36 @@ mod tests {
         assert_eq!((cfg.host.as_str(), cfg.port), ("localhost", 6419));
         assert!(cfg.live && !cfg.open_browser && !cfg.follow_symlinks && cfg.poll.is_none());
         assert_eq!(cfg.bundle_path, crate::styles::default_bundle_path());
+    }
+
+    /// CLI-4: `localhost:PORT` with another program on one loopback address is a port in
+    /// use, not a server that only half of the clients reach.
+    #[tokio::test]
+    async fn localhost_with_the_port_taken_on_one_family_fails() {
+        let families: Vec<SocketAddr> = match tokio::net::lookup_host(("localhost", 0)).await {
+            Ok(a) => a.collect(),
+            Err(_) => return,
+        };
+        let has = |v4: bool| families.iter().any(|a| a.is_ipv4() == v4);
+        if !has(true) || !has(false) || std::net::TcpListener::bind("[::1]:0").is_err() {
+            eprintln!("SKIPPED: localhost does not resolve to both loopback families here");
+            return;
+        }
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let err = bind("localhost", port).await.err().expect("bind must fail");
+        assert!(
+            format!("{err:#}").contains(&format!("port {port} is already in use on 127.0.0.1")),
+            "{err:#}"
+        );
+        // A free port binds both families.
+        let both = bind("localhost", 0).await.unwrap();
+        assert_eq!(both.len(), 2);
+        let ports: Vec<u16> = both
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        assert_eq!(ports[0], ports[1]);
     }
 
     #[test]
