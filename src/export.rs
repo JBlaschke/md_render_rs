@@ -56,7 +56,7 @@ pub struct ExportConfig {
     pub theme: ThemeSel,
     /// Site-like box or content only.
     pub layout: Layout,
-    /// `<title>`; defaults to the first `h1` of the document, then the file name.
+    /// `<title>`; defaults to the file name (as when serving), `md-render` without one.
     pub title: Option<String>,
     /// `owner/repo` or `group/project`, passed to the renderer.
     pub context: Option<String>,
@@ -161,17 +161,14 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         }
     }
 
-    let title = cfg
-        .title
-        .clone()
-        .or_else(|| rendered.title.clone().filter(|t| !t.trim().is_empty()))
-        .unwrap_or_else(|| {
-            if display_name.is_empty() {
-                "md-render".to_owned()
-            } else {
-                display_name.clone()
-            }
-        });
+    // The file name, as when serving and as `--help` says (grip: the file name in both).
+    let title = cfg.title.clone().unwrap_or_else(|| {
+        if display_name.is_empty() {
+            "md-render".to_owned()
+        } else {
+            display_name.clone()
+        }
+    });
     let input = PageInput {
         flavor: cfg.flavor,
         mode: cfg.mode,

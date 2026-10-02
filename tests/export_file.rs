@@ -119,10 +119,12 @@ fn inline_export_of_a_file() {
     let html = std::fs::read_to_string(&out).unwrap();
     assert_self_contained(&html);
     let doc = Document::from(html.as_str());
+    // CLI-9: the default title is the file name, as when serving (and as `--help` and grip
+    // have it), not the document's first h1.
     assert_eq!(
         doc.select("title").text().as_ref(),
-        "Title",
-        "first h1 is the default title"
+        "README.md",
+        "the file name is the default title"
     );
     assert_eq!(doc.select(".mdr-box-title").text().trim(), "README.md");
     assert!(!html.contains("data-sourcepos"));
