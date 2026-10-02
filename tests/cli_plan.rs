@@ -477,6 +477,30 @@ fn rendering_options() {
     );
     assert!(!p.live && p.open_browser && p.follow_symlinks && p.auto_vendor);
     assert_eq!(p.poll, Some(Duration::from_millis(300)));
+    assert!(p.allow_hosts.is_empty());
+
+    // SEC-5: --allow-host is repeatable, reaches the server config, and takes names only.
+    let p = serve(
+        &fx,
+        &[
+            "--allow-host",
+            "Preview.example.com",
+            "--allow-host",
+            "*",
+            "--allow-host",
+            "::1",
+        ],
+    );
+    assert_eq!(p.allow_hosts, ["Preview.example.com", "*", "::1"]);
+    let cfg = p.into_config(Arc::new(OfflineRenderer));
+    assert_eq!(cfg.allow_hosts, ["Preview.example.com", "*", "::1"]);
+    for bad in ["example.com:8080", "", "a/b", "http://x"] {
+        let (msg, code) = error(&fx, &["--allow-host", bad]);
+        assert_eq!(code, 2, "{bad}: {msg}");
+        assert!(msg.contains("--allow-host"), "{msg}");
+    }
+    assert_eq!(error(&fx, &["export", "--allow-host", "x"]).1, 2);
+    assert_eq!(error(&fx, &["--export", "--allow-host", "x"]).1, 2);
 
     assert_eq!(
         serve(&fx, &["--poll=50"]).poll,

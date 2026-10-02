@@ -237,6 +237,12 @@ pub struct ServeArgs {
     #[arg(long, help_heading = "Serve")]
     pub follow_symlinks: bool,
 
+    /// Also answer requests for this host name (repeatable), e.g. a reverse proxy's, tunnel's or
+    /// Codespaces name; `*` accepts any name. Without it md-render answers to loopback names
+    /// and, when bound to all or a LAN address, to IP addresses and local names
+    #[arg(long, value_name = "NAME", help_heading = "Serve")]
+    pub allow_host: Vec<String>,
+
     /// Download the site styles on startup when the bundle lacks them
     #[arg(long, help_heading = "Serve")]
     pub auto_vendor: bool,

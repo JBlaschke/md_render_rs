@@ -244,6 +244,8 @@ pub struct ServePlan {
     pub poll: Option<Duration>,
     pub follow_symlinks: bool,
     pub auto_vendor: bool,
+    /// `--allow-host` names.
+    pub allow_hosts: Vec<String>,
 }
 
 impl ServePlan {
@@ -270,6 +272,7 @@ impl ServePlan {
             renderer,
             poll: self.poll,
             follow_symlinks: self.follow_symlinks,
+            allow_hosts: self.allow_hosts,
         }
     }
 }
@@ -581,6 +584,7 @@ fn serve_flags(s: &ServeArgs) -> Vec<&'static str> {
     flag(s.poll.is_some(), "--poll");
     flag(s.root.is_some(), "--root");
     flag(s.follow_symlinks, "--follow-symlinks");
+    flag(!s.allow_host.is_empty(), "--allow-host");
     flag(s.auto_vendor, "--auto-vendor");
     flag(s.export, "--export");
     flag(s.clear, "--clear");
@@ -633,6 +637,7 @@ fn reject_with_export(s: &ServeArgs) -> Result<(), CliError> {
         (s.poll.is_some(), "--poll"),
         (s.root.is_some(), "--root"),
         (s.follow_symlinks, "--follow-symlinks"),
+        (!s.allow_host.is_empty(), "--allow-host"),
         (s.auto_vendor, "--auto-vendor"),
     ];
     match bad.iter().find(|(set, _)| *set) {
@@ -911,7 +916,34 @@ fn serve_plan(
         poll: s.poll.map(Duration::from_millis),
         follow_symlinks: s.follow_symlinks,
         auto_vendor: s.auto_vendor,
+        allow_hosts: allow_hosts(&s.allow_host)?,
     })
+}
+
+/// `--allow-host` values: `*`, a host name or an IP address, without a port.
+fn allow_hosts(values: &[String]) -> Result<Vec<String>, CliError> {
+    values
+        .iter()
+        .map(|v| {
+            let name = v.trim();
+            let ip = name.parse::<std::net::IpAddr>().is_ok()
+                || name
+                    .strip_prefix('[')
+                    .and_then(|n| n.strip_suffix(']'))
+                    .is_some_and(|n| n.parse::<std::net::Ipv6Addr>().is_ok());
+            if name == "*" || ip || (!name.is_empty() && address::valid_hostname(name)) {
+                Ok(name.to_owned())
+            } else {
+                Err(usage(
+                    ErrorKind::ValueValidation,
+                    format!(
+                        "invalid value '{v}' for '--allow-host <NAME>': expected a host name or \
+                         IP address without a port, or '*'"
+                    ),
+                ))
+            }
+        })
+        .collect()
 }
 
 fn canonical_root(cwd: &Path, root: &Path) -> Result<PathBuf, CliError> {

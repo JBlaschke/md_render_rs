@@ -66,7 +66,8 @@ async fn access_log(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Host-header allowlist against DNS rebinding when bound to loopback (D14, GRIP C39).
+/// Host-header allowlist against DNS rebinding (D14, GRIP C39, SEC-5; see `HostAllow`),
+/// unless `--allow-host '*'`.
 async fn host_guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     if let Some(allow) = &app.hosts {
         // Both the authority of an absolute-form request line and the Host header must name
@@ -83,7 +84,10 @@ async fn host_guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Re
             return (
                 StatusCode::FORBIDDEN,
                 [(header::CONTENT_TYPE, TEXT_UTF8)],
-                format!("403 Forbidden: unexpected Host header {h:?} (md-render only answers to loopback names)\n"),
+                format!(
+                    "403 Forbidden: unexpected Host header {h:?} (protection against DNS \
+                     rebinding; start md-render with --allow-host NAME to accept this name)\n"
+                ),
             )
                 .into_response();
         }

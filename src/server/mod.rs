@@ -100,6 +100,9 @@ pub struct ServeConfig {
     pub poll: Option<Duration>,
     /// Allow symlinks that point outside the root.
     pub follow_symlinks: bool,
+    /// Extra `Host` names to answer to (`--allow-host`, e.g. a tunnel's or proxy's name); `*`
+    /// turns the `Host` check off. See [`ServeConfig::host`] for what is allowed without it.
+    pub allow_hosts: Vec<String>,
 }
 
 impl ServeConfig {
@@ -126,6 +129,7 @@ impl ServeConfig {
             renderer,
             poll: None,
             follow_symlinks: false,
+            allow_hosts: Vec::new(),
         }
     }
 }
@@ -245,32 +249,41 @@ pub(crate) enum RootTarget {
     },
 }
 
-/// Allowed `Host` header values when bound to loopback (DNS-rebinding protection).
+/// Allowed `Host` header values (DNS-rebinding protection, D14, SEC-5).
+///
+/// A rebinding attack needs a domain name the attacker controls, so names that cannot be one
+/// are safe. Always allowed: `localhost`, `*.localhost` (RFC 6761: loopback in browsers),
+/// the loopback addresses, the configured host and every `--allow-host` name. Bound to
+/// loopback, a name must also carry the server's port. Bound to a wildcard or LAN address (a
+/// server meant to be reached from other machines, possibly through Docker port mappings), any
+/// port is fine and IP literals, single-label names (`mybox`) and mDNS names (`*.local`) are
+/// allowed too; other fully qualified names need `--allow-host`.
 #[derive(Clone, Debug)]
 pub(crate) struct HostAllow {
     names: Vec<String>,
     port: u16,
+    /// Not bound to loopback only.
+    lan: bool,
+    /// `--allow-host` names, with any port.
+    extra: Vec<String>,
 }
 
 impl HostAllow {
-    fn new(configured: &str, port: u16) -> HostAllow {
+    fn new(configured: &str, port: u16, loopback: bool, extra: &[String]) -> HostAllow {
         let mut names: Vec<String> = ["localhost", "127.0.0.1", "[::1]"]
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
-        let host = configured
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_ascii_lowercase();
-        let host = if host.parse::<std::net::Ipv6Addr>().is_ok() {
-            format!("[{host}]")
-        } else {
-            host
-        };
+        let host = normalize_host_name(configured);
         if !names.contains(&host) {
             names.push(host);
         }
-        HostAllow { names, port }
+        HostAllow {
+            names,
+            port,
+            lan: !loopback,
+            extra: extra.iter().map(|h| normalize_host_name(h)).collect(),
+        }
     }
 
     /// Does a `Host` header value (`name[:port]`) name this server?
@@ -287,13 +300,46 @@ impl HostAllow {
                 None => (value.as_str(), ""),
             }
         };
-        let port_ok = match port {
-            "" => true,
-            p => p.strip_prefix(':').and_then(|p| p.parse::<u16>().ok()) == Some(self.port),
+        let port = match port {
+            "" => None,
+            p => match p.strip_prefix(':').and_then(|p| p.parse::<u16>().ok()) {
+                Some(p) => Some(p),
+                None => return false,
+            },
         };
         let name = name.trim_end_matches('.');
-        // `*.localhost` always resolves to loopback in browsers (RFC 6761), so it is safe.
-        port_ok && (self.names.iter().any(|n| n == name) || name.ends_with(".localhost"))
+        if name.is_empty() {
+            return false;
+        }
+        if self.extra.iter().any(|n| n == name) {
+            return true;
+        }
+        let known = self.names.iter().any(|n| n == name) || name.ends_with(".localhost");
+        if !self.lan {
+            return known && port.is_none_or(|p| p == self.port);
+        }
+        let ip_literal = name.parse::<std::net::Ipv4Addr>().is_ok()
+            || name
+                .strip_prefix('[')
+                .and_then(|n| n.strip_suffix(']'))
+                .is_some_and(|n| n.parse::<std::net::Ipv6Addr>().is_ok());
+        known || ip_literal || !name.contains('.') || name.ends_with(".local")
+    }
+}
+
+/// A host name as the `Host` check compares it: lower case, IPv6 literals in brackets, no
+/// trailing dot.
+fn normalize_host_name(host: &str) -> String {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host
     }
 }
 
@@ -513,7 +559,8 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         styles: styles.clone(),
         global,
         shutdown: shutdown_rx.clone(),
-        hosts: loopback.then(|| HostAllow::new(&cfg.host, addr.port())),
+        hosts: (!cfg.allow_hosts.iter().any(|h| h.trim() == "*"))
+            .then(|| HostAllow::new(&cfg.host, addr.port(), loopback, &cfg.allow_hosts)),
     });
 
     if let Some(w) = &watcher {
@@ -839,7 +886,7 @@ mod tests {
 
     #[test]
     fn host_allowlist() {
-        let allow = HostAllow::new("localhost", 6419);
+        let allow = HostAllow::new("localhost", 6419, true, &[]);
         for ok in [
             "localhost",
             "localhost:6419",
@@ -861,10 +908,50 @@ mod tests {
         ] {
             assert!(!allow.allows(bad), "{bad}");
         }
-        let v6 = HostAllow::new("::1", 8080);
+        let v6 = HostAllow::new("::1", 8080, true, &[]);
         assert!(v6.allows("[::1]:8080"));
-        let named = HostAllow::new("127.0.0.2", 1);
+        let named = HostAllow::new("127.0.0.2", 1, true, &[]);
         assert!(named.allows("127.0.0.2:1"));
+    }
+
+    /// SEC-5: wildcard / LAN binds accept names that cannot be rebound (any port); --allow-host
+    /// names are accepted on every bind.
+    #[test]
+    fn host_allowlist_for_lan_binds_and_allow_host() {
+        let lan = HostAllow::new("0.0.0.0", 6419, false, &["Preview.Example.COM.".into()]);
+        for ok in [
+            "localhost:6419",
+            "localhost:8080", // Docker: -p 8080:6419
+            "app.localhost",
+            "192.168.1.20:6419",
+            "10.0.0.1",
+            "[fe80::1]:6419",
+            "mybox:6419",
+            "mybox.local:6419",
+            "0.0.0.0:6419",
+            "preview.example.com",
+            "preview.example.com:443",
+        ] {
+            assert!(lan.allows(ok), "{ok}");
+        }
+        for bad in [
+            "evil.com",
+            "evil.com:6419",
+            "rebind.attacker.example:6419",
+            "192.168.1.20.evil.com",
+            "mybox:x",
+            ":6419",
+            "[fe80::1",
+        ] {
+            assert!(!lan.allows(bad), "{bad}");
+        }
+        // On loopback, --allow-host names may use any port (proxies, tunnels), others may not.
+        let tunnel = HostAllow::new("localhost", 6419, true, &["abc.trycloudflare.com".into()]);
+        assert!(tunnel.allows("abc.trycloudflare.com"));
+        assert!(tunnel.allows("abc.trycloudflare.com:443"));
+        assert!(!tunnel.allows("mybox:6419"), "LAN names need a LAN bind");
+        assert!(!tunnel.allows("localhost:80"));
+        assert!(!tunnel.allows("other.trycloudflare.com"));
     }
 
     #[test]

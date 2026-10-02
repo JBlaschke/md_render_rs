@@ -283,6 +283,35 @@ async fn host_header_allowlist_on_loopback() {
 
 /// SEC-5: an absolute-form request line does not override a foreign `Host` header (nor the
 /// other way round), and a second `Host` header is checked too.
+/// SEC-5: `--allow-host NAME` adds a name (with any port: proxies and tunnels change it), and
+/// `--allow-host '*'` turns the check off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_host_adds_names_or_disables_the_check() {
+    let f = Fixture::new();
+    f.file("README.md", "public readme");
+    let s = f
+        .start(|cfg| cfg.allow_hosts = vec!["Preview.Example.com".into()])
+        .await;
+    for host in [
+        "preview.example.com",
+        "preview.example.com:443",
+        "localhost",
+    ] {
+        let r = s.get_with("/README.md", &[("Host", host)]).await;
+        assert_eq!(r.status, 200, "Host: {host}");
+    }
+    let r = s.get_with("/README.md", &[("Host", "evil.example")]).await;
+    assert_eq!(r.status, 403);
+    assert!(r.text().contains("--allow-host"), "{}", r.text());
+
+    let f = Fixture::new();
+    f.file("README.md", "public readme");
+    let s = f.start(|cfg| cfg.allow_hosts = vec!["*".into()]).await;
+    let r = s.get_with("/README.md", &[("Host", "evil.example")]).await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("public readme"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_guard_checks_every_authority() {
     let s = server(false).await;
