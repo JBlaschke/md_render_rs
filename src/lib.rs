@@ -8,6 +8,7 @@ pub mod export;
 pub mod flavor;
 pub(crate) mod hash;
 pub(crate) mod html;
+pub(crate) mod markdown_files;
 pub mod page;
 pub mod render;
 pub mod server;

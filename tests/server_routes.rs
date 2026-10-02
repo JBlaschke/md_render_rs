@@ -6,6 +6,7 @@ mod server_support;
 
 use std::path::PathBuf;
 
+use md_render::Flavor;
 use md_render::server::Target;
 use server_support::{Fixture, write, write_bundle};
 
@@ -120,6 +121,43 @@ async fn root_readme_fallbacks_and_listing() {
     let r = s.get("/").await;
     assert_eq!(r.status, 200);
     assert!(r.text().contains("assets"));
+}
+
+/// CLI-17: GitHub shows `.github/README.md` before the root's README, then `docs/`; GitLab
+/// only ever shows the root's own README (`md-render export DIR` uses the same lookup).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn root_readme_precedence_per_flavor() {
+    let fixture = || {
+        let f = Fixture::new();
+        f.file("README.md", "root readme");
+        f.file(".github/README.md", "github dir readme");
+        f.file("docs/README.md", "docs readme");
+        f
+    };
+    let s = fixture().start(|_| {}).await;
+    let r = s.get("/").await;
+    assert_eq!((r.status, r.header("location")), (302, Some("/.github/")));
+    assert!(
+        s.get("/.github/")
+            .await
+            .text()
+            .contains("github dir readme")
+    );
+
+    let s = fixture().start(|cfg| cfg.flavor = Flavor::Gitlab).await;
+    let r = s.get("/").await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("root readme"), "{}", r.text());
+
+    let f = Fixture::new();
+    f.file("docs/README.md", "docs readme");
+    let s = f.start(|cfg| cfg.flavor = Flavor::Gitlab).await;
+    let r = s.get("/").await;
+    assert_eq!(
+        r.status, 200,
+        "GitLab lists the root instead of docs/README.md"
+    );
+    assert!(!r.text().contains("docs readme"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,4 +1,5 @@
-//! Request-path parsing, filesystem resolution, README lookup and directory listings.
+//! Request-path parsing, filesystem resolution and directory listings (README lookup:
+//! [`crate::markdown_files`]).
 //!
 //! Path safety follows DESIGN D14 / GRIP C39: the URL path is percent-decoded exactly once,
 //! NUL bytes, backslashes and `..` segments are rejected, `.git` is never served, and every
@@ -7,7 +8,6 @@
 //! GRIP C35 (`/dir` -> `/dir/`, `/file/` -> `/file`, `.` and `//` collapsed).
 
 use std::cmp::Ordering;
-use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
@@ -15,14 +15,7 @@ use percent_encoding::{
     AsciiSet, CONTROLS, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode,
 };
 
-use crate::flavor::Flavor;
 use crate::page::ListingEntry;
-
-/// Markdown file extensions rendered by both flavors, in README preference order (DESIGN §6).
-pub const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkdn", "mkd", "mdwn"];
-
-/// Additional extensions GitLab renders as Markdown (`lib/gitlab/markup_helper.rb`, CQ §1.8).
-pub const GITLAB_EXTRA_EXTENSIONS: &[&str] = &["rmd"];
 
 /// Characters escaped when a path segment is put into a URL path (the WHATWG path
 /// percent-encode set plus `%`, `/`, `\` and a few characters browsers treat specially).
@@ -51,28 +44,6 @@ const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~')
     .remove(b'/');
-
-/// Is `name` (a file name or relative path) a Markdown document for `flavor`?
-pub fn is_markdown(name: &str, flavor: Flavor) -> bool {
-    markdown_rank(name, flavor).is_some()
-}
-
-/// Index of the file's extension in the flavor's Markdown extension list (case-insensitive).
-fn markdown_rank(name: &str, flavor: Flavor) -> Option<usize> {
-    let ext = Path::new(name)
-        .extension()
-        .and_then(OsStr::to_str)?
-        .to_ascii_lowercase();
-    let extra: &[&str] = if flavor == Flavor::Gitlab {
-        GITLAB_EXTRA_EXTENSIONS
-    } else {
-        &[]
-    };
-    MARKDOWN_EXTENSIONS
-        .iter()
-        .chain(extra)
-        .position(|e| *e == ext)
-}
 
 /// Why a request path was rejected before touching the filesystem.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -322,62 +293,6 @@ pub fn check_contained(
     Ok(())
 }
 
-/// Find the README of `dir` (DESIGN §6): exact `README.md` first, otherwise any file whose
-/// stem is `readme` (case-insensitive) with a Markdown extension, preferring extensions in
-/// [`MARKDOWN_EXTENSIONS`] order, then by name. Returns the real on-disk file name.
-pub fn find_readme(dir: &Path, flavor: Flavor) -> Option<String> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut best: Option<(usize, String)> = None;
-    for entry in entries.flatten() {
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let Some(rank) = markdown_rank(&name, flavor) else {
-            continue;
-        };
-        let stem = Path::new(&name)
-            .file_stem()
-            .and_then(OsStr::to_str)
-            .unwrap_or("");
-        if !stem.eq_ignore_ascii_case("readme") {
-            continue;
-        }
-        // Follow symlinks: a README that links elsewhere is still a file to render (the
-        // containment check happens when it is resolved).
-        if !std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file()) {
-            continue;
-        }
-        if name == "README.md" {
-            return Some(name);
-        }
-        let better = match &best {
-            None => true,
-            Some((r, n)) => (rank, name.as_str()) < (*r, n.as_str()),
-        };
-        if better {
-            best = Some((rank, name));
-        }
-    }
-    best.map(|(_, n)| n)
-}
-
-/// README lookup for the served root: the root's own README, then `.github/README*`, then
-/// `docs/README*` (DESIGN §6). Returns the root-relative path.
-pub fn find_root_readme(root: &Path, flavor: Flavor) -> Option<String> {
-    if let Some(name) = find_readme(root, flavor) {
-        return Some(name);
-    }
-    for sub in [".github", "docs"] {
-        let dir = root.join(sub);
-        if dir.is_dir()
-            && let Some(name) = find_readme(&dir, flavor)
-        {
-            return Some(format!("{sub}/{name}"));
-        }
-    }
-    None
-}
-
 /// Entries of a directory for the listing page: `.git` hidden, symlinks escaping the root
 /// hidden (unless `follow_symlinks`), directories first, then case-insensitive by name; a
 /// `..` entry first for every directory below the root.
@@ -575,17 +490,6 @@ mod tests {
     }
 
     #[test]
-    fn markdown_extensions() {
-        assert!(is_markdown("README.md", Flavor::Github));
-        assert!(is_markdown("a/b.MarkDown", Flavor::Github));
-        assert!(is_markdown("x.mdwn", Flavor::Gitlab));
-        assert!(!is_markdown("x.rmd", Flavor::Github));
-        assert!(is_markdown("x.Rmd", Flavor::Gitlab));
-        assert!(!is_markdown("x.txt", Flavor::Github));
-        assert!(!is_markdown("md", Flavor::Github));
-    }
-
-    #[test]
     fn url_encoding() {
         assert_eq!(url_for("", true), "/");
         assert_eq!(url_for("docs", true), "/docs/");
@@ -596,66 +500,6 @@ mod tests {
         assert_eq!(url_for("ü.md", false), "/%C3%BC.md");
         assert_eq!(encode_query_value("docs/a b&c.md"), "docs/a%20b%26c.md");
         assert_eq!(encode_segment("a/b"), "a%2Fb");
-    }
-
-    #[test]
-    fn readme_lookup_prefers_exact_then_extension_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        assert_eq!(find_readme(d, Flavor::Github), None);
-        std::fs::write(d.join("readme.markdown"), "x").unwrap();
-        assert_eq!(
-            find_readme(d, Flavor::Github).as_deref(),
-            Some("readme.markdown")
-        );
-        std::fs::write(d.join("Readme.mkd"), "x").unwrap();
-        // `.markdown` ranks before `.mkd`.
-        assert_eq!(
-            find_readme(d, Flavor::Github).as_deref(),
-            Some("readme.markdown")
-        );
-        std::fs::create_dir(d.join("README.mdown")).unwrap(); // a directory is not a README
-        assert_eq!(
-            find_readme(d, Flavor::Github).as_deref(),
-            Some("readme.markdown")
-        );
-        std::fs::write(d.join("README.txt"), "x").unwrap();
-        assert_eq!(
-            find_readme(d, Flavor::Github).as_deref(),
-            Some("readme.markdown")
-        );
-    }
-
-    #[test]
-    fn readme_lookup_exact_name_wins() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        std::fs::write(d.join("README.markdown"), "x").unwrap();
-        std::fs::write(d.join("README.md"), "x").unwrap();
-        assert_eq!(find_readme(d, Flavor::Github).as_deref(), Some("README.md"));
-    }
-
-    #[test]
-    fn root_readme_fallbacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        std::fs::create_dir_all(d.join("docs")).unwrap();
-        std::fs::write(d.join("docs/README.md"), "x").unwrap();
-        assert_eq!(
-            find_root_readme(d, Flavor::Github).as_deref(),
-            Some("docs/README.md")
-        );
-        std::fs::create_dir_all(d.join(".github")).unwrap();
-        std::fs::write(d.join(".github/readme.md"), "x").unwrap();
-        assert_eq!(
-            find_root_readme(d, Flavor::Github).as_deref(),
-            Some(".github/readme.md")
-        );
-        std::fs::write(d.join("Readme.md"), "x").unwrap();
-        assert_eq!(
-            find_root_readme(d, Flavor::Github).as_deref(),
-            Some("Readme.md")
-        );
     }
 
     #[test]

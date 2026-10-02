@@ -28,7 +28,8 @@ use super::args::{
     CacheAction, Cli, Command, ExportArgs, FlavorArg, GITHUB_THEMES, GlobalArgs, ServeArgs,
     ThemeArg, ThemesArg, VendorArgs,
 };
-use super::paths::{absolutize, decode_text, find_readme};
+use super::paths::{absolutize, decode_text};
+use crate::markdown_files::find_root_readme;
 
 /// File name of the default style bundle inside the cache directory (D9).
 pub const BUNDLE_FILE_NAME: &str = "styles.tar.gz";
@@ -1085,9 +1086,9 @@ fn export_plan(
                 _ => runtime(format!("cannot access {}: {e}", given.display())),
             })?;
             if meta.is_dir() {
-                let readme = find_readme(&abs, render.flavor, true)
+                let readme = find_root_readme(&abs, render.flavor)
                     .ok_or_else(|| runtime(format!("No README found at {}", given.display())))?;
-                ExportInput::File(readme)
+                ExportInput::File(abs.join(readme))
             } else {
                 ExportInput::File(abs)
             }

@@ -746,6 +746,33 @@ fn grip_compatibility_flags() {
     assert_eq!(error(&fx, &["-q", "-v"]).1, 2);
 }
 
+/// CLI-17: exporting a directory picks the README the server shows for it: GitHub
+/// `.github/`, root, `docs/`; GitLab the root's own README only.
+#[test]
+fn export_dir_readme_precedence() {
+    let fx = Fixture::new();
+    let input = |args: &[&str]| match export(&fx, args).input {
+        ExportInput::File(f) => f,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(input(&["export"]), fx.cwd.join("README.md"));
+    fs::create_dir_all(fx.cwd.join(".github")).unwrap();
+    fs::write(fx.cwd.join(".github/README.md"), "# GitHub dir\n").unwrap();
+    assert_eq!(input(&["export"]), fx.cwd.join(".github/README.md"));
+    assert_eq!(
+        input(&["export", "--flavor", "gitlab"]),
+        fx.cwd.join("README.md")
+    );
+    // `docs/` (a root of its own when exported) has its own README.
+    assert_eq!(input(&["export", "docs"]), fx.cwd.join("docs/README.md"));
+    fs::remove_file(fx.cwd.join("README.md")).unwrap();
+    fs::remove_file(fx.cwd.join(".github/README.md")).unwrap();
+    assert_eq!(input(&["export"]), fx.cwd.join("docs/README.md"));
+    let (msg, code) = error(&fx, &["export", "--flavor", "gitlab"]);
+    assert!(msg.contains("No README found"), "{msg}");
+    assert_eq!(code, 1);
+}
+
 /// GRIP §2.6 output naming, for both `export` and grip's `--export`.
 #[test]
 fn export_naming() {

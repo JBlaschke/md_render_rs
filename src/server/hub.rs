@@ -965,9 +965,9 @@ async fn process_listing(entry: &DocEntry, ctx: &RenderCtx) {
             Err(e) => return Listed::Failed(e.to_string()),
         };
         let readme = if rel.is_empty() {
-            paths::find_root_readme(&root, flavor)
+            crate::markdown_files::find_root_readme(&root, flavor)
         } else {
-            paths::find_readme(&abs, flavor)
+            crate::markdown_files::find_readme(&abs, flavor)
         };
         if readme.is_some() {
             return Listed::Readme;

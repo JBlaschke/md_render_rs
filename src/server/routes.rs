@@ -17,6 +17,7 @@ use super::hub::DocStatus;
 use super::paths::{self, RequestPath, ResolveError, Resolved};
 use super::{App, RootTarget};
 use crate::PREFIX;
+use crate::markdown_files;
 use crate::page::{self, AssetMode, Banner, BannerKind, LiveInfo, PageInput};
 use crate::render::Rendered;
 
@@ -319,13 +320,13 @@ impl App {
         }
     }
 
-    /// The README of directory `dir` ([`paths::find_readme`]), or of the root with its
-    /// fallbacks ([`paths::find_root_readme`]) for None; off the reactor (Q-ASYNC-1).
+    /// The README of directory `dir` ([`markdown_files::find_readme`]), or of the root with its
+    /// fallbacks ([`markdown_files::find_root_readme`]) for None; off the reactor (Q-ASYNC-1).
     async fn find_readme(&self, dir: Option<&std::path::Path>) -> Option<String> {
         let (root, dir, flavor) = (self.root.clone(), dir.map(ToOwned::to_owned), self.flavor);
         super::blocking(move || match dir {
-            Some(d) => paths::find_readme(&d, flavor),
-            None => paths::find_root_readme(&root, flavor),
+            Some(d) => markdown_files::find_readme(&d, flavor),
+            None => markdown_files::find_root_readme(&root, flavor),
         })
         .await
         .ok()

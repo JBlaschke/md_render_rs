@@ -33,8 +33,6 @@ mod routes;
 mod styles;
 mod watcher;
 
-pub use paths::{GITLAB_EXTRA_EXTENSIONS, MARKDOWN_EXTENSIONS, is_markdown};
-
 use events::WireEvent;
 use hub::{Hub, RenderCtx};
 use styles::{ExtraCss, Styles};
@@ -330,7 +328,7 @@ impl App {
 
     /// Is `rel` rendered as a document (Markdown extension, or the configured target file)?
     pub(crate) fn is_document(&self, rel: &str) -> bool {
-        paths::is_markdown(rel, self.flavor)
+        crate::markdown_files::is_markdown(rel, self.flavor)
             || matches!(&self.target, RootTarget::File(t) if t == rel)
     }
 
