@@ -92,6 +92,7 @@ fn export_does_not_include_git_dir() {
         bundle_path: root.join("missing-styles.tar.gz"),
         renderer: Arc::new(OfflineRenderer),
         quiet: true,
+        extra_css: Vec::new(),
     };
     md_render::export::export(&cfg).expect("export");
     assert_no_secret("export", &std::fs::read_to_string(&out).unwrap());
