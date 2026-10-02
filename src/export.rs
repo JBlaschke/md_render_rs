@@ -309,9 +309,59 @@ fn assets_directory(out: &Path) -> anyhow::Result<AssetMode> {
     })
 }
 
+/// The file that writing to `path` must replace: `path`, or the final target of a symlink
+/// at `path` (relative links resolved against the link's directory), so an export through a
+/// link updates the linked file and keeps the link, as writing to it in place would.
+fn write_target(path: &Path) -> io::Result<PathBuf> {
+    let mut target = path.to_path_buf();
+    // Like the OS's own limit on link chains (ELOOP).
+    for _ in 0..40 {
+        match fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let link = fs::read_link(&target)?;
+                target = match target.parent() {
+                    Some(dir) => dir.join(link),
+                    None => link,
+                };
+            }
+            _ => return Ok(target),
+        }
+    }
+    Err(io::Error::other("too many levels of symbolic links"))
+}
+
 /// Write `data` to `path` via a temporary file in the same directory and a rename, so readers
-/// never see a partial file.
+/// never see a partial file. A symlink at `path` is followed (its target is replaced, the link
+/// kept); an existing file keeps its permissions, and one we may not write is not replaced
+/// (as with writing to it in place). An existing non-regular file (`/dev/stdout`, a FIFO) is
+/// written to directly, never replaced.
 fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    let target =
+        write_target(path).with_context(|| format!("resolving the output {}", path.display()))?;
+    let existing = fs::metadata(&target).ok();
+    if let Some(meta) = &existing {
+        if meta.is_dir() {
+            bail!("output {} is a directory", path.display());
+        }
+        if !meta.is_file() {
+            return OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&target)
+                .and_then(|mut f| f.write_all(data))
+                .with_context(|| format!("writing {}", path.display()));
+        }
+        // Opening for writing (without truncating) checks the access the user has.
+        if let Err(e) = OpenOptions::new().write(true).open(&target)
+            && e.kind() == io::ErrorKind::PermissionDenied
+        {
+            bail!(
+                "output {} is not writable; not replacing it",
+                path.display()
+            );
+        }
+    }
+    let path = target.as_path();
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -344,6 +394,9 @@ fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
         let result = (|| -> io::Result<()> {
             let mut file = file;
             file.write_all(data)?;
+            if let Some(meta) = &existing {
+                file.set_permissions(kept_permissions(meta))?;
+            }
             file.sync_all()?;
             drop(file);
             fs::rename(&tmp, path)
@@ -356,6 +409,20 @@ fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     }
     Err(last_err.unwrap_or_else(|| io::Error::other("no free temporary file name")))
         .with_context(|| format!("creating a temporary file in {}", dir.display()))
+}
+
+/// The permissions of a replaced output file for its successor: the access bits (a private
+/// 0600 export stays private), without set-id or sticky bits.
+fn kept_permissions(meta: &fs::Metadata) -> fs::Permissions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::Permissions::from_mode(meta.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        meta.permissions()
+    }
 }
 
 /// Write the page to stdout; a closed pipe (`md-render export - | head`) is not an error.
@@ -400,6 +467,80 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
         assert_eq!(leftovers.len(), 1, "temporary files must not remain");
+    }
+
+    /// CLI-20: an output that is a symlink is written through (the link stays a link, its
+    /// target gets the page), and a replaced file keeps its permissions.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_follows_symlinks_and_keeps_permissions() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let www = tmp.path().join("www");
+        fs::create_dir(&www).unwrap();
+        let site = www.join("site.html");
+        fs::write(&site, "old").unwrap();
+        fs::set_permissions(&site, fs::Permissions::from_mode(0o600)).unwrap();
+        // A relative link, and a link to that link.
+        let link = tmp.path().join("doc.html");
+        symlink("www/site.html", &link).unwrap();
+        let link2 = tmp.path().join("again.html");
+        symlink("doc.html", &link2).unwrap();
+
+        write_atomic(&link, b"new").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&site).unwrap(), b"new");
+        let mode = fs::metadata(&site).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a private output stays private");
+        write_atomic(&link2, b"newer").unwrap();
+        assert!(
+            fs::symlink_metadata(&link2)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&site).unwrap(), b"newer");
+        let entries = |dir: &Path| fs::read_dir(dir).unwrap().count();
+        assert_eq!(entries(&www), 1, "no temporary files left");
+
+        // A dangling link creates its target.
+        let dangling = tmp.path().join("new.html");
+        symlink("www/created.html", &dangling).unwrap();
+        write_atomic(&dangling, b"x").unwrap();
+        assert_eq!(fs::read(www.join("created.html")).unwrap(), b"x");
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    /// CLI-20: a read-only output is not replaced (writing it in place would fail too).
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_refuses_read_only_outputs() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let ro = tmp.path().join("ro.html");
+        fs::write(&ro, "ro").unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o444)).unwrap();
+        if OpenOptions::new().write(true).open(&ro).is_ok() {
+            eprintln!("SKIPPED (running with permission to write read-only files)");
+            return;
+        }
+        let err = write_atomic(&ro, b"new").unwrap_err();
+        assert!(format!("{err:#}").contains("not writable"), "{err:#}");
+        assert_eq!(fs::read(&ro).unwrap(), b"ro");
+        let mode = fs::metadata(&ro).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o444);
+        let err = write_atomic(tmp.path(), b"x").unwrap_err();
+        assert!(format!("{err:#}").contains("is a directory"), "{err:#}");
     }
 
     #[test]
