@@ -238,6 +238,17 @@ async fn title_override() {
     let s = f.start(|cfg| cfg.title = Some("My <Title>".into())).await;
     let body = s.get("/").await.text();
     assert!(body.contains("<title>My &lt;Title&gt;"), "{body}");
+    // CLI-24: --title replaces the file name in the box header too (grip; exports do the same),
+    // also on a document's error page.
+    assert!(
+        body.contains("<span>My &lt;Title&gt;</span></h2>") && !body.contains("<span>README.md"),
+        "{body}"
+    );
+    let missing = s.get("/new.md").await.text();
+    assert!(
+        missing.contains("<span>My &lt;Title&gt;</span></h2>"),
+        "{missing}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

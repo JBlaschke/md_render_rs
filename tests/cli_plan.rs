@@ -354,29 +354,25 @@ fn served_root_rules() {
 
 #[cfg(unix)]
 #[test]
-fn symlinks_keep_their_name_and_escapes_warn() {
+fn symlinks_keep_their_name_and_need_no_flag() {
     let fx = Fixture::new();
     let outside = fx.cwd.parent().unwrap().join("outside.md");
     fs::write(&outside, "x").unwrap();
     std::os::unix::fs::symlink(&outside, fx.cwd.join("link.md")).unwrap();
     std::os::unix::fs::symlink(fx.cwd.join("README.md"), fx.cwd.join("inner.md")).unwrap();
 
-    let inv = run(&fx, &["link.md"]).unwrap();
-    let Plan::Serve(p) = &inv.plan else { panic!() };
-    assert_eq!(p.target, file("link.md"));
-    assert!(
-        inv.warnings.iter().any(|w| w.contains("--follow-symlinks")),
-        "{:?}",
-        inv.warnings
-    );
-    assert!(
-        run(&fx, &["--follow-symlinks", "link.md"])
-            .unwrap()
-            .warnings
-            .is_empty()
-    );
-    let inv = run(&fx, &["inner.md"]).unwrap();
-    assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
+    // CLI-18: the server serves an explicitly named target even when it links out of the root,
+    // so there is nothing to warn about (and no need for --follow-symlinks).
+    for args in [
+        &["link.md"][..],
+        &["--follow-symlinks", "link.md"],
+        &["inner.md"],
+    ] {
+        let inv = run(&fx, args).unwrap();
+        let Plan::Serve(p) = &inv.plan else { panic!() };
+        assert_eq!(p.target, file(args[args.len() - 1]), "{args:?}");
+        assert!(inv.warnings.is_empty(), "{args:?}: {:?}", inv.warnings);
+    }
 }
 
 #[test]
@@ -881,14 +877,14 @@ fn export_naming() {
 #[test]
 fn export_render_options() {
     let fx = Fixture::new();
-    // ExportConfig has no extra stylesheets: say so instead of ignoring --css silently.
+    // CLI-12: exports apply --css (inlined, or copied with --no-inline): no warning, and the
+    // stylesheet reaches the export configuration.
     let inv = run(&fx, &["export", "--css", "style.css"]).unwrap();
-    assert!(
-        inv.warnings
-            .iter()
-            .any(|w| w.contains("--css has no effect on exports")),
-        "{:?}",
-        inv.warnings
+    assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
+    let css = export(&fx, &["export", "--css", "style.css"]).into_config(Arc::new(OfflineRenderer));
+    assert_eq!(
+        css.extra_css,
+        [fx.cwd.join("style.css").to_string_lossy().into_owned()]
     );
     assert!(run(&fx, &["export"]).unwrap().warnings.is_empty());
     let p = export(

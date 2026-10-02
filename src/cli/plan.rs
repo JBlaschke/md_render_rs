@@ -896,8 +896,8 @@ fn serve_plan(
                 },
             )
         }
-        Some(p) => fs_target(cwd, Path::new(p), root_arg, s.follow_symlinks, warnings)?,
-        None => fs_target(cwd, Path::new("."), root_arg, s.follow_symlinks, warnings)?,
+        Some(p) => fs_target(cwd, Path::new(p), root_arg)?,
+        None => fs_target(cwd, Path::new("."), root_arg)?,
     };
 
     Ok(ServePlan {
@@ -971,8 +971,6 @@ fn fs_target(
     cwd: &Path,
     path: &Path,
     root_arg: Option<&Path>,
-    follow_symlinks: bool,
-    warnings: &mut Vec<String>,
 ) -> Result<(PathBuf, Target), CliError> {
     let abs = absolutize(cwd, path);
     let meta = fs::metadata(&abs).map_err(|e| match e.kind() {
@@ -1008,20 +1006,8 @@ fn fs_target(
             ),
         )
     })?;
-    if !is_dir && !follow_symlinks {
-        let is_link = fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink());
-        if is_link
-            && let Ok(real) = fs::canonicalize(&abs)
-            && !real.starts_with(&root)
-        {
-            warnings.push(format!(
-                        "{} is a symlink to {}, outside the served root {}; pass --follow-symlinks to serve it",
-                        path.display(),
-                        real.display(),
-                        root.display()
-                    ));
-        }
-    }
+    // A target file that is a symlink out of the root needs no --follow-symlinks: the server
+    // serves the file that was named explicitly (CLI-18); other escaping links stay blocked.
     Ok((
         root,
         if is_dir {
@@ -1066,11 +1052,6 @@ fn export_plan(
     cwd: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<ExportPlan, CliError> {
-    if !render.extra_css.is_empty() {
-        // `ExportConfig` (DESIGN §3.9) has no extra stylesheets.
-        warnings
-            .push("--css has no effect on exports (it is only applied when serving)".to_owned());
-    }
     let input = match a.path.as_deref() {
         Some(p) if p == OsStr::new("-") => {
             let text = read_stdin(host, render.quiet, warnings)?;

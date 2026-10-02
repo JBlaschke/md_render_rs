@@ -280,7 +280,7 @@ impl App {
                     StatusCode::OK,
                     content.clone(),
                     title,
-                    Some(name.clone()),
+                    Some(self.header_name(name)),
                     None,
                     Vec::new(),
                 )
@@ -433,7 +433,7 @@ impl App {
                     StatusCode::OK,
                     c.rendered.clone(),
                     title,
-                    Some(rel.to_owned()),
+                    Some(self.header_name(rel)),
                     live,
                     Vec::new(),
                 )
@@ -450,7 +450,7 @@ impl App {
                     status,
                     c.rendered.clone(),
                     title,
-                    Some(rel.to_owned()),
+                    Some(self.header_name(rel)),
                     live,
                     vec![banner],
                 )
@@ -496,11 +496,17 @@ impl App {
             status,
             content,
             title,
-            Some(rel.to_owned()),
+            Some(self.header_name(rel)),
             live,
             Vec::new(),
         )
         .await
+    }
+
+    /// The box header of a document page: `--title` replaces the file name there too, as in
+    /// exports (grip, GRIP §2.4 C21; CLI-24).
+    fn header_name(&self, name: &str) -> String {
+        self.title.clone().unwrap_or_else(|| name.to_owned())
     }
 
     fn live_info(&self, rel: &str, version: u64) -> LiveInfo {
