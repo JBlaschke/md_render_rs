@@ -34,6 +34,7 @@ thiserror.workspace = true
 # markdown, DOM, highlighting (pure Rust: no onig / C deps)
 comrak = { version = "=0.55.0", default-features = false, features = ["shortcodes"] }
 dom_query = "0.28.0"
+html5ever = "0.39.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 yaml-rust2 = "0.13.0"
