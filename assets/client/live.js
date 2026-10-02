@@ -62,6 +62,10 @@
     lastAnchor: null, // scroll anchor of the last update applied to non-empty content
   };
   const keys = new WeakMap(); // top-level node -> key computed from pristine server HTML
+  // Decoded URL path of a changed local file -> its latest cache-bust token. Applied to the
+  // media of every block inserted later too: re-inserted server HTML has the plain URL,
+  // which the browser's in-document image cache would answer with the old file (LIVE-6).
+  const bustTokens = new Map();
   const banners = new Map(); // slot ("doc" | "bundle" | "warnings") -> element
   const activeErrors = new Set(); // slots whose banner is an error
   let statusDot = null;
@@ -281,7 +285,9 @@
   function onAssets(d) {
     const container = root();
     if (!container || !Array.isArray(d.urls)) return;
-    bustMedia(container, d.urls, String(d.v || Date.now()));
+    const token = String(d.v || Date.now());
+    d.urls.forEach((u) => bustTokens.set(decodePath(String(u)), token));
+    bustMedia([container], true);
   }
 
   function onStyles(d) {
@@ -316,6 +322,7 @@
         keys.set(n, keyOf(n));
         if (n.nodeType === Node.ELEMENT_NODE) added.push(n);
       }
+      bustMedia([container], true);
     }
     state.contentVersion = Number(msg.version);
     state.version = Math.max(state.version, state.contentVersion);
@@ -392,6 +399,9 @@
       }
     });
     pool.forEach((list) => list.forEach((n) => container.removeChild(n)));
+    // While the new nodes are still inert template content, so the stale URL of a changed
+    // image is never requested.
+    bustMedia(added, false);
     // Every remaining child is in `result`; walk it with a cursor so nodes that are
     // already in place are not moved (moving reloads iframes and restarts media).
     let cursor = container.firstChild;
@@ -630,17 +640,27 @@
     });
   }
 
-  // Cache-bust local media whose files changed (`assets` event).
-  function bustMedia(container, urls, token) {
-    const wanted = new Set(urls.map((u) => decodePath(String(u))));
+  // Point local media at the latest version of files that changed (`assets` events, see
+  // `bustTokens`), in and below `nodes`. `reload` re-loads media elements whose <source> or
+  // <track> changed (only needed for media that is already in the document).
+  function bustMedia(nodes, reload) {
+    if (!bustTokens.size) return;
     const bust = (value) => {
       const u = sameOrigin(value);
-      if (!u || !wanted.has(decodePath(u.pathname))) return value;
+      const token = u && bustTokens.get(decodePath(u.pathname));
+      if (!token || u.searchParams.get('mdrv') === token) return value;
       u.searchParams.set('mdrv', token);
       return u.pathname + u.search + u.hash;
     };
-    const reload = new Set();
-    container.querySelectorAll('img, source, video, audio, track, input[type="image"]').forEach((el) => {
+    const selector = 'img, source, video, audio, track, input[type="image"]';
+    const elements = [];
+    nodes.forEach((n) => {
+      if (n.nodeType !== Node.ELEMENT_NODE) return;
+      if (n.matches(selector)) elements.push(n);
+      n.querySelectorAll(selector).forEach((el) => elements.push(el));
+    });
+    const media = new Set();
+    elements.forEach((el) => {
       let changed = false;
       ['src', 'poster'].forEach((attr) => {
         const old = el.getAttribute(attr);
@@ -664,10 +684,12 @@
         }
       }
       // A changed <source>/<track> only takes effect after the media element reloads.
-      const media = el.parentElement;
-      if (changed && el.localName !== 'img' && media && typeof media.load === 'function') reload.add(media);
+      const parent = el.parentElement;
+      if (reload && changed && el.localName !== 'img' && parent && typeof parent.load === 'function') {
+        media.add(parent);
+      }
     });
-    reload.forEach((m) => m.load());
+    media.forEach((m) => m.load());
   }
 
   // ---------------------------------------------------------------------------------------

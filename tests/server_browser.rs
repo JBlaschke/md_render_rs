@@ -13,7 +13,7 @@ mod server_support;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -267,5 +267,59 @@ async fn hidden_tabs_give_back_their_connections() {
         &tabs[0],
         "document.getElementById('md-content').textContent.includes('AGAIN')",
         "the tab shown again gets live updates",
+    );
+}
+
+fn svg(width: u32) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"50\">\
+         <rect width=\"{width}\" height=\"50\" fill=\"teal\"/></svg>"
+    )
+}
+
+/// The natural width of the first image in the content once it has loaded (0 before).
+const IMG_WIDTH: &str = "(() => { const i = document.querySelector('#md-content img'); \
+     return i && i.complete ? i.naturalWidth : 0; })()";
+
+/// LIVE-6: an image refreshed by an `assets` event stays new when the block around it is
+/// edited later (the re-inserted `<img>` must not fall back to the stale cached URL).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refreshed_images_stay_fresh_when_their_block_changes() {
+    let Some(mut b) = Browser::launch("refreshed_images_stay_fresh_when_their_block_changes")
+    else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("doc.md", "# Doc\n\n![img](pic.svg)\n\nafter\n");
+    f.file("pic.svg", svg(100));
+    let s = f
+        .start(|cfg| cfg.renderer = Arc::new(md_render::render::OfflineRenderer))
+        .await;
+    let tab = b.open(&url(&s, "/doc.md"), false);
+    b.expect_connected(&tab);
+    assert_eq!(b.expect(&tab, IMG_WIDTH, "the image loads"), json!(100));
+
+    write_atomic(&s.path("pic.svg"), svg(200));
+    b.expect(
+        &tab,
+        &format!("{IMG_WIDTH} === 200"),
+        "the changed image is shown",
+    );
+
+    write_atomic(
+        &s.path("doc.md"),
+        "# Doc\n\n![img changed alt](pic.svg)\n\nafter\n",
+    );
+    b.expect(
+        &tab,
+        "document.querySelector('#md-content img')?.alt === 'img changed alt'",
+        "the edited block is applied",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let width = b.expect(&tab, IMG_WIDTH, "the re-inserted image loads");
+    assert_eq!(
+        width,
+        json!(200),
+        "the re-inserted image shows the old file"
     );
 }
