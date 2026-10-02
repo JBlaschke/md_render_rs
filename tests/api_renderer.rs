@@ -283,10 +283,10 @@ fn errors_without_fallback_are_returned() {
             .downcast_ref::<ApiError>()
             .unwrap_or_else(|| panic!("not an ApiError: {err:#}"));
         assert!(check(api), "{api:?}");
-        assert!(
-            format!("{err:#}").starts_with("rendering through the GitHub API: "),
-            "{err:#}"
-        );
+        // The error is the ApiError itself, which names the API (CLI-23: no repeated
+        // "rendering through the GitHub API: " context).
+        assert_eq!(format!("{err:#}"), api.to_string());
+        assert!(format!("{err:#}").contains("GitHub API"), "{err:#}");
     }
     // A GitLab 200 without an `html` string is a bad response.
     let r = ApiRenderer::with_transport(

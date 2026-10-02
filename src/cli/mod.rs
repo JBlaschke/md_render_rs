@@ -15,8 +15,8 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::Parser as _;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::{CommandFactory as _, Parser as _};
 
 pub mod address;
 pub mod args;
@@ -39,6 +39,9 @@ pub fn main() -> ExitCode {
 /// argv, the hint is only given when clap actually finds the option, so `--title -p` style values
 /// and arguments after `--` are not misreported.
 ///
+/// `--poll 500` (with a space) is a usage error: `--poll` takes its value only as `--poll=MS`,
+/// so the number would silently become the PATH or ADDRESS (CLI-13).
+///
 /// # Errors
 /// [`CliError::Clap`] for usage errors and for `--help` / `--version` (exit code 0), or
 /// [`CliError::Hint`] for `-a` / `-p`.
@@ -47,9 +50,39 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    Cli::try_parse_from(argv).map_err(|e| match grip_hint(&e) {
-        Some(hint) => CliError::Hint(hint),
-        None => CliError::Clap(e),
+    let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
+    let cli = Cli::try_parse_from(&argv).map_err(|e| {
+        if let Some(hint) = grip_hint(&e) {
+            CliError::Hint(hint)
+        } else if let Some(conflict) = serve_flag_after_subcommand(&e, &argv) {
+            conflict
+        } else {
+            CliError::Clap(e)
+        }
+    })?;
+    if cli.command.is_none() && cli.serve.poll.is_some() {
+        if let Some(ms) = detached_poll_value(&argv) {
+            return Err(plan::usage(
+                ErrorKind::ValueValidation,
+                format!(
+                    "'--poll {ms}' does not set the interval (it would be taken as the PATH or \
+                     ADDRESS): write --poll={ms}, or put the address before the option \
+                     (`md-render README.md {ms} --poll`)"
+                ),
+            ));
+        }
+    }
+    Ok(cli)
+}
+
+/// The number in `--poll NUMBER` (separate arguments, before any `--`), if there is one.
+fn detached_poll_value(argv: &[OsString]) -> Option<&str> {
+    let args = argv.get(1..)?;
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args[..end].windows(2).find_map(|pair| {
+        let value = pair[1].to_str()?;
+        (pair[0] == "--poll" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .then_some(value)
     })
 }
 
@@ -63,6 +96,52 @@ where
     T: Into<OsString> + Clone,
 {
     plan::plan(parse_args(argv)?, host)
+}
+
+/// A serve-only flag after a subcommand (`md-render export --browser`) is unknown to clap,
+/// which would suggest a lookalike option and print it in the usage line as if it were
+/// required (`Usage: md-render export --verbose... [PATH] [OUT]`). Report it like the same flag
+/// before the subcommand instead (CLI-14).
+fn serve_flag_after_subcommand(e: &clap::Error, argv: &[OsString]) -> Option<CliError> {
+    if e.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(arg)) = e.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    let flag = serve_flag(arg.split_once('=').map_or(arg.as_str(), |(n, _)| n))?;
+    // The subcommand the flag was given to (clap stops at the first error otherwise).
+    let matches = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(argv)
+        .ok()?;
+    let mut path = Vec::new();
+    let mut m = &matches;
+    while let Some((name, sub)) = m.subcommand() {
+        path.push(name);
+        m = sub;
+    }
+    (!path.is_empty()).then(|| plan::serve_flag_conflict(&flag, &path))
+}
+
+/// `--browser` for `--browser`, `-b` or the alias `--no-reload` → `--norefresh`: the canonical
+/// name of a serve-only option, if `name` is one.
+fn serve_flag(name: &str) -> Option<String> {
+    let cmd = Cli::command();
+    let found = cmd
+        .get_arguments()
+        .filter(|a| !a.is_global_set() && !a.is_positional())
+        .find(|a| {
+            if let Some(long) = name.strip_prefix("--") {
+                a.get_long() == Some(long)
+                    || a.get_all_aliases()
+                        .is_some_and(|aliases| aliases.contains(&long))
+            } else {
+                let mut short = name.strip_prefix('-').unwrap_or_default().chars();
+                short.next().is_some_and(|c| a.get_short() == Some(c)) && short.next().is_none()
+            }
+        })?;
+    found.get_long().map(|long| format!("--{long}"))
 }
 
 /// The hint for an unknown `-a`/`--address`/`--host` or `-p`/`--port` option, if `e` is one.
@@ -128,6 +207,30 @@ mod tests {
         assert_eq!(code(&["md-render", "--bogus"]), Some(2));
         assert_eq!(code(&["md-render", "--version"]), Some(0));
         assert_eq!(code(&["md-render", "-h"]), Some(0));
+    }
+
+    /// CLI-13: `--poll 500` must not quietly use 500 as the PATH or ADDRESS.
+    #[test]
+    fn detached_poll_values_are_usage_errors() {
+        for argv in [
+            &["md-render", "README.md", "--poll", "500"][..],
+            &["md-render", "--poll", "500", "README.md"],
+            &["md-render", "--poll", "500"],
+        ] {
+            let err = parse_args(argv).expect_err("a detached --poll value");
+            assert_eq!(err.exit_code(), 2, "{argv:?}");
+            let msg = err.to_string();
+            assert!(msg.contains("write --poll=500"), "{msg}");
+        }
+        for argv in [
+            &["md-render", "README.md", "--poll=500"][..],
+            &["md-render", "--poll", "README.md"],
+            &["md-render", "README.md", "8080", "--poll"],
+            &["md-render", "--poll", "--", "500"],
+            &["md-render", "--title=--poll", "500", "--poll"],
+        ] {
+            assert!(parse_args(argv).is_ok(), "{argv:?}");
+        }
     }
 
     #[test]

@@ -262,9 +262,12 @@ fn lone_host_names_and_bad_ports_are_paths() {
     for (arg, hint) in [
         ("0.0.0.0", true),
         ("localhost", true),
-        ("70000", true),
+        ("70000", false),
         ("[::1]", true),
         ("notes.md", false),
+        // CLI-8: extension-less file names are not host names.
+        ("notes", false),
+        ("README", false),
     ] {
         let (msg, code) = error(&fx, &[arg]);
         assert_eq!(code, 1, "{arg}");
@@ -273,7 +276,16 @@ fn lone_host_names_and_bad_ports_are_paths() {
             "{msg}"
         );
         assert_eq!(msg.contains(&format!("md-render . {arg}")), hint, "{msg}");
+        // Exports never listen: no hint at all.
+        let (msg, code) = error(&fx, &["export", arg]);
+        assert_eq!(code, 1, "{arg}");
+        assert_eq!(msg, format!("error: File not found: {arg}"));
     }
+    assert!(
+        error(&fx, &["70000"]).0.contains("nor is it a port"),
+        "{:?}",
+        error(&fx, &["70000"])
+    );
     // `_` and unbracketed IPv6 never form an address: as a lone positional they are paths.
     assert!(
         error(&fx, &["my_host:80"])
@@ -630,6 +642,41 @@ fn api_options() {
     assert!(!dbg.contains("s3cr3t"), "{dbg}");
 
     assert_eq!(error(&fx, &["--api", "--api-url", "ftp://x"]).1, 2);
+
+    // CLI-6: credentials in --api-url are a usage error that never repeats them.
+    for (flavor, url, hint) in [
+        (
+            "gitlab",
+            "http://oauth2:s3cr3t@127.0.0.1:7249",
+            "GITLAB_TOKEN",
+        ),
+        (
+            "github",
+            "https://me:s3cr3t@ghe.example/api/v3",
+            "GH_ENTERPRISE_TOKEN",
+        ),
+        ("github", "https://s3cr3t@ghe.example", "GITHUB_TOKEN"),
+    ] {
+        let (msg, code) = error(&fx, &["-f", flavor, "--api", "--api-url", url]);
+        assert_eq!(code, 2, "{msg}");
+        assert!(
+            msg.contains("credentials in the URL are not supported") && msg.contains(hint),
+            "{msg}"
+        );
+        assert!(msg.contains("***@") && !msg.contains("s3cr3t"), "{msg}");
+        let (msg, _) = error(&fx, &["-f", flavor, "--api", "--api-url", url, "export"]);
+        assert!(!msg.contains("s3cr3t"), "{msg}");
+    }
+    // Unparseable URLs are shown redacted as well.
+    let (msg, code) = error(
+        &fx,
+        &["--api", "--api-url", "http://u:s3cr3t@h:99999/x?k=s3cr3t"],
+    );
+    assert_eq!(code, 2, "{msg}");
+    assert!(!msg.contains("s3cr3t"), "{msg}");
+    let (msg, _) = error(&fx, &["vendor", "--github-source", "ftp://u:s3cr3t@h/"]);
+    assert!(!msg.contains("s3cr3t"), "{msg}");
+
     let inv = run(&fx, &["--token", "x"]).unwrap();
     assert!(
         inv.warnings
@@ -638,6 +685,33 @@ fn api_options() {
         "{:?}",
         inv.warnings
     );
+
+    // CLI-22: the offline renderers do not link references, so --context only matters with
+    // --api (and the help says so).
+    let context_warning = |args: &[&str]| {
+        run(&fx, args)
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("--context has no effect without --api"))
+    };
+    assert!(context_warning(&["--context", "o/r"]));
+    assert!(context_warning(&[
+        "export",
+        "--context",
+        "o/r",
+        "README.md",
+        "-"
+    ]));
+    assert!(!context_warning(&["--api", "--context", "o/r"]));
+    assert!(!context_warning(&["--context", " "]));
+    assert!(!context_warning(&[]));
+    let mut cmd = <md_render::cli::Cli as clap::CommandFactory>::command();
+    // Whitespace-insensitive: the help is wrapped to the terminal width.
+    let help = cmd.render_long_help().to_string();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("(no effect offline)"), "{help}");
+    assert!(!help.contains("for reference links"), "{help}");
 }
 
 #[test]
@@ -883,6 +957,53 @@ fn vendor_options() {
     assert_eq!(error(&fx, &["vendor", "--themes", "some"]).1, 2);
 }
 
+/// CLI-11 / Q-CLI-1: rendering and API options are global, so `vendor` and `cache` accept
+/// them; they say that the options do nothing instead of ignoring them silently.
+#[test]
+fn vendor_and_cache_warn_about_rendering_options() {
+    let fx = Fixture::new();
+    let warnings = |args: &[&str]| run(&fx, args).unwrap().warnings;
+    let w = warnings(&[
+        "vendor",
+        "-f",
+        "github",
+        "--api",
+        "--token",
+        "s3cr3t",
+        "--css",
+        "/nonexistent.css",
+        "--theme",
+        "dark_dimmed",
+        "--title",
+        "T",
+        "--user-content",
+        "--context",
+        "a/b",
+    ]);
+    assert_eq!(
+        w,
+        [
+            "'--user-content', '--context', '--title', '--theme', '--css', '--api', '--token' \
+          have no effect with the 'vendor' subcommand"
+        ]
+    );
+    assert!(!w[0].contains("s3cr3t") && !w[0].contains("--flavor"));
+    let w = warnings(&[
+        "cache", "path", "--api", "-f", "gitlab", "--mode", "comment",
+    ]);
+    assert_eq!(
+        w,
+        ["'--flavor', '--mode', '--api' have no effect with the 'cache' subcommand"]
+    );
+    assert_eq!(
+        warnings(&["--clear", "--layout", "bare"]),
+        ["'--layout' has no effect with --clear"]
+    );
+    // Options the commands do read are not reported.
+    assert!(warnings(&["vendor", "-f", "gitlab", "--styles", "x.tar.gz", "-q"]).is_empty());
+    assert!(warnings(&["cache", "path", "--styles", "x.tar.gz"]).is_empty());
+}
+
 #[test]
 fn cache_commands() {
     let fx = Fixture::new();
@@ -976,15 +1097,152 @@ fn subcommands_reject_serve_arguments() {
         assert_eq!(code, 2, "{args:?}");
         assert!(msg.contains(needle), "{args:?}: {msg}");
     }
-    // Serve-only flags after the subcommand are unknown there (clap error, exit 2).
-    assert_eq!(error(&fx, &["vendor", "-b"]).1, 2);
-    assert_eq!(error(&fx, &["export", "--root", "."]).1, 2);
+    // Serve-only flags after the subcommand are rejected the same way (CLI-14).
+    let (msg, code) = error(&fx, &["vendor", "-b"]);
+    assert_eq!(code, 2);
+    assert!(
+        msg.contains("'--browser' cannot be used with the 'vendor' subcommand"),
+        "{msg}"
+    );
+    let (msg, code) = error(&fx, &["export", "--root", "."]);
+    assert_eq!(code, 2);
+    assert!(
+        msg.contains("'--root' cannot be used with the 'export' subcommand"),
+        "{msg}"
+    );
     // `./vendor` and `-- vendor` name a file called `vendor`.
     fs::write(fx.cwd.join("vendor"), "# v").unwrap();
     assert_eq!(serve(&fx, &["./vendor"]).target, file("vendor"));
     assert_eq!(serve(&fx, &["--", "vendor"]).target, file("vendor"));
     // `help` is not a subcommand (a file may be called `help`).
     assert!(error(&fx, &["help"]).0.contains("File not found: help"));
+}
+
+/// CLI-21: a bare subcommand next to a file of that name says how to serve the file, like a
+/// port-like name does, before going to the network (`vendor`) or writing README.html.
+#[test]
+fn a_subcommand_shadowing_an_existing_file_warns() {
+    let fx = Fixture::new();
+    let note = |name: &str| {
+        format!("running the '{name}' subcommand; to serve the file '{name}' use ./{name}")
+    };
+    let warnings = |args: &[&str]| run(&fx, args).unwrap().warnings;
+    assert!(!warnings(&["vendor"]).contains(&note("vendor")));
+    fs::write(fx.cwd.join("vendor"), "# a file named vendor").unwrap();
+    fs::write(fx.cwd.join("export"), "# a file named export").unwrap();
+    assert!(warnings(&["vendor"]).contains(&note("vendor")));
+    assert!(warnings(&["-f", "gitlab", "vendor"]).contains(&note("vendor")));
+    assert!(warnings(&["export"]).contains(&note("export")));
+    // Arguments of the subcommand make the intent clear.
+    for args in [
+        &["vendor", "--no-libs"][..],
+        &["vendor", "-o", "b.tar.gz"],
+        &["export", "README.md"],
+        &["export", "--no-inline"],
+    ] {
+        let w = warnings(args);
+        assert!(
+            !w.iter().any(|w| w.contains("subcommand;")),
+            "{args:?}: {w:?}"
+        );
+    }
+}
+
+/// CLI-14: usage errors of a subcommand show its usage line (not the top-level one), and a
+/// serve-only flag after a subcommand gets the same message as before it instead of clap's
+/// lookalike suggestion (`tip: a similar argument exists: '--verbose'`, which also put
+/// `--verbose...` into the usage line).
+#[test]
+fn subcommand_errors_show_the_subcommand_usage() {
+    let fx = Fixture::new();
+    let export = "Usage: md-render export [OPTIONS] [PATH] [OUT]";
+    let vendor = "Usage: md-render vendor [OPTIONS]";
+    let top = "Usage: md-render [OPTIONS] [PATH] [ADDRESS]";
+    for (args, needle, usage) in [
+        (
+            &["export", "README.md", "./README.md"][..],
+            "the export would overwrite its input",
+            export,
+        ),
+        (
+            &["-f", "all", "export"],
+            "'--flavor all' is only valid",
+            export,
+        ),
+        (
+            &["export", "--theme", "light", "--light-theme", "nope"],
+            "invalid value 'nope' for '--light-theme <ID>'",
+            export,
+        ),
+        (
+            &["export", "--browser"],
+            "'--browser' cannot be used with the 'export' subcommand (to render a file named \
+             'export' use ./export)",
+            export,
+        ),
+        (
+            &["export", "--poll=500"],
+            "'--poll' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["export", "--no-reload", "README.md"],
+            "'--norefresh' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["--root", ".", "export"],
+            "'--root' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["vendor", "-qb"],
+            "'--browser' cannot be used with the 'vendor' subcommand",
+            vendor,
+        ),
+        (
+            &["vendor", "--no-inline"],
+            "'--no-inline' cannot be used with the 'vendor' subcommand",
+            vendor,
+        ),
+        (
+            &["vendor", "--github-source", "nope"],
+            "invalid value 'nope' for '--github-source <URL>'",
+            vendor,
+        ),
+        (
+            &["cache", "clear", "--follow-symlinks"],
+            "'--follow-symlinks' cannot be used with the 'cache' subcommand",
+            "Usage: md-render cache clear [OPTIONS]",
+        ),
+        (
+            &["-b", "cache", "path"],
+            "'--browser' cannot be used with the 'cache' subcommand",
+            "Usage: md-render cache path [OPTIONS]",
+        ),
+        // Serving and grip's `--export` keep the top-level usage.
+        (
+            &["--export", "README.md", "README.md"],
+            "the export would overwrite its input",
+            top,
+        ),
+        (&["README.md", "::1"], "put IPv6 addresses in brackets", top),
+    ] {
+        let (msg, code) = error(&fx, args);
+        assert_eq!(code, 2, "{args:?}: {msg}");
+        assert!(msg.contains(needle), "{args:?}: {msg}");
+        assert_eq!(
+            msg.lines().find(|l| l.starts_with("Usage:")),
+            Some(usage),
+            "{args:?}: {msg}"
+        );
+        assert!(!msg.contains("similar argument"), "{args:?}: {msg}");
+    }
+    // Other unknown options keep clap's own error, in the subcommand's usage.
+    let (msg, code) = error(&fx, &["export", "--bogus"]);
+    assert_eq!(code, 2);
+    assert!(msg.contains("unexpected argument '--bogus'"), "{msg}");
+    assert!(msg.contains(export), "{msg}");
 }
 
 #[test]

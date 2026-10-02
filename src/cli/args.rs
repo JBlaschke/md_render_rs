@@ -47,7 +47,10 @@ PATH. To serve a file named like a port or a subcommand, write `./8080` or `./ve
 Environment:
   MD_RENDER_FLAVOR   default for --flavor
   MD_RENDER_STYLES   default for --styles
-  GITHUB_TOKEN, GH_TOKEN, `gh auth token`   GitHub token for --api
+  GITHUB_TOKEN, GH_TOKEN, `gh auth token`   GitHub token for --api (github.com, *.ghe.com)
+  GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN, `gh auth token --hostname HOST`
+                                            GitHub Enterprise Server token (--api-url HOST);
+                                            a github.com token is never sent there
   GITLAB_TOKEN, `glab config get token`     GitLab token for --api
   RUST_LOG           log filter (overrides -v/--quiet)";
 
@@ -77,7 +80,7 @@ pub struct Cli {
 /// `--flavor` values; `all` is accepted by `vendor` only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum FlavorArg {
-    /// GitHub (default)
+    /// GitHub
     Github,
     /// GitLab
     Gitlab,
@@ -98,7 +101,7 @@ pub enum ThemesArg {
 /// Options shared by every command (usable before or after the subcommand).
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct GlobalArgs {
-    /// Site flavor to reproduce [env: MD_RENDER_FLAVOR] [default: github]
+    /// Site flavor to reproduce [default: $MD_RENDER_FLAVOR, else github; for vendor: all]
     #[arg(
         short = 'f',
         long,
@@ -116,8 +119,8 @@ pub struct GlobalArgs {
     #[arg(long, global = true, help_heading = "Rendering")]
     pub user_content: bool,
 
-    /// Repository context (owner/repo, or group/project for GitLab), used by --api and for
-    /// reference links
+    /// Repository context (owner/repo, or group/project for GitLab) sent with --api, which
+    /// links references like #123 against it (no effect offline)
     #[arg(long, value_name = "REPO", global = true, help_heading = "Rendering")]
     pub context: Option<String>,
 
@@ -159,8 +162,8 @@ pub struct GlobalArgs {
     #[arg(long, value_name = "URL", global = true, help_heading = "API")]
     pub api_url: Option<String>,
 
-    /// API token (prefer the GITHUB_TOKEN / GITLAB_TOKEN environment variables: command-line
-    /// arguments are visible to other users)
+    /// API token (prefer the GITHUB_TOKEN / GH_ENTERPRISE_TOKEN / GITLAB_TOKEN environment
+    /// variables: command-line arguments are visible to other users)
     #[arg(long, value_name = "TOKEN", global = true, help_heading = "API")]
     pub token: Option<String>,
 
@@ -174,7 +177,7 @@ pub struct GlobalArgs {
     )]
     pub quiet: bool,
 
-    /// More log output (-v: debug, -vv: trace)
+    /// More log output (-v: debug, -vv: trace, -vvv: trace for the libraries too)
     #[arg(short, long, action = ArgAction::Count, global = true, help_heading = "Output")]
     pub verbose: u8,
 
@@ -387,6 +390,19 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// CLI-10 / Q-CLI-1: `vendor --help` must not claim `github` as the --flavor default.
+    #[test]
+    fn flavor_help_is_right_for_vendor() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let vendor = cmd.find_subcommand_mut("vendor").unwrap();
+        let help = vendor.render_long_help().to_string();
+        assert!(help.contains("default: all;"), "{help}");
+        assert!(!help.contains("[default: github]"), "{help}");
+        assert!(!help.contains("GitHub (default)"), "{help}");
+        assert!(help.contains("for vendor: all"), "{help}");
     }
 
     #[test]

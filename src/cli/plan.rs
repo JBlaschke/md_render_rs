@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::error::ErrorKind;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory as _, ValueEnum as _};
 
 use crate::export::{ExportConfig, ExportInput, ExportOutput};
 use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
 use crate::page::Layout;
-use crate::render::api::{ApiConfig, ApiRenderer};
+use crate::render::api::{ApiConfig, ApiRenderer, credential_hint, redact_url};
 use crate::render::{OfflineRenderer, Renderer};
 use crate::server::{ServeConfig, Target};
 use crate::styles::vendor::{GITHUB_SOURCE, GITLAB_SOURCE, VendorOptions};
@@ -125,9 +125,51 @@ impl From<clap::Error> for CliError {
     }
 }
 
-/// A clap-formatted usage error (exit 2).
+/// A clap-formatted usage error (exit 2) with the top-level usage line. Errors of a subcommand
+/// get its usage line instead (see [`CliError::in_subcommand`]).
 pub(crate) fn usage(kind: ErrorKind, message: impl fmt::Display) -> CliError {
-    CliError::Clap(Cli::command().error(kind, message))
+    usage_in(None, kind, message)
+}
+
+/// A clap-formatted usage error (exit 2) showing the usage line of `subcommand` (a path such as
+/// `["cache", "clear"]`; empty for the top level), so `md-render export …` errors print
+/// `Usage: md-render export [OPTIONS] [PATH] [OUT]` (CLI-14). The message is kept in the error's
+/// context so that it can be shown again with another usage line.
+pub(crate) fn usage_in(
+    subcommand: Option<&[&str]>,
+    kind: ErrorKind,
+    message: impl fmt::Display,
+) -> CliError {
+    let message = message.to_string();
+    let mut top = Cli::command();
+    // Building sets the subcommands' display names (`md-render export`).
+    top.build();
+    let mut cmd = &mut top;
+    for name in subcommand.unwrap_or_default() {
+        if cmd.find_subcommand(name).is_none() {
+            break;
+        }
+        cmd = cmd.find_subcommand_mut(name).expect("checked above");
+    }
+    let mut err = cmd.error(kind, &message);
+    err.insert(ContextKind::Custom, ContextValue::String(message));
+    CliError::Clap(err)
+}
+
+impl CliError {
+    /// A usage error made by [`usage`], shown with the usage line of `subcommand` instead of the
+    /// top-level one. Other errors are returned unchanged.
+    fn in_subcommand(self, subcommand: &[&str]) -> Self {
+        match &self {
+            CliError::Clap(e) => match e.get(ContextKind::Custom) {
+                Some(ContextValue::String(message)) => {
+                    usage_in(Some(subcommand), e.kind(), message)
+                }
+                _ => self,
+            },
+            _ => self,
+        }
+    }
 }
 
 fn runtime(message: impl fmt::Display) -> CliError {
@@ -318,26 +360,14 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
     let bundle = bundle_path(g, host, &cwd);
 
     let plan = match &cli.command {
-        Some(cmd) => {
-            reject_serve_args(&cli.serve, cmd)?;
-            match cmd {
-                Command::Export(a) => {
-                    let flavor = render_flavor(g, host)?;
-                    let render = render_plan(g, flavor, &bundle.0, &cwd, true, &mut warnings)?;
-                    let inline = !(a.no_inline || cli.serve.no_inline);
-                    Plan::Export(export_plan(a, inline, render, host, &cwd, &mut warnings)?)
-                }
-                // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the
-                // rendering flavor, while one bundle holds both (D9).
-                Command::Vendor(a) => Plan::Vendor(vendor_plan(a, g.flavor, bundle, &cwd, quiet)?),
-                Command::Cache(c) => match c.action {
-                    CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
-                    CacheAction::Path => Plan::CachePath(bundle.0),
-                },
-            }
-        }
+        // Usage errors of a subcommand show its usage line, not the top-level one (CLI-14).
+        Some(cmd) => subcommand_plan(&cli, cmd, bundle, host, &cwd, &mut warnings)
+            .map_err(|e| e.in_subcommand(&subcommand_path(cmd)))?,
         // grip runs `--clear` before any path resolution (GRIP §2.2 step 5).
-        None if cli.serve.clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
+        None if cli.serve.clear => {
+            warn_ignored(g, true, "--clear", &mut warnings);
+            Plan::CacheClear(cache_clear_plan(host, bundle)?)
+        }
         None if cli.serve.export => {
             reject_with_export(&cli.serve)?;
             let flavor = render_flavor(g, host)?;
@@ -376,6 +406,66 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
         quiet,
         verbose: g.verbose,
     })
+}
+
+/// The plan for `export`, `vendor` or `cache`.
+fn subcommand_plan(
+    cli: &Cli,
+    cmd: &Command,
+    bundle: (PathBuf, BundleSource),
+    host: &mut dyn Host,
+    cwd: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Plan, CliError> {
+    let g = &cli.global;
+    reject_serve_args(&cli.serve, cmd)?;
+    // grip previews a file by its name: next to a file called `vendor`, a bare `md-render vendor`
+    // must not go to the network (or `export` write README.html) without a word, as with a file
+    // named like a port in `serve_plan` (CLI-21).
+    let bare = match cmd {
+        Command::Export(a) => *a == ExportArgs::default(),
+        Command::Vendor(a) => *a == VendorArgs::default(),
+        Command::Cache(_) => false,
+    };
+    let name = subcommand_name(cmd);
+    if bare && fs::symlink_metadata(cwd.join(name)).is_ok() {
+        warnings.push(format!(
+            "running the '{name}' subcommand; to serve the file '{name}' use ./{name}"
+        ));
+    }
+    Ok(match cmd {
+        Command::Export(a) => {
+            let flavor = render_flavor(g, host)?;
+            let render = render_plan(g, flavor, &bundle.0, cwd, true, warnings)?;
+            let inline = !(a.no_inline || cli.serve.no_inline);
+            Plan::Export(export_plan(a, inline, render, host, cwd, warnings)?)
+        }
+        // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the rendering
+        // flavor, while one bundle holds both (D9).
+        Command::Vendor(a) => {
+            warn_ignored(g, false, "the 'vendor' subcommand", warnings);
+            Plan::Vendor(vendor_plan(a, g.flavor, bundle, cwd, g.quiet)?)
+        }
+        Command::Cache(c) => {
+            warn_ignored(g, true, "the 'cache' subcommand", warnings);
+            match c.action {
+                CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
+                CacheAction::Path => Plan::CachePath(bundle.0),
+            }
+        }
+    })
+}
+
+/// The names leading to `cmd`'s usage line: `["export"]`, `["cache", "clear"]`.
+fn subcommand_path(cmd: &Command) -> Vec<&'static str> {
+    let mut path = vec![subcommand_name(cmd)];
+    if let Command::Cache(c) = cmd {
+        path.push(match c.action {
+            CacheAction::Clear => "clear",
+            CacheAction::Path => "path",
+        });
+    }
+    path
 }
 
 /// Non-empty UTF-8 environment variable.
@@ -440,6 +530,42 @@ fn subcommand_name(cmd: &Command) -> &'static str {
     }
 }
 
+/// Rendering and API options that are set although `vendor` / `cache` never read them (CLI-11).
+/// They are global (usable before and after a subcommand), so clap accepts them everywhere.
+/// `--flavor` counts too when `flavor_ignored` (the cache commands).
+fn ignored_options(g: &GlobalArgs, flavor_ignored: bool) -> Vec<&'static str> {
+    [
+        (flavor_ignored && g.flavor.is_some(), "--flavor"),
+        (g.mode.is_some(), "--mode"),
+        (g.user_content, "--user-content"),
+        (g.context.is_some(), "--context"),
+        (g.title.is_some(), "--title"),
+        (g.theme.is_some(), "--theme"),
+        (g.light_theme.is_some(), "--light-theme"),
+        (g.dark_theme.is_some(), "--dark-theme"),
+        (g.layout.is_some(), "--layout"),
+        (!g.css.is_empty(), "--css"),
+        (g.api, "--api"),
+        (g.api_url.is_some(), "--api-url"),
+        (g.token.is_some(), "--token"),
+    ]
+    .into_iter()
+    .filter_map(|(set, name)| set.then_some(name))
+    .collect()
+}
+
+/// Warn about [`ignored_options`] for `what` ("the 'vendor' subcommand", "--clear").
+fn warn_ignored(g: &GlobalArgs, flavor_ignored: bool, what: &str, warnings: &mut Vec<String>) {
+    let names: Vec<String> = ignored_options(g, flavor_ignored)
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect();
+    let verb = if names.len() == 1 { "has" } else { "have" };
+    if !names.is_empty() {
+        warnings.push(format!("{} {verb} no effect with {what}", names.join(", ")));
+    }
+}
+
 /// Serve-only flags that are set, by their option name.
 fn serve_flags(s: &ServeArgs) -> Vec<&'static str> {
     let mut v = Vec::new();
@@ -478,13 +604,24 @@ fn reject_serve_args(s: &ServeArgs, cmd: &Command) -> Result<(), CliError> {
         // `--no-inline export …` means the same as `export --no-inline …`.
         .filter(|f| !(*f == "--no-inline" && matches!(cmd, Command::Export(_))))
         .collect();
-    if let Some(flag) = flags.first() {
-        return Err(usage(
-            ErrorKind::ArgumentConflict,
-            format!("'{flag}' cannot be used with the '{name}' subcommand {hint}"),
-        ));
+    match flags.first() {
+        Some(flag) => Err(serve_flag_conflict(flag, &subcommand_path(cmd))),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The usage error for the serve-only `flag` combined with the subcommand at `path` (before or
+/// after its name), with that subcommand's usage line.
+pub(crate) fn serve_flag_conflict(flag: &str, path: &[&str]) -> CliError {
+    let name = path.first().copied().unwrap_or_default();
+    usage_in(
+        Some(path),
+        ErrorKind::ArgumentConflict,
+        format!(
+            "'{flag}' cannot be used with the '{name}' subcommand (to render a file named \
+             '{name}' use ./{name})"
+        ),
+    )
 }
 
 /// grip's `--export` ignores serve flags silently; reject the ones that cannot apply.
@@ -526,6 +663,7 @@ fn render_plan(
     let api = if g.api {
         if let Some(url) = &g.api_url {
             validate_http_url("--api-url", url)?;
+            reject_url_credentials("--api-url", url, flavor)?;
         }
         Some(ApiConfig {
             flavor,
@@ -537,6 +675,14 @@ fn render_plan(
     } else {
         if g.api_url.is_some() || g.token.is_some() {
             warnings.push("--api-url and --token have no effect without --api".to_owned());
+        }
+        // The offline renderers do not link references (#123, @user) (CLI-22).
+        if g.context.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+            warnings.push(
+                "--context has no effect without --api (offline rendering does not link \
+                 references like #123)"
+                    .to_owned(),
+            );
         }
         None
     };
@@ -554,15 +700,34 @@ fn render_plan(
     })
 }
 
+/// The error messages show the URL without credentials, query or fragment (CLI-6).
 fn validate_http_url(option: &str, value: &str) -> Result<(), CliError> {
     match url::Url::parse(value) {
         Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => Ok(()),
         _ => Err(usage(
             ErrorKind::ValueValidation,
             format!(
-                "invalid value '{value}' for '{option} <URL>': expected an http:// or https:// URL"
+                "invalid value '{}' for '{option} <URL>': expected an http:// or https:// URL",
+                redact_url(value)
             ),
         )),
+    }
+}
+
+/// `https://user:TOKEN@host` would become Basic authentication and the URL is shown in logs,
+/// errors and the page banner: API tokens go through `--token` or the environment (CLI-6).
+fn reject_url_credentials(option: &str, value: &str, flavor: Flavor) -> Result<(), CliError> {
+    match url::Url::parse(value) {
+        Ok(u) if !u.username().is_empty() || u.password().is_some() => Err(usage(
+            ErrorKind::ValueValidation,
+            format!(
+                "invalid value '{}' for '{option} <URL>': credentials in the URL are not \
+                 supported; {}",
+                redact_url(value),
+                credential_hint(flavor)
+            ),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -765,22 +930,37 @@ fn canonical_root(cwd: &Path, root: &Path) -> Result<PathBuf, CliError> {
     }
 }
 
-/// grip's "File not found", plus a hint when the path looks like a host name (GRIP §2.3: a
-/// lone host without a port is a path).
-fn not_found(path: &Path) -> CliError {
+/// grip's "File not found". When serving, a PATH that was surely meant as the ADDRESS gets a
+/// hint (GRIP §2.3: a lone host without a port is a path): `localhost` or an IP literal, and an
+/// all-digit value, which is only a path because it is out of range as a port. Ordinary names
+/// (`notes`, `README`) get none: they are far more likely mistyped files (CLI-8).
+fn not_found(path: &Path, serving: bool) -> CliError {
     let shown = path.display().to_string();
     let mut msg = format!("File not found: {shown}");
-    let host_only =
-        address::split_address(&shown).is_some_and(|hp| hp.host.is_some() && hp.port.is_none());
-    // `localhost`, `myhost`, `0.0.0.0`, `[::1]` — but not `notes.md` or `docs/x`.
-    let looks_like_host = !shown.contains('/')
-        && (!shown.contains('.') || shown.chars().all(|c| c.is_ascii_digit() || c == '.'));
-    if host_only && looks_like_host {
-        msg.push_str(&format!(
-            " (to listen on host '{shown}' give both a path and an address, e.g. `md-render . {shown}`)"
-        ));
+    if serving {
+        if !shown.is_empty() && shown.bytes().all(|b| b.is_ascii_digit()) {
+            msg.push_str(&format!(
+                " (nor is it a port to listen on: ports go from 0 to {})",
+                u16::MAX
+            ));
+        } else if is_host_literal(&shown) {
+            msg.push_str(&format!(
+                " (to listen on host '{shown}' give both a path and an address, e.g. `md-render . {shown}`)"
+            ));
+        }
     }
     runtime(msg)
+}
+
+/// `localhost`, `*.localhost`, an IPv4 literal or a bracketed IPv6 literal.
+fn is_host_literal(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower == "localhost"
+        || (lower.ends_with(".localhost") && address::valid_hostname(&lower))
+        || s.parse::<std::net::Ipv4Addr>().is_ok()
+        || s.strip_prefix('[')
+            .and_then(|r| r.strip_suffix(']'))
+            .is_some_and(|v6| v6.parse::<std::net::Ipv6Addr>().is_ok())
 }
 
 /// Root and target for a file or directory PATH (D14): the directory itself or the file's
@@ -794,7 +974,7 @@ fn fs_target(
 ) -> Result<(PathBuf, Target), CliError> {
     let abs = absolutize(cwd, path);
     let meta = fs::metadata(&abs).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => not_found(path),
+        io::ErrorKind::NotFound => not_found(path, true),
         _ => runtime(format!("cannot access {}: {e}", path.display())),
     })?;
     let canon = |p: &Path| {
@@ -805,7 +985,10 @@ fn fs_target(
         (dir.clone(), dir, true)
     } else {
         // Keep the file name as given (a symlinked file keeps its own name); resolve the parent.
-        let name = abs.file_name().ok_or_else(|| not_found(path))?.to_owned();
+        let name = abs
+            .file_name()
+            .ok_or_else(|| not_found(path, true))?
+            .to_owned();
         let parent = canon(abs.parent().unwrap_or(cwd))?;
         (parent.clone(), parent.join(name), false)
     };
@@ -897,7 +1080,7 @@ fn export_plan(
             let given = Path::new(p.unwrap_or(OsStr::new(".")));
             let abs = absolutize(cwd, given);
             let meta = fs::metadata(&abs).map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => not_found(given),
+                io::ErrorKind::NotFound => not_found(given, false),
                 _ => runtime(format!("cannot access {}: {e}", given.display())),
             })?;
             if meta.is_dir() {
@@ -1003,15 +1186,28 @@ mod tests {
 
     #[test]
     fn host_name_hint_only_for_host_like_paths() {
-        let msg = |p: &str| match not_found(Path::new(p)) {
+        let msg_for = |p: &str, serving| match not_found(Path::new(p), serving) {
             CliError::Runtime(e) => e.to_string(),
             other => panic!("{other:?}"),
         };
+        let msg = |p: &str| msg_for(p, true);
         assert!(msg("localhost").contains("md-render . localhost"));
         assert!(msg("0.0.0.0").contains("md-render . 0.0.0.0"));
+        assert!(msg("[::1]").contains("md-render . [::1]"));
+        assert!(msg("dev.localhost").contains("md-render . dev.localhost"));
         assert_eq!(msg("README.md"), "File not found: README.md");
         assert_eq!(msg("docs/x"), "File not found: docs/x");
         assert_eq!(msg("my_file"), "File not found: my_file");
+        // CLI-8: plain names are mistyped files, not hosts; no listen hint when exporting.
+        for name in ["notes", "README", "CHANGELOG", "help", "1.2.3"] {
+            assert_eq!(msg(name), format!("File not found: {name}"));
+        }
+        assert_eq!(
+            msg("70000"),
+            "File not found: 70000 (nor is it a port to listen on: ports go from 0 to 65535)"
+        );
+        assert_eq!(msg_for("localhost", false), "File not found: localhost");
+        assert_eq!(msg_for("70000", false), "File not found: 70000");
     }
 
     #[test]

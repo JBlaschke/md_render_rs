@@ -54,12 +54,17 @@ fn report(e: &CliError) -> ExitCode {
     ExitCode::from(e.exit_code())
 }
 
-/// The log filter for `--quiet` / `-v` / `-vv`, unless `RUST_LOG` is set.
+/// The log filter for `--quiet` / `-v` / `-vv` / `-vvv`, unless `RUST_LOG` is set.
+///
+/// `-vv` traces md-render and tarfs only: the HTML parser and selector engine log a line per
+/// character at TRACE/DEBUG, which would bury md-render's own messages (CLI-5). `-vvv` traces
+/// everything (still without the secret-bearing crates, see [`SECRET_BEARING_CRATES`]).
 pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
     match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn,md_render=info,tarfs=info",
         (false, 1) => "info,md_render=debug,tarfs=debug",
+        (false, 2) => "info,md_render=trace,tarfs=trace",
         (false, _) => "trace",
     }
 }
@@ -80,8 +85,9 @@ pub fn is_secret_bearing(target: &str, level: tracing::Level) -> bool {
 }
 
 /// The subscriber md-render logs through: filter `rust_log` (a `RUST_LOG` value) if given and
-/// valid, else [`log_filter`]; never events for which [`is_secret_bearing`] holds; plain
-/// messages by default, with time and target from `-v` on.
+/// valid, else [`log_filter`]; never events for which [`is_secret_bearing`] holds; md-render's
+/// own `md-render: warning: …` lines by default ([`PlainFormat`]), tracing's format with time
+/// and target from `-v` on.
 pub fn log_subscriber<W>(
     rust_log: Option<&str>,
     quiet: bool,
@@ -103,12 +109,81 @@ where
         .with_writer(writer)
         .with_ansi(ansi);
     let fmt = if verbose == 0 {
-        fmt.without_time().with_target(false).boxed()
+        fmt.event_format(PlainFormat).boxed()
     } else {
         fmt.with_target(true).boxed()
     };
     let no_secrets = filter_fn(|meta| !is_secret_bearing(meta.target(), *meta.level()));
     tracing_subscriber::registry().with(fmt.with_filter(env).with_filter(no_secrets))
+}
+
+/// The log format without `-v`: the `md-render: warning: …` prefix that the export, server and
+/// bundle diagnostics print, instead of the padded ` WARN` / ` INFO` tags, with the event's
+/// fields folded into the message (`… not copied (path: x.svg)` rather than `path="x.svg"`)
+/// (CLI-23). `-v` keeps tracing's full format with time and target.
+struct PlainFormat;
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for PlainFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use tracing::Level;
+        let (label, color) = match *event.metadata().level() {
+            Level::ERROR => (Some("error"), "\x1b[1;31m"),
+            Level::WARN => (Some("warning"), "\x1b[1;33m"),
+            _ => (None, ""),
+        };
+        write!(writer, "md-render: ")?;
+        if let Some(label) = label {
+            if writer.has_ansi_escapes() {
+                write!(writer, "{color}{label}\x1b[0m: ")?;
+            } else {
+                write!(writer, "{label}: ")?;
+            }
+        }
+        let mut fields = PlainFields::default();
+        event.record(&mut fields);
+        write!(writer, "{}", fields.message)?;
+        if !fields.rest.is_empty() {
+            write!(writer, " ({})", fields.rest.join(", "))?;
+        }
+        writeln!(writer)
+    }
+}
+
+/// An event's message and its other fields as `name: value`.
+#[derive(Default)]
+struct PlainFields {
+    message: String,
+    rest: Vec<String>,
+}
+
+impl PlainFields {
+    fn push(&mut self, field: &tracing::field::Field, value: String) {
+        match field.name() {
+            "message" => self.message = value,
+            // Metadata of records bridged from the `log` crate.
+            name if name.starts_with("log.") => {}
+            name => self.rest.push(format!("{name}: {value}")),
+        }
+    }
+}
+
+impl tracing::field::Visit for PlainFields {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.push(field, value.to_owned());
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.push(field, format!("{value:?}"));
+    }
 }
 
 /// Install [`log_subscriber`] for stderr as the global subscriber (also bridging `log` records).
@@ -143,7 +218,7 @@ pub fn execute(inv: Invocation) -> anyhow::Result<()> {
             let renderer = plan.render.renderer()?;
             crate::export::export(&plan.into_config(renderer))
         }
-        Plan::Vendor(plan) => vendor(&plan, quiet),
+        Plan::Vendor(plan) => vendor(&plan),
         Plan::CacheClear(plan) => {
             let message = cache_clear(&plan)?;
             if !quiet {
@@ -158,7 +233,7 @@ pub fn execute(inv: Invocation) -> anyhow::Result<()> {
     }
 }
 
-fn vendor(plan: &VendorPlan, quiet: bool) -> anyhow::Result<()> {
+fn vendor(plan: &VendorPlan) -> anyhow::Result<()> {
     let output = &plan.options.output;
     if plan.create_parent {
         if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -166,47 +241,10 @@ fn vendor(plan: &VendorPlan, quiet: bool) -> anyhow::Result<()> {
                 .with_context(|| format!("creating the cache directory {}", parent.display()))?;
         }
     }
-    let report = crate::styles::vendor::vendor(&plan.options)?;
-    for f in &report.failures {
-        let status = f.status.map(|s| format!("HTTP {s}: ")).unwrap_or_default();
-        let by = f
-            .referenced_by
-            .as_deref()
-            .map(|r| format!(" (referenced by {r})"))
-            .unwrap_or_default();
-        tracing::warn!("could not download {}{by}: {status}{}", f.url, f.error);
-    }
-    if !quiet {
-        eprintln!(
-            "Wrote {} files ({}) to {}{}",
-            report.files,
-            human_bytes(report.bytes),
-            report.output.display(),
-            match report.failures.len() {
-                0 => String::new(),
-                1 => " (1 asset could not be downloaded, see above)".to_owned(),
-                n => format!(" ({n} assets could not be downloaded, see above)"),
-            }
-        );
-    }
+    // The vendor module reports progress, every failed download and the final summary itself
+    // (unless quiet); repeating the summary here printed it twice, in other units (CLI-15).
+    crate::styles::vendor::vendor(&plan.options)?;
     Ok(())
-}
-
-/// `1234567` → `1.2 MiB`.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    // Precision loss is irrelevant for a one-decimal display value.
-    #[allow(clippy::cast_precision_loss)]
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
 }
 
 /// `md-render cache clear` / grip's `--clear` (GRIP §10 C30): delete md-render's own cache
@@ -256,7 +294,93 @@ mod tests {
         assert_eq!(log_filter(true, 3), "error");
         assert_eq!(log_filter(false, 0), "warn,md_render=info,tarfs=info");
         assert_eq!(log_filter(false, 1), "info,md_render=debug,tarfs=debug");
-        assert_eq!(log_filter(false, 2), "trace");
+        assert_eq!(log_filter(false, 2), "info,md_render=trace,tarfs=trace");
+        assert_eq!(log_filter(false, 3), "trace");
+    }
+
+    /// Collects what a subscriber writes.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'w self) -> Capture {
+            self.clone()
+        }
+    }
+
+    fn logged(verbose: u8) -> String {
+        let capture = Capture::default();
+        let subscriber = log_subscriber(None, false, verbose, capture.clone(), false);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "html5ever::tokenizer", "got character x");
+            tracing::debug!(target: "selectors::matching", "matching");
+            tracing::trace!(target: "md_render::render::api", "own trace");
+            tracing::trace!(target: "tarfs::fs", "tarfs trace");
+            tracing::info!(target: "html5ever::tree_builder", "parser info");
+        });
+        String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned()
+    }
+
+    /// CLI-23: without `-v`, log lines look like the other diagnostics (`md-render: warning: …`),
+    /// with the fields folded into the message; `-v` keeps tracing's format.
+    #[test]
+    fn default_log_lines_match_the_other_diagnostics() {
+        let log = |verbose: u8| {
+            let capture = Capture::default();
+            let subscriber = log_subscriber(None, false, verbose, capture.clone(), false);
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::warn!("--wide has no effect");
+                let path = "github/assets/x.svg";
+                tracing::warn!(path, count = 2, "bundle file missing; not copied");
+                tracing::info!(target: "md_render::render::api", "rendering through the API");
+                tracing::error!("boom");
+            });
+            String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned()
+        };
+        assert_eq!(
+            log(0),
+            "md-render: warning: --wide has no effect\n\
+             md-render: warning: bundle file missing; not copied (path: github/assets/x.svg, \
+             count: 2)\n\
+             md-render: rendering through the API\n\
+             md-render: error: boom\n"
+        );
+        let verbose = log(1);
+        assert!(
+            verbose.contains(" WARN ") && verbose.contains("path=\"github/assets/x.svg\""),
+            "{verbose}"
+        );
+    }
+
+    /// CLI-5: `-vv` traces md-render, not every dependency.
+    #[test]
+    fn very_verbose_traces_md_render_but_not_the_html_parser() {
+        let log = logged(2);
+        assert!(
+            log.contains("own trace") && log.contains("tarfs trace"),
+            "{log}"
+        );
+        assert!(log.contains("parser info"), "{log}");
+        assert!(
+            !log.contains("got character") && !log.contains("matching"),
+            "{log}"
+        );
+        let all = logged(3);
+        assert!(
+            all.contains("got character") && all.contains("own trace"),
+            "{all}"
+        );
     }
 
     #[test]
@@ -279,14 +403,6 @@ mod tests {
             anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied)).context("writing");
         assert!(!is_broken_pipe(&other));
         assert!(!is_broken_pipe(&anyhow::anyhow!("plain")));
-    }
-
-    #[test]
-    fn byte_sizes() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(1023), "1023 B");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
     }
 
     #[test]
