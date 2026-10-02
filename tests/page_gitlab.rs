@@ -106,7 +106,13 @@ fn system_mode_skeleton() {
     );
     assert!(content.select("copy-code").exists());
 
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/gitlab.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/gitlab.js"
+        ]
+    );
     assert!(
         !html.contains("snippet-clipboard-copy-button"),
         "no GitHub template on GitLab pages"
@@ -272,6 +278,7 @@ fn libraries_follow_features() {
         script_srcs(&doc),
         [
             "/__/md-render/static/live.js",
+            "/__/md-render/static/common.js",
             "/__/md-render/static/gitlab.js"
         ]
     );

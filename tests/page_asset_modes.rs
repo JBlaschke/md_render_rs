@@ -122,11 +122,15 @@ fn github_inline_is_self_contained() {
         Some("docs/x.md")
     );
 
-    // Client JS inlined; no live client; libraries as inert holders referenced from mdr-config.
-    assert_eq!(
-        doc.select("script[data-mdr-static=\"github.js\"]").length(),
-        1
-    );
+    // Client JS inlined (the shared helpers first); no live client; libraries as inert
+    // holders referenced from mdr-config.
+    let statics: Vec<String> = doc
+        .select("script[data-mdr-static]")
+        .nodes()
+        .iter()
+        .filter_map(|n| n.attr("data-mdr-static").map(|s| s.to_string()))
+        .collect();
+    assert_eq!(statics, ["common.js", "github.js"]);
     assert!(!html.contains("data-mdr-static=\"live.js\""));
     let cfg = config(&doc);
     assert!(cfg["live"].is_null());
@@ -292,7 +296,10 @@ fn directory_mode_copies_and_links_relatively() {
     assert_eq!(hrefs[0], "my%20doc_files/github/assets/light-1167.css");
     assert_eq!(
         script_srcs(&doc),
-        ["my%20doc_files/static/github.js"],
+        [
+            "my%20doc_files/static/common.js",
+            "my%20doc_files/static/github.js"
+        ],
         "libraries load lazily; the live client is never exported"
     );
     let linked = assert_relative_refs_exist(&html, out.path(), "my%20doc_files/");

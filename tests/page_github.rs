@@ -105,7 +105,13 @@ fn readme_auto_skeleton() {
     let template_src = &template_src[..template_src.find("</template>").unwrap()];
     assert!(template_src.contains("js-clipboard-copy-icon"));
     assert!(template_src.contains("js-clipboard-check-icon color-fg-success d-none"));
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/github.js"
+        ]
+    );
     assert_eq!(
         attr(&doc, "link[rel=icon]", "href").as_deref(),
         Some("/__/md-render/static/favicon.svg")
@@ -309,7 +315,13 @@ fn libraries_follow_features() {
         mermaid: true,
     };
     let doc = Document::from(page.render(&bundle).as_str());
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/github.js"
+        ]
+    );
 }
 
 #[test]
@@ -324,6 +336,7 @@ fn live_page() {
         script_srcs(&doc),
         [
             "/__/md-render/static/live.js",
+            "/__/md-render/static/common.js",
             "/__/md-render/static/github.js"
         ]
     );
@@ -487,7 +500,10 @@ fn custom_prefix() {
     };
     let doc = Document::from(page.render(&bundle).as_str());
     assert!(stylesheet_hrefs(&doc)[0].starts_with("/mdr/bundle/github/assets/"));
-    assert_eq!(script_srcs(&doc), ["/mdr/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        ["/mdr/static/common.js", "/mdr/static/github.js"]
+    );
 }
 
 #[test]

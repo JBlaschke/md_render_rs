@@ -445,3 +445,67 @@ fn gitlab_inline_export_copy_button_uses_the_gitlab_icon() {
 } };"##,
     );
 }
+
+/// Q-DUP-JS: both flavors' hash navigation comes from common.js (one implementation instead
+/// of two copies that had drifted) with each site's target rule: a `#title` link reaches
+/// `user-content-title` on load, on click and after a live update, and GitHub also finds
+/// `<a name="user-content-…">` targets. Pages load common.js before the flavor script.
+#[test]
+fn hash_navigation_from_the_shared_helpers() {
+    let markdown = "# Title\n\nSee [the title](#title) and [x](#x).\n\n<a name=\"x\"></a>X\n";
+    for flavor in [Flavor::Github, Flavor::Gitlab] {
+        for assets in [
+            AssetMode::Inline,
+            AssetMode::Server {
+                prefix: "/__/md-render".into(),
+            },
+        ] {
+            let html = page(flavor, markdown, &Bundle::fallback(), assets.clone());
+            let at = |name: &str| {
+                html.find(&format!("static/{name}\""))
+                    .or_else(|| html.find(&format!("data-mdr-static=\"{name}\"")))
+                    .unwrap_or_else(|| panic!("{flavor} {assets:?}: {name} is loaded"))
+            };
+            assert!(
+                at("common.js") < at(&format!("{flavor}.js")),
+                "{flavor} {assets:?}: common.js comes first"
+            );
+            let by_name = flavor == Flavor::Github;
+            run_scenario(
+                &format!("hash_navigation_from_the_shared_helpers ({flavor}, {assets:?})"),
+                &html,
+                &format!(
+                    r##"module.exports = {{
+  before(window) {{ window.location.hash = '#title'; }},
+  async run(window, t) {{
+    const d = window.document;
+    const target = d.getElementById('user-content-title');
+    t.ok(target, 'prefixed heading id');
+    const scrolled = () => window.mdrTest.scrolledTo.map((s) => s.el);
+    t.ok(scrolled().includes(target), 'scrolled to the prefixed target on load');
+    window.mdrTest.scrolledTo.length = 0;
+    window.location.hash = '';
+    d.querySelector('#md-content a[href="#title"]').click();
+    t.equal(window.location.hash, '#title', 'the hash follows the click');
+    t.ok(scrolled().includes(target), 'scrolled on click');
+    window.mdrTest.scrolledTo.length = 0;
+    d.querySelector('#md-content a[href="#x"]').click();
+    const named = d.getElementsByName('user-content-x')[0];
+    t.equal(!!named && scrolled().includes(named), {by_name}, 'name targets (GitHub only)');
+    // A live update that brings the heading follows the hash into the new content.
+    window.location.hash = '#title';
+    window.mdrTest.scrolledTo.length = 0;
+    const content = d.getElementById('md-content');
+    let block = target;
+    while (block.parentNode && block.parentNode !== content) block = block.parentNode;
+    d.dispatchEvent({{ type: 'mdr:content-updated', detail: {{ root: content, added: [block] }} }});
+    await t.flush(2);
+    t.ok(scrolled().includes(target), 'follows the hash into updated content');
+    t.ok(window.mdRenderCommon && typeof window.mdRenderCommon.loadLibrary === 'function', 'shared helpers');
+  }}
+}};"##
+                ),
+            );
+        }
+    }
+}

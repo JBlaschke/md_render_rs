@@ -10,6 +10,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
         "favicon.svg" => (include_bytes!("../assets/favicon.svg"), "image/svg+xml"),
         "fallback-github.css" => (include_bytes!("../assets/fallback/github.css"), "text/css; charset=utf-8"),
         "fallback-gitlab.css" => (include_bytes!("../assets/fallback/gitlab.css"), "text/css; charset=utf-8"),
+        "common.js" => (include_bytes!("../assets/client/common.js"), "text/javascript; charset=utf-8"),
         _ => return None,
     };
     Some(found)
@@ -17,7 +18,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
 
 /// Names of all embedded assets.
 pub const NAMES: &[&str] =
-    &["live.js", "github.js", "gitlab.js", "favicon.svg", "fallback-github.css", "fallback-gitlab.css"];
+    &["live.js", "github.js", "gitlab.js", "favicon.svg", "fallback-github.css", "fallback-gitlab.css", "common.js"];
 
 #[cfg(test)]
 mod tests {

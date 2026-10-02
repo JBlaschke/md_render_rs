@@ -7,59 +7,25 @@
 //   * mermaid enrichment sections rendered inline (GH §8.7),
 //   * hash navigation with the `user-content-` prefix fallback (GH §3.4, GRIP C52).
 // Libraries are loaded lazily from the URLs in <script id="mdr-config">; an element that was
-// already rendered is never rendered again (live updates keep such nodes, DESIGN §7).
+// already rendered is never rendered again (live updates keep such nodes, DESIGN §7). The
+// helpers shared with gitlab.js live in common.js, which the page loads first.
 (function () {
   'use strict';
 
   if (window.mdrGithub) return;
 
-  var CONFIG = readConfig();
-  var DONE = 'data-mdr-rendered';
-
-  function readConfig() {
-    var el = document.getElementById('mdr-config');
-    if (!el) return {};
-    try {
-      return JSON.parse(el.textContent || '{}') || {};
-    } catch (e) {
-      console.warn('md-render: invalid mdr-config', e);
-      return {};
-    }
+  // Shared helpers (assets/client/common.js, loaded first).
+  var common = window.mdRenderCommon;
+  if (!common) {
+    console.warn('md-render: common.js did not load; GitHub page behaviours are off');
+    return;
   }
-
-  // ------------------------------------------------------------------------------------------
-  // Utilities
-
-  // Elements matching `selector` among `nodes` and their descendants (each element once).
-  function collect(nodes, selector) {
-    var out = [];
-    var seen = new Set();
-    (nodes || []).forEach(function (node) {
-      if (!node || node.nodeType !== 1) return;
-      if (node.matches(selector) && !seen.has(node)) {
-        seen.add(node);
-        out.push(node);
-      }
-      node.querySelectorAll(selector).forEach(function (el) {
-        if (!seen.has(el)) {
-          seen.add(el);
-          out.push(el);
-        }
-      });
-    });
-    return out;
-  }
-
-  function claim(el) {
-    if (el.hasAttribute(DONE)) return false;
-    el.setAttribute(DONE, '');
-    return true;
-  }
-
-  function libRef(name) {
-    var scripts = CONFIG.scripts || {};
-    return typeof scripts[name] === 'string' && scripts[name] ? scripts[name] : null;
-  }
+  var CONFIG = common.config;
+  var collect = common.collect;
+  var claim = common.claim;
+  var libRef = common.libRef;
+  var runInline = common.runInline;
+  var loadLibrary = common.loadLibrary;
 
   function absoluteUrl(url) {
     try {
@@ -67,42 +33,6 @@
     } catch (e) {
       return url;
     }
-  }
-
-  // Execute an inlined library (export: <script type="text/plain" id="mdr-lib-NAME">).
-  function runInline(ref) {
-    var holder = document.getElementById(ref.slice(1));
-    if (!holder) throw new Error('md-render: missing inline library ' + ref);
-    var script = document.createElement('script');
-    script.textContent = holder.textContent;
-    document.head.appendChild(script); // inline scripts run synchronously on insertion
-  }
-
-  var libraries = new Map();
-
-  function loadLibrary(name) {
-    if (libraries.has(name)) return libraries.get(name);
-    var ref = libRef(name);
-    var promise;
-    if (!ref) {
-      promise = Promise.reject(new Error(name + ' is not vendored (run `md-render vendor --flavor github`)'));
-    } else if (ref.charAt(0) === '#') {
-      promise = new Promise(function (resolve) {
-        runInline(ref);
-        resolve();
-      });
-    } else {
-      promise = new Promise(function (resolve, reject) {
-        var script = document.createElement('script');
-        script.src = ref;
-        script.async = true;
-        script.onload = function () { resolve(); };
-        script.onerror = function () { reject(new Error('failed to load ' + ref)); };
-        document.head.appendChild(script);
-      });
-    }
-    libraries.set(name, promise);
-    return promise;
   }
 
   // ------------------------------------------------------------------------------------------
@@ -133,33 +63,9 @@
     return holder.firstElementChild;
   }
 
-  function writeClipboard(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text);
-    }
-    // Non-secure origins (e.g. served on a LAN address): legacy copy through a textarea.
-    return new Promise(function (resolve, reject) {
-      var area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', '');
-      area.style.position = 'fixed';
-      area.style.opacity = '0';
-      document.body.appendChild(area);
-      area.select();
-      var ok = false;
-      try {
-        ok = document.execCommand('copy');
-      } catch (e) {
-        ok = false;
-      }
-      area.remove();
-      if (ok) resolve(); else reject(new Error('copy failed'));
-    });
-  }
-
   function onCopy(button) {
     var value = button.getAttribute('value') || '';
-    writeClipboard(value).then(function () {
+    common.writeClipboard(value).then(function () {
       var copyIcon = button.querySelector('.js-clipboard-copy-icon');
       var checkIcon = button.querySelector('.js-clipboard-check-icon');
       var label = button.getAttribute('aria-label');
@@ -557,20 +463,6 @@
   // ------------------------------------------------------------------------------------------
   // Hash navigation (GH §3.4): ids are prefixed `user-content-`, links are not.
 
-  var userScrolled = false;
-  ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (type) {
-    window.addEventListener(type, function () { userScrolled = true; }, { passive: true, once: true });
-  });
-
-  function decodeHash(hash) {
-    var raw = (hash || '').replace(/^#/, '');
-    try {
-      return decodeURIComponent(raw);
-    } catch (e) {
-      return raw;
-    }
-  }
-
   function hashTarget(id) {
     if (!id) return null;
     return document.getElementById(id) ||
@@ -579,34 +471,7 @@
       null;
   }
 
-  function scrollToHash() {
-    if (!location.hash) return;
-    var targeted = null;
-    try {
-      targeted = document.querySelector(':target');
-    } catch (e) {
-      targeted = null;
-    }
-    if (targeted) return;
-    var el = hashTarget(decodeHash(location.hash));
-    if (el) el.scrollIntoView();
-  }
-
-  window.addEventListener('hashchange', scrollToHash);
-  window.addEventListener('load', scrollToHash);
-  // Re-clicking the current hash fires no hashchange; scroll explicitly to prefixed targets.
-  document.addEventListener('click', function (event) {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    var link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
-    if (!link) return;
-    var id = decodeHash(link.getAttribute('href'));
-    if (!id || document.getElementById(id)) return;
-    var el = hashTarget(id);
-    if (!el) return;
-    event.preventDefault();
-    if (location.hash !== link.getAttribute('href')) history.pushState(null, '', link.getAttribute('href'));
-    el.scrollIntoView();
-  });
+  var hashNav = common.hashNavigation(hashTarget);
 
   // ------------------------------------------------------------------------------------------
   // Entry points
@@ -620,20 +485,14 @@
   function init() {
     var root = document.getElementById('md-content') || document.body;
     process([root]);
-    scrollToHash();
+    hashNav.scrollToHash();
   }
 
   document.addEventListener('mdr:content-updated', function (event) {
-    var detail = (event && event.detail) || {};
-    var nodes = Array.isArray(detail.added) ? detail.added : [detail.root || document.getElementById('md-content')];
+    var nodes = common.updatedNodes(event);
     process(nodes);
     // Follow the hash into replaced content unless the reader has moved on.
-    if (location.hash && !userScrolled) {
-      var target = hashTarget(decodeHash(location.hash));
-      if (target && nodes.some(function (n) { return n && n.nodeType === 1 && (n === target || n.contains(target)); })) {
-        target.scrollIntoView();
-      }
-    }
+    hashNav.follow(nodes);
   });
 
   window.mdrGithub = { process: process, config: CONFIG };

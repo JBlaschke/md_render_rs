@@ -8,93 +8,28 @@
 //   * hash navigation: getElementById(h) || getElementById('user-content-' + h) (GL §10.5),
 //   * gl-system auto dark mode: keep html.gl-dark in sync with prefers-color-scheme (GL §11.3).
 // Runs on DOMContentLoaded and on every `mdr:content-updated` event ({detail: {root, added}}),
-// processing only the given nodes; rendered elements are never rendered twice.
+// processing only the given nodes; rendered elements are never rendered twice. The helpers
+// shared with github.js live in common.js, which the page loads first.
 (function () {
   'use strict';
 
   if (window.mdRenderGitLab) return;
 
-  var CONFIG = readConfig();
-  var DONE = 'data-mdr-rendered';
-
-  function readConfig() {
-    var el = document.getElementById('mdr-config');
-    if (!el) return {};
-    try {
-      return JSON.parse(el.textContent || '{}') || {};
-    } catch (e) {
-      console.warn('md-render: invalid mdr-config', e);
-      return {};
-    }
+  // Shared helpers (assets/client/common.js, loaded first).
+  var common = window.mdRenderCommon;
+  if (!common) {
+    console.warn('md-render: common.js did not load; GitLab page behaviours are off');
+    return;
   }
+  var CONFIG = common.config;
+  var DONE = common.DONE;
+  var collect = common.collect;
+  var claim = common.claim;
+  var libRef = common.libRef;
+  var loadLibrary = common.loadLibrary;
 
   // ------------------------------------------------------------------------------------------
   // Utilities
-
-  function collect(nodes, selector) {
-    var out = [];
-    var seen = new Set();
-    (nodes || []).forEach(function (node) {
-      if (!node || node.nodeType !== 1) return;
-      if (node.matches(selector) && !seen.has(node)) {
-        seen.add(node);
-        out.push(node);
-      }
-      node.querySelectorAll(selector).forEach(function (el) {
-        if (!seen.has(el)) {
-          seen.add(el);
-          out.push(el);
-        }
-      });
-    });
-    return out;
-  }
-
-  function claim(el) {
-    if (el.hasAttribute(DONE)) return false;
-    el.setAttribute(DONE, '');
-    return true;
-  }
-
-  function libRef(name) {
-    var scripts = CONFIG.scripts || {};
-    return typeof scripts[name] === 'string' && scripts[name] ? scripts[name] : null;
-  }
-
-  function runInline(ref) {
-    var holder = document.getElementById(ref.slice(1));
-    if (!holder) throw new Error('md-render: missing inline library ' + ref);
-    var script = document.createElement('script');
-    script.textContent = holder.textContent;
-    document.head.appendChild(script);
-  }
-
-  var libraries = new Map();
-
-  function loadLibrary(name) {
-    if (libraries.has(name)) return libraries.get(name);
-    var ref = libRef(name);
-    var promise;
-    if (!ref) {
-      promise = Promise.reject(new Error(name + ' is not vendored (run `md-render vendor --flavor gitlab`)'));
-    } else if (ref.charAt(0) === '#') {
-      promise = new Promise(function (resolve) {
-        runInline(ref);
-        resolve();
-      });
-    } else {
-      promise = new Promise(function (resolve, reject) {
-        var script = document.createElement('script');
-        script.src = ref;
-        script.async = true;
-        script.onload = function () { resolve(); };
-        script.onerror = function () { reject(new Error('failed to load ' + ref)); };
-        document.head.appendChild(script);
-      });
-    }
-    libraries.set(name, promise);
-    return promise;
-  }
 
   // A stylesheet library (KaTeX CSS): already present as <link>/<style data-mdr-lib>, or added.
   function ensureStylesheet(name) {
@@ -372,27 +307,6 @@
     return svg.outerHTML;
   }
 
-  function writeClipboard(text) {
-    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-    return new Promise(function (resolve, reject) {
-      var area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', '');
-      area.style.position = 'fixed';
-      area.style.opacity = '0';
-      document.body.appendChild(area);
-      area.select();
-      var ok = false;
-      try {
-        ok = document.execCommand('copy');
-      } catch (e) {
-        ok = false;
-      }
-      area.remove();
-      if (ok) resolve(); else reject(new Error('copy failed'));
-    });
-  }
-
   function defineCopyCode() {
     if (!window.customElements || customElements.get('copy-code')) return;
     customElements.define('copy-code', class extends HTMLElement {
@@ -416,7 +330,7 @@
         button.addEventListener('click', function () {
           var pre = self.parentNode && self.parentNode.querySelector('pre');
           var text = pre ? pre.textContent : source;
-          writeClipboard(text).then(function () {
+          common.writeClipboard(text).then(function () {
             button.setAttribute('title', 'Copied');
             button.setAttribute('aria-label', 'Copied');
             clearTimeout(button.mdrTimer);
@@ -436,43 +350,12 @@
   // ------------------------------------------------------------------------------------------
   // Hash navigation (GL §10.5)
 
-  var userScrolled = false;
-  ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (type) {
-    window.addEventListener(type, function () { userScrolled = true; }, { passive: true, once: true });
-  });
-
-  function decodeHash(hash) {
-    var raw = (hash || '').replace(/^#/, '');
-    try {
-      return decodeURIComponent(raw);
-    } catch (e) {
-      return raw;
-    }
-  }
-
   function hashTarget(id) {
     if (!id) return null;
     return document.getElementById(id) || document.getElementById('user-content-' + id);
   }
 
-  function scrollToHash() {
-    var el = hashTarget(decodeHash(location.hash));
-    if (el) el.scrollIntoView(true);
-  }
-
-  window.addEventListener('hashchange', scrollToHash);
-  document.addEventListener('click', function (event) {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    var link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
-    if (!link) return;
-    var id = decodeHash(link.getAttribute('href'));
-    if (!id || document.getElementById(id)) return;
-    var el = hashTarget(id);
-    if (!el) return;
-    event.preventDefault();
-    if (location.hash !== link.getAttribute('href')) history.pushState(null, '', link.getAttribute('href'));
-    el.scrollIntoView(true);
-  });
+  var hashNav = common.hashNavigation(hashTarget);
 
   // ------------------------------------------------------------------------------------------
   // Colour mode (GL §11.3): in system mode html.gl-dark follows prefers-color-scheme.
@@ -506,19 +389,13 @@
     defineCopyCode();
     var root = document.getElementById('md-content') || document.body;
     renderGFM([root]);
-    scrollToHash();
+    hashNav.scrollToHash();
   }
 
   document.addEventListener('mdr:content-updated', function (event) {
-    var detail = (event && event.detail) || {};
-    var nodes = Array.isArray(detail.added) ? detail.added : [detail.root || document.getElementById('md-content')];
+    var nodes = common.updatedNodes(event);
     renderGFM(nodes);
-    if (location.hash && !userScrolled) {
-      var target = hashTarget(decodeHash(location.hash));
-      if (target && nodes.some(function (n) { return n && n.nodeType === 1 && (n === target || n.contains(target)); })) {
-        target.scrollIntoView(true);
-      }
-    }
+    hashNav.follow(nodes);
   });
 
   window.mdRenderGitLab = {

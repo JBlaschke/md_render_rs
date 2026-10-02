@@ -5,7 +5,8 @@
 //! rendered content (`#md-content`), the vendored stylesheets in cascade order (computed from
 //! the bundle manifest roles, never from hashed file names), a JSON configuration block for the
 //! client scripts (`<script id="mdr-config" type="application/json">`), the flavor client
-//! script (`github.js` / `gitlab.js`) and, when live, `live.js`.
+//! script (`github.js` / `gitlab.js`, after the helpers they share, `common.js`) and, when
+//! live, `live.js`.
 //!
 //! Asset references depend on [`AssetMode`]: server URLs, a copied assets directory, or a fully
 //! self-contained document (CSS inlined with `data:` URIs, libraries inlined when needed).
@@ -409,6 +410,8 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     if live.is_some() {
         assets.static_script(&mut out, "live.js")?;
     }
+    // The helpers both flavor scripts share, then the flavor's own behaviours.
+    assets.static_script(&mut out, "common.js")?;
     assets.static_script(&mut out, &format!("{}.js", input.flavor))?;
     out.push_str("</body>\n</html>\n");
     Ok(out)
