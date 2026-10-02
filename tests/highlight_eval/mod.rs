@@ -20,10 +20,19 @@ use std::path::{Path, PathBuf};
 
 /// The golden data directory, if present.
 pub fn golden_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("MD_RENDER_GOLDEN_DIR")
-        .map(PathBuf::from)
+    let explicit = std::env::var_os("MD_RENDER_GOLDEN_DIR").map(PathBuf::from);
+    let dir = explicit
+        .clone()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".dev/research"));
-    (dir.join("github").is_dir() && dir.join("gitlab").is_dir()).then_some(dir)
+    let found = dir.join("github").is_dir() && dir.join("gitlab").is_dir();
+    // Skipping is for clones without the fixtures (D18); a directory given explicitly that
+    // lacks them is a mistake, so say so instead of passing.
+    assert!(
+        found || explicit.is_none(),
+        "MD_RENDER_GOLDEN_DIR={} has no github/ and gitlab/ fixtures",
+        dir.display()
+    );
+    found.then_some(dir)
 }
 
 /// Print the loud skip line required by D18.

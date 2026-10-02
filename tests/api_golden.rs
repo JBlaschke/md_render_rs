@@ -23,10 +23,19 @@ use md_render::{Flavor, Mode};
 use regex::Regex;
 
 fn golden_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("MD_RENDER_GOLDEN_DIR")
-        .map(PathBuf::from)
+    let explicit = std::env::var_os("MD_RENDER_GOLDEN_DIR").map(PathBuf::from);
+    let dir = explicit
+        .clone()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".dev/research"));
-    if dir.is_dir() {
+    let found = dir.is_dir();
+    // Skipping is for clones without the fixtures (D18); a directory given explicitly that
+    // lacks them is a mistake, so say so instead of passing.
+    assert!(
+        found || explicit.is_none(),
+        "MD_RENDER_GOLDEN_DIR={} has no fixtures (the directory does not exist)",
+        dir.display()
+    );
+    if found {
         Some(dir)
     } else {
         eprintln!(

@@ -572,3 +572,106 @@ async fn directory_listings_update_and_turn_into_the_readme() {
         "the listing turns into the README",
     );
 }
+
+/// A document with a code block, filler paragraphs, a second heading (with enough text after
+/// it to scroll it to the top) and `blocks` more code blocks at the end.
+fn smoke_doc(blocks: usize) -> String {
+    let mut s = String::from("# Doc\n\n```rust\nfn first() {}\n```\n\n");
+    for i in 0..60 {
+        s.push_str(&format!("filler paragraph {i}\n\n"));
+    }
+    s.push_str("## Second\n\n");
+    for i in 0..60 {
+        s.push_str(&format!("more filler {i}\n\n"));
+    }
+    for i in 0..blocks {
+        s.push_str(&format!("```\nadded block {i}\n```\n\n"));
+    }
+    s
+}
+
+/// The `#second` heading is at the top of the viewport.
+const AT_SECOND: &str = "(() => { const h = document.getElementById('user-content-second') || \
+     document.getElementById('second'); \
+     return !!h && window.scrollY > 0 && Math.abs(h.getBoundingClientRect().top) < 80; })()";
+
+/// Q-TESTS-1: github.js gives every code block a clipboard button (also blocks added by a
+/// live update, without duplicating the kept ones), and follows `#second` to GitHub's
+/// `user-content-second` anchor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn github_js_adds_clipboard_buttons_and_follows_the_hash() {
+    let Some(mut b) = Browser::launch("github_js_adds_clipboard_buttons_and_follows_the_hash")
+    else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("doc.md", smoke_doc(0));
+    let s = f
+        .start(|cfg| cfg.renderer = Arc::new(md_render::render::OfflineRenderer))
+        .await;
+    let tab = b.open(&url(&s, "/doc.md#second"), false);
+    b.expect_connected(&tab);
+    const BUTTONS: &str = "document.querySelectorAll('#md-content clipboard-copy').length";
+    b.expect(&tab, &format!("{BUTTONS} === 1"), "one clipboard button");
+    const VALUES: &str = "Array.from(document.querySelectorAll('#md-content clipboard-copy'))\
+         .map((c) => c.getAttribute('value'))";
+    assert_eq!(b.eval(&tab, VALUES).unwrap(), json!(["fn first() {}"]));
+    b.expect(&tab, AT_SECOND, "the page scrolled to the #second heading");
+
+    write_atomic(&s.path("doc.md"), smoke_doc(1));
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('added block 0')",
+        "the live update is applied",
+    );
+    b.expect(
+        &tab,
+        &format!("{BUTTONS} === 2"),
+        "the new block gets a button",
+    );
+    assert_eq!(
+        b.eval(&tab, VALUES).unwrap(),
+        json!(["fn first() {}", "added block 0"])
+    );
+}
+
+/// Q-TESTS-1: gitlab.js turns every `<copy-code>` into a copy button pointing at its `<pre>`
+/// (also in blocks added by a live update), and follows `#second` to the heading.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gitlab_js_adds_copy_buttons_and_follows_the_hash() {
+    let Some(mut b) = Browser::launch("gitlab_js_adds_copy_buttons_and_follows_the_hash") else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("doc.md", smoke_doc(0));
+    let s = f
+        .start(|cfg| {
+            cfg.flavor = md_render::flavor::Flavor::Gitlab;
+            cfg.renderer = Arc::new(md_render::render::OfflineRenderer);
+        })
+        .await;
+    let tab = b.open(&url(&s, "/doc.md#second"), false);
+    b.expect_connected(&tab);
+    const BUTTONS: &str = "document.querySelectorAll('#md-content copy-code button').length";
+    b.expect(&tab, &format!("{BUTTONS} === 1"), "one copy button");
+    const TARGETS: &str = "Array.from(document.querySelectorAll('#md-content copy-code button'))\
+         .map((b) => document.querySelector(b.getAttribute('data-clipboard-target')).textContent)";
+    assert_eq!(b.eval(&tab, TARGETS).unwrap(), json!(["fn first() {}"]));
+    b.expect(&tab, AT_SECOND, "the page scrolled to the #second heading");
+
+    write_atomic(&s.path("doc.md"), smoke_doc(1));
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('added block 0')",
+        "the live update is applied",
+    );
+    b.expect(
+        &tab,
+        &format!("{BUTTONS} === 2"),
+        "the new block gets a button",
+    );
+    assert_eq!(
+        b.eval(&tab, TARGETS).unwrap(),
+        json!(["fn first() {}", "added block 0"])
+    );
+}

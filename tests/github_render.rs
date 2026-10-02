@@ -233,10 +233,6 @@ fn sanitizer_never_lets_scripts_through() {
                 .html
                 .to_ascii_lowercase();
             assert!(!html.contains("<script"), "{n:?} -> {html}");
-            assert!(
-                !html.contains("javascript:alert") || !html.contains("href=\"javascript"),
-                "{n:?} -> {html}"
-            );
             assert!(!html.contains("href=\"javascript"), "{n:?} -> {html}");
             assert!(!html.contains("src=\"javascript"), "{n:?} -> {html}");
             for attr in [
