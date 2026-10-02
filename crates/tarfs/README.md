@@ -172,7 +172,8 @@ hand, as TarFS.jl does. It has two limits:
 * A file must be smaller than 8 GiB (the 11-digit octal size field).
 
 It writes no directory entries. Every entry is checked before the first byte is
-written, so a `PathTooLong` or `EntryTooLarge` error never leaves partial output.
+written, so a `PathTooLong`, `EntryTooLarge` or `InvalidPath` error never leaves
+partial output.
 
 The **extended writer** (`write_tarball_extended`, `write_tarball_gz_extended`) has
 no path or size limits. It writes ustar headers, adding a PAX extended header only
@@ -180,10 +181,13 @@ for a path or size that does not fit. It also writes an explicit directory entry
 (mode `0o755`) before the contents of each directory. Use it when the archive will
 be extracted by `tar -x`, docker, or other tools that care about directory entries.
 Its output is deterministic, and it writes straight from memory: TarFS.jl's
-`write_tarball_gz_viatar` goes through a temporary directory. If one path is both a
-file and the parent of other files (`a` and `a/b`), no extractor can recreate that,
-so the extended writer refuses it with `InvalidPath`. When tarfs reads the archive
-back, the two writers are interchangeable.
+`write_tarball_gz_viatar` goes through a temporary directory. When tarfs reads the
+archive back, the two writers are interchangeable.
+
+Both writers refuse a filesystem in which one path is both a file and the parent
+of other files (`a` and `a/b`) with `InvalidPath`: no extractor can recreate it.
+`write_file` accepts such paths (and the reader indexes such archives), so delete
+one of the two before flushing. TarFS.jl's `write_tarball` writes them anyway.
 
 ## Limitations
 

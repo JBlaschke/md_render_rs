@@ -638,8 +638,10 @@ impl InMemoryFileSystem {
     ///
     /// [`Error::PathTooLong`] for a path the ustar name/prefix fields cannot hold,
     /// [`Error::EntryTooLarge`] for a file of 8 GiB or more (use
-    /// [`write_tarball_extended`](Self::write_tarball_extended) for either), and
-    /// [`Error::Io`] if `w` fails.
+    /// [`write_tarball_extended`](Self::write_tarball_extended) for either),
+    /// [`Error::InvalidPath`] if a file path is also the parent directory of other
+    /// files (`a` and `a/b`), which no extractor can reproduce, and [`Error::Io`]
+    /// if `w` fails.
     ///
     /// ```
     /// # fn main() -> tarfs::Result<()> {
@@ -650,6 +652,12 @@ impl InMemoryFileSystem {
     /// assert_eq!(&tar[..5], b"a.txt");
     ///
     /// assert!(tarfs::InMemoryFileSystem::new().write_tarball(Vec::new())? == vec![0; 1024]);
+    ///
+    /// fs.write_file("a.txt/b", "a.txt cannot be a file and a directory")?;
+    /// assert!(matches!(
+    ///     fs.write_tarball(Vec::new()),
+    ///     Err(tarfs::Error::InvalidPath { path, .. }) if path == "a.txt"
+    /// ));
     /// # Ok(())
     /// # }
     /// ```
@@ -721,9 +729,7 @@ impl InMemoryFileSystem {
     pub fn write_tarball_gz(&self, path: impl AsRef<Path>) -> Result<()> {
         // Validate before creating the temporary file: cheap, and keeps the
         // directory untouched for an unencodable filesystem.
-        for (p, data) in self.iter() {
-            ustar::validate(p, data.len() as u64)?;
-        }
+        write::validate_ustar(self)?;
         write::atomic_gz(path.as_ref(), |gz| self.write_tarball(gz).map(drop))
     }
 

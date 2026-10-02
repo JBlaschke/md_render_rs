@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, Write};
+use std::ops::Bound;
 use std::path::Path;
 
 use flate2::{Compression, GzBuilder};
@@ -14,15 +15,49 @@ use crate::InMemoryFileSystem;
 use crate::error::{Error, Result, io_context};
 use crate::ustar::{self, NAME_LEN, PREFIX_OFFSET, ZERO_BLOCK};
 
-/// The default writer: sorted entries, one TarFS.jl-identical ustar header each,
-/// data padded to 512 bytes, two zero blocks at the end.
-///
-/// Every entry is validated before the first byte is written, so an unencodable
-/// entry never leaves partial output behind.
-pub(crate) fn write_ustar<W: Write>(fs: &InMemoryFileSystem, mut w: W) -> Result<W> {
+/// Check that `fs` can be written by the default writer without writing anything:
+/// every entry fits a ustar header and no file is also a directory.
+pub(crate) fn validate_ustar(fs: &InMemoryFileSystem) -> Result<()> {
     for (path, data) in fs.iter() {
         ustar::validate(path, data.len() as u64)?;
     }
+    check_no_file_dir_conflicts(fs)
+}
+
+/// Refuse a filesystem in which one path is both a file and the parent directory
+/// of other files (`a` and `a/b`): no extractor can recreate it (`tar -x` fails
+/// with "Not a directory"), so neither writer produces such an archive.
+pub(crate) fn check_no_file_dir_conflicts(fs: &InMemoryFileSystem) -> Result<()> {
+    // The keys below directory `p` start with `p/` and form one contiguous run of the
+    // sorted index, so a single range lookup per file decides it (O(n log n) overall,
+    // whatever the names: siblings such as `p-x` or `p.txt` are never visited).
+    let mut dir = String::new();
+    for path in fs.paths() {
+        dir.clear();
+        dir.push_str(path);
+        dir.push('/');
+        let below = fs
+            .entries
+            .range::<str, _>((Bound::Included(dir.as_str()), Bound::Unbounded))
+            .next()
+            .is_some_and(|(key, _)| key.starts_with(dir.as_str()));
+        if below {
+            return Err(Error::InvalidPath {
+                path: path.to_owned(),
+                reason: "is both a file and the parent directory of other files",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The default writer: sorted entries, one TarFS.jl-identical ustar header each,
+/// data padded to 512 bytes, two zero blocks at the end.
+///
+/// The filesystem is validated ([`validate_ustar`]) before the first byte is
+/// written, so an unencodable entry never leaves partial output behind.
+pub(crate) fn write_ustar<W: Write>(fs: &InMemoryFileSystem, mut w: W) -> Result<W> {
+    validate_ustar(fs)?;
     for (path, data) in fs.iter() {
         let size = data.len() as u64;
         w.write_all(&ustar::header(path, size)?)?;
@@ -68,12 +103,7 @@ pub(crate) fn write_extended<W: Write>(fs: &InMemoryFileSystem, w: W) -> Result<
         }
     }
     // A file "a" next to a file "a/b" cannot be extracted: refuse up front.
-    if let Some(dir) = dirs.iter().find(|d| fs.contains(&d[..d.len() - 1])) {
-        return Err(Error::InvalidPath {
-            path: dir[..dir.len() - 1].to_owned(),
-            reason: "is both a file and the parent directory of other files",
-        });
-    }
+    check_no_file_dir_conflicts(fs)?;
     let mut members: Vec<Member<'_>> = dirs.into_iter().map(Member::Dir).collect();
     members.extend(fs.iter().map(|(p, d)| Member::File(p, d)));
     members.sort_unstable_by(|a, b| a.path().cmp(b.path())); // paths are unique
@@ -452,6 +482,80 @@ mod tests {
             write_extended(&fs, Vec::new()),
             Err(Error::InvalidPath { ref path, .. }) if path == "a"
         ));
+    }
+
+    #[test]
+    fn both_writers_agree_on_file_directory_conflicts() {
+        let conflict = |paths: &[&str]| {
+            let mut fs = InMemoryFileSystem::new();
+            for p in paths {
+                fs.write_file(p, "x").unwrap();
+            }
+            let mut out = Vec::new();
+            let ustar = write_ustar(&fs, &mut out).err();
+            assert!(out.is_empty() || ustar.is_none(), "no partial output");
+            let extended = write_extended(&fs, Vec::new()).err();
+            match (ustar, extended) {
+                (None, None) => None,
+                (
+                    Some(Error::InvalidPath { path: a, reason }),
+                    Some(Error::InvalidPath { path: b, .. }),
+                ) => {
+                    assert_eq!(a, b);
+                    assert_eq!(
+                        reason,
+                        "is both a file and the parent directory of other files"
+                    );
+                    Some(a)
+                }
+                other => panic!("{paths:?}: writers disagree: {other:?}"),
+            }
+        };
+        assert_eq!(conflict(&["a", "a/b"]).as_deref(), Some("a"));
+        assert_eq!(conflict(&["x/a", "x/a/b/c"]).as_deref(), Some("x/a"));
+        assert_eq!(
+            conflict(&["a", "a-b", "a.txt", "a0", "a/b"]).as_deref(),
+            Some("a")
+        );
+        // Neighbours that merely share a prefix are fine.
+        assert_eq!(conflict(&["a", "a-b/c", "a.d/e", "ab/c", "b/a"]), None);
+        assert_eq!(conflict(&["x", "xx", "xxx", "xxx.d/y"]), None);
+        assert_eq!(conflict(&[]), None);
+    }
+
+    #[test]
+    fn conflict_check_scales_with_shared_name_prefixes() {
+        // Every name is a prefix of all later ones: scanning each file's name
+        // siblings would be quadratic, one range lookup per file is not.
+        let mut fs = InMemoryFileSystem::new();
+        for n in 1..=3000 {
+            fs.write_file(&"n".repeat(n), "").unwrap();
+        }
+        assert!(check_no_file_dir_conflicts(&fs).is_ok());
+        fs.write_file(&format!("{}/leaf", "n".repeat(2999)), "")
+            .unwrap();
+        assert!(matches!(
+            check_no_file_dir_conflicts(&fs),
+            Err(Error::InvalidPath { path, .. }) if path.len() == 2999
+        ));
+    }
+
+    #[test]
+    fn gz_flush_refuses_conflicts_before_creating_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("conflict.tar.gz");
+        let mut fs = InMemoryFileSystem::new();
+        fs.write_file("a", "file").unwrap();
+        fs.write_file("a/b", "child").unwrap();
+        assert!(matches!(
+            fs.write_tarball_gz(&target),
+            Err(Error::InvalidPath { ref path, .. }) if path == "a"
+        ));
+        assert!(matches!(
+            fs.write_tarball_gz_extended(&target),
+            Err(Error::InvalidPath { .. })
+        ));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
