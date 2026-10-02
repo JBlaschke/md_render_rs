@@ -42,6 +42,9 @@ pub const GITHUB_MAX_TEXT_BYTES: usize = 400 * 1024;
 
 /// Number of API responses kept in memory.
 const CACHE_CAPACITY: usize = 128;
+/// Total size of the API responses kept in memory, like the highlight memo's budget: every edit
+/// of a large document adds a new response, and only reverts ever hit the old ones.
+const CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Largest API response body accepted.
 const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 /// After a network failure, skip the API for this long (keeps live preview snappy offline).
@@ -569,11 +572,15 @@ fn run_helper(program: &str, args: &[&str]) -> Option<String> {
 // The renderer
 // ------------------------------------------------------------------------------------------------
 
-/// Bounded FIFO cache of API response HTML.
+/// FIFO cache of API response HTML, bounded by [`CACHE_CAPACITY`] entries and
+/// [`CACHE_MAX_BYTES`] bytes (Q-MEM-APICACHE: by entries alone it could hold 128 responses of up
+/// to [`MAX_RESPONSE_BYTES`] each).
 #[derive(Default)]
 struct ResponseCache {
     map: HashMap<[u8; 32], Arc<str>>,
     order: VecDeque<[u8; 32]>,
+    /// Total length of the cached HTML.
+    bytes: usize,
 }
 
 impl ResponseCache {
@@ -582,12 +589,22 @@ impl ResponseCache {
     }
 
     fn insert(&mut self, key: [u8; 32], html: Arc<str>) {
-        if self.map.insert(key, html).is_none() {
-            self.order.push_back(key);
+        // A response that would take more than a quarter of the budget is not worth evicting
+        // everything else for (it is also the least likely to be requested unchanged again).
+        if html.len() > CACHE_MAX_BYTES / 4 {
+            return;
         }
-        while self.order.len() > CACHE_CAPACITY {
-            if let Some(old) = self.order.pop_front() {
-                self.map.remove(&old);
+        self.bytes += html.len();
+        match self.map.insert(key, html) {
+            Some(old) => self.bytes -= old.len(),
+            None => self.order.push_back(key),
+        }
+        while self.order.len() > CACHE_CAPACITY || self.bytes > CACHE_MAX_BYTES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(old) = self.map.remove(&oldest) {
+                self.bytes -= old.len();
             }
         }
     }
@@ -1931,6 +1948,42 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Q-MEM-APICACHE: the response cache is bounded by bytes as well as by entries.
+    #[test]
+    fn the_response_cache_is_bounded_by_entries_and_bytes() {
+        let key = |i: u64| {
+            let mut k = [0u8; 32];
+            k[..8].copy_from_slice(&i.to_le_bytes());
+            k
+        };
+        let capacity = CACHE_CAPACITY as u64;
+        let mut cache = ResponseCache::default();
+        for i in 0..capacity + 10 {
+            cache.insert(key(i), Arc::from("<p>x</p>"));
+        }
+        assert_eq!(cache.map.len(), CACHE_CAPACITY);
+        assert!(cache.get(&key(9)).is_none() && cache.get(&key(10)).is_some());
+
+        // Large responses: the oldest go as soon as the byte budget is exceeded.
+        let mut cache = ResponseCache::default();
+        let big: Arc<str> = "x".repeat(CACHE_MAX_BYTES / 5).into();
+        for i in 0..20 {
+            cache.insert(key(i), big.clone());
+            assert!(cache.bytes <= CACHE_MAX_BYTES, "{}", cache.bytes);
+            let total: usize = cache.map.values().map(|h| h.len()).sum();
+            assert_eq!(cache.bytes, total);
+        }
+        assert_eq!(cache.map.len(), 5);
+        assert!(cache.get(&key(19)).is_some() && cache.get(&key(14)).is_none());
+        // Replacing an entry accounts for the old size; huge responses are not cached at all.
+        cache.insert(key(19), Arc::from("small"));
+        assert_eq!(cache.bytes, 4 * big.len() + "small".len());
+        let huge: Arc<str> = "x".repeat(CACHE_MAX_BYTES / 4 + 1).into();
+        cache.insert(key(100), huge);
+        assert!(cache.get(&key(100)).is_none());
+        assert_eq!(cache.map.len(), 5);
+    }
 
     /// Records requests and answers from a queue of canned responses.
     #[derive(Default)]
