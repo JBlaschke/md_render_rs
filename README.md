@@ -170,7 +170,7 @@ one updates the page.
 
 **Layout** (`--layout readme|bare`). `readme` (default) draws the site's file box with the file
 name in its header. `bare` shows only the rendered content. `--title TEXT` sets the page title
-(the default is the file name).
+and replaces the file name in the box header, as grip does (the default is the file name).
 
 **Extra CSS** (`--css URL|FILE`, repeatable) adds a stylesheet after the site CSS. A local file is
 served by md-render and watched, so editing it restyles open pages. In exports, a local file is
