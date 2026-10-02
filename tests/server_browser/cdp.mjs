@@ -128,21 +128,38 @@ async function handle(cmd) {
   }
 }
 
+let exiting = false;
+
+// Stop Chrome, then remove its profile once it has exited (it writes until then).
 function shutdown(code) {
+  if (exiting) return;
+  exiting = true;
+  let finished = false;
+  const done = () => {
+    if (finished) return;
+    finished = true;
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
+    } catch (e) {
+      // best effort
+    }
+    process.exit(code);
+  };
+  if (chrome.exitCode !== null || chrome.signalCode !== null) {
+    done();
+    return;
+  }
+  chrome.once('exit', done);
+  setTimeout(done, 3000);
   try {
     chrome.kill('SIGKILL');
   } catch (e) {
-    // already gone
+    done();
   }
-  try {
-    rmSync(profile, { recursive: true, force: true });
-  } catch (e) {
-    // best effort
-  }
-  process.exit(code);
 }
 
 chrome.on('exit', () => {
+  if (exiting) return;
   process.stdout.write(JSON.stringify({ error: 'chrome exited' }) + '\n');
   shutdown(1);
 });
