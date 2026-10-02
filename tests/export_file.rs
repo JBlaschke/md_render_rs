@@ -161,6 +161,8 @@ fn explicit_title_replaces_existing_output() {
     let html = std::fs::read_to_string(&out).unwrap();
     let doc = Document::from(html.as_str());
     assert_eq!(doc.select("title").text().as_ref(), "My <Title>");
+    // CLI-24: like grip's --title, it replaces the file name in the box header too.
+    assert_eq!(doc.select(".mdr-box-title").text().trim(), "My <Title>");
     assert_eq!(
         attr(&doc, "html", "data-color-mode").as_deref(),
         Some("dark")

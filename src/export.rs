@@ -56,7 +56,8 @@ pub struct ExportConfig {
     pub theme: ThemeSel,
     /// Site-like box or content only.
     pub layout: Layout,
-    /// `<title>`; defaults to the file name (as when serving), `md-render` without one.
+    /// `<title>` and box header text (like grip's `--title`); defaults to the file name (as when
+    /// serving), and the title to `md-render` without one.
     pub title: Option<String>,
     /// `owner/repo` or `group/project`, passed to the renderer.
     pub context: Option<String>,
@@ -175,7 +176,11 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         theme: &cfg.theme,
         layout: cfg.layout,
         title: &title,
-        file_name: (!display_name.is_empty()).then_some(display_name.as_str()),
+        // grip's --title replaces the file name in the box header too (GRIP §2.4, C21).
+        file_name: cfg
+            .title
+            .as_deref()
+            .or((!display_name.is_empty()).then_some(display_name.as_str())),
         content: &rendered,
         assets: &assets,
         live: None,
