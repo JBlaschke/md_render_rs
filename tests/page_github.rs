@@ -557,7 +557,7 @@ fn listing_fragment() {
             ("/q\"uote".into(), "q\"uote".into())
         ]
     );
-    assert!(doc.select(".Box-row").nodes()[1].text().contains("2.0 KB"));
+    assert!(doc.select(".Box-row").nodes()[1].text().contains("2.0 KiB"));
     // Breadcrumbs link every ancestor.
     let crumbs: Vec<String> = doc
         .select(".Box-header a")

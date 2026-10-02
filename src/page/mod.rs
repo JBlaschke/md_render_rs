@@ -481,21 +481,6 @@ fn crumbs_html(dir: &str) -> String {
     out
 }
 
-/// Human-readable byte size (`512 B`, `1.5 KB`, `3.2 MB`).
-fn human_size(n: u64) -> String {
-    const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
-    if n < 1024 {
-        return format!("{n} B");
-    }
-    let mut v = n as f64 / 1024.0;
-    let mut unit = 0;
-    while v >= 1024.0 && unit + 1 < UNITS.len() {
-        v /= 1024.0;
-        unit += 1;
-    }
-    format!("{v:.1} {}", UNITS[unit])
-}
-
 /// HTTP reason phrase for the status codes the server produces.
 fn reason(status: u16) -> &'static str {
     match status {
@@ -522,14 +507,6 @@ fn reason(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sizes() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(1023), "1023 B");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
-    }
 
     #[test]
     fn crumbs() {

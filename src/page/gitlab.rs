@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use super::octicons::{self, Icon};
-use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, human_size, reason};
+use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, reason};
 use crate::flavor::{Mode, Theme};
 use crate::html;
 
@@ -232,7 +232,10 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
         };
         let size = match (e.is_dir, e.size) {
             (false, Some(n)) => {
-                format!("<span class=\"mdr-listing-size\">{}</span>", human_size(n))
+                format!(
+                    "<span class=\"mdr-listing-size\">{}</span>",
+                    crate::human_bytes(n)
+                )
             }
             _ => String::new(),
         };

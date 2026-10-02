@@ -3,7 +3,7 @@
 //! the vendored CSS defines (CQ §3.7: `.Box`, `.Box-row`, `.flash`, `.flash-error`, …).
 
 use super::octicons::{self, Icon};
-use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, human_size, reason};
+use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, reason};
 use crate::flavor::{Mode, Theme};
 use crate::html;
 
@@ -147,7 +147,7 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
         let size = match (e.is_dir, e.size) {
             (false, Some(n)) => format!(
                 "<span class=\"color-fg-muted mdr-listing-size\">{}</span>",
-                human_size(n)
+                crate::human_bytes(n)
             ),
             _ => String::new(),
         };

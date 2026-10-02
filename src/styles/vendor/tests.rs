@@ -699,10 +699,6 @@ fn timestamps() {
 
 #[test]
 fn sizes_and_decoding() {
-    assert_eq!(human_bytes(0), "0 B");
-    assert_eq!(human_bytes(999), "999 B");
-    assert_eq!(human_bytes(87_305), "87.3 KB");
-    assert_eq!(human_bytes(3_566_058), "3.6 MB");
     assert_eq!(decode_css(b"\xef\xbb\xbfa{}".to_vec()).expect("bom"), "a{}");
     assert!(decode_css(vec![0xff, 0xfe]).is_err());
 }

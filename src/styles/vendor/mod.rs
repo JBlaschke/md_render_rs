@@ -155,8 +155,8 @@ pub fn vendor_with(opts: &VendorOptions, fetcher: &dyn Fetch) -> anyhow::Result<
         "wrote {} ({} files, {} uncompressed, {} on disk{})",
         opts.output.display(),
         report.files,
-        human_bytes(report.bytes),
-        human_bytes(on_disk),
+        crate::human_bytes(report.bytes),
+        crate::human_bytes(on_disk),
         match report.failures.len() {
             0 => String::new(),
             1 => ", 1 non-fatal failure".to_owned(),
@@ -501,7 +501,7 @@ impl FlavorRun<'_> {
         self.progress.say(format_args!(
             "  {:>3} {:>10}  {}",
             resp.status,
-            human_bytes(size),
+            crate::human_bytes(size),
             job.path
         ));
         self.files.insert(job.path, bytes);
@@ -868,21 +868,6 @@ impl Progress {
 }
 
 /// `1234567` → `1.2 MB`.
-fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1000.0 && u + 1 < UNITS.len() {
-        v /= 1000.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", UNITS[u])
-    }
-}
-
 /// RFC 3339 UTC timestamp with second precision, e.g. `2026-10-01T10:00:00Z`.
 fn rfc3339_utc(t: SystemTime) -> String {
     let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
