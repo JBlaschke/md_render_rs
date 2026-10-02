@@ -212,3 +212,11 @@ Copyright (c) Ryan Grove) and the `ALLOWLIST` of
 [html-pipeline](https://github.com/gjtorikian/html-pipeline) 2.14.3 (MIT, Copyright (c) 2012
 GitHub Inc. and Jerry Cheung); both are under the MIT license text above (with their own
 copyright lines).
+
+### Rouge 5.1.0 — further lexer ports (owner: highlight)
+
+`src/render/highlight/rouge/docker.rs` ports the `Docker` lexer of
+[rouge-ruby/rouge](https://github.com/rouge-ruby/rouge) 5.1.0, and `rouge/words.rs` also copies
+the keyword/builtin word tables of its `Ruby` lexer and the implicit-key rule of its `YAML`
+lexer. SPDX-License-Identifier: MIT — Copyright (c) 2012 Jeanine Adkisson (license text in the
+Rouge 5.1.0 section above).

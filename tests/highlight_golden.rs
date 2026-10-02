@@ -42,9 +42,9 @@ fn github_agreement() {
         );
     }
     let (t, h) = (total(&tuning.scores), total(&heldout.scores));
-    // Measured 2026-10-01: tuning 90.1% path / 93.3% color, held-out 91.8% / 92.2%.
+    // Measured 2026-10-02: tuning 92.1% path / 94.7% color, held-out 91.8% / 92.3%.
     assert!(
-        t.path_pct() >= 88.0 && t.color_pct() >= 91.0,
+        t.path_pct() >= 91.0 && t.color_pct() >= 94.0,
         "tuning: {t:?}"
     );
     assert!(
@@ -69,10 +69,10 @@ fn gitlab_agreement_beats_scope_map_baseline() {
     // The Python prototype's baseline (MAPPING_EVAL.txt).
     assert!(t.exact_pct() >= 50.5, "{t:?}");
     assert!(t.family_pct() >= 75.8, "{t:?}");
-    // Measured 2026-10-01: 82.9% exact / 90.2% family.
-    assert!(t.exact_pct() >= 80.0 && t.family_pct() >= 88.0, "{t:?}");
+    // Measured 2026-10-02: 85.8% exact / 91.9% family.
+    assert!(t.exact_pct() >= 85.0 && t.family_pct() >= 91.0, "{t:?}");
     // The exact ports are exact.
-    for lang in ["diff", "console", "json", "plaintext"] {
+    for lang in ["diff", "console", "dockerfile", "json", "plaintext"] {
         let s = scores[lang];
         assert_eq!(s.exact, s.chars, "{lang}: {s:?}");
     }
