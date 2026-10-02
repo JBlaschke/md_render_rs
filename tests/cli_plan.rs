@@ -1070,15 +1070,122 @@ fn subcommands_reject_serve_arguments() {
         assert_eq!(code, 2, "{args:?}");
         assert!(msg.contains(needle), "{args:?}: {msg}");
     }
-    // Serve-only flags after the subcommand are unknown there (clap error, exit 2).
-    assert_eq!(error(&fx, &["vendor", "-b"]).1, 2);
-    assert_eq!(error(&fx, &["export", "--root", "."]).1, 2);
+    // Serve-only flags after the subcommand are rejected the same way (CLI-14).
+    let (msg, code) = error(&fx, &["vendor", "-b"]);
+    assert_eq!(code, 2);
+    assert!(
+        msg.contains("'--browser' cannot be used with the 'vendor' subcommand"),
+        "{msg}"
+    );
+    let (msg, code) = error(&fx, &["export", "--root", "."]);
+    assert_eq!(code, 2);
+    assert!(
+        msg.contains("'--root' cannot be used with the 'export' subcommand"),
+        "{msg}"
+    );
     // `./vendor` and `-- vendor` name a file called `vendor`.
     fs::write(fx.cwd.join("vendor"), "# v").unwrap();
     assert_eq!(serve(&fx, &["./vendor"]).target, file("vendor"));
     assert_eq!(serve(&fx, &["--", "vendor"]).target, file("vendor"));
     // `help` is not a subcommand (a file may be called `help`).
     assert!(error(&fx, &["help"]).0.contains("File not found: help"));
+}
+
+/// CLI-14: usage errors of a subcommand show its usage line (not the top-level one), and a
+/// serve-only flag after a subcommand gets the same message as before it instead of clap's
+/// lookalike suggestion (`tip: a similar argument exists: '--verbose'`, which also put
+/// `--verbose...` into the usage line).
+#[test]
+fn subcommand_errors_show_the_subcommand_usage() {
+    let fx = Fixture::new();
+    let export = "Usage: md-render export [OPTIONS] [PATH] [OUT]";
+    let vendor = "Usage: md-render vendor [OPTIONS]";
+    let top = "Usage: md-render [OPTIONS] [PATH] [ADDRESS]";
+    for (args, needle, usage) in [
+        (
+            &["export", "README.md", "./README.md"][..],
+            "the export would overwrite its input",
+            export,
+        ),
+        (
+            &["-f", "all", "export"],
+            "'--flavor all' is only valid",
+            export,
+        ),
+        (
+            &["export", "--theme", "light", "--light-theme", "nope"],
+            "invalid value 'nope' for '--light-theme <ID>'",
+            export,
+        ),
+        (
+            &["export", "--browser"],
+            "'--browser' cannot be used with the 'export' subcommand (to render a file named \
+             'export' use ./export)",
+            export,
+        ),
+        (
+            &["export", "--poll=500"],
+            "'--poll' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["export", "--no-reload", "README.md"],
+            "'--norefresh' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["--root", ".", "export"],
+            "'--root' cannot be used with the 'export' subcommand",
+            export,
+        ),
+        (
+            &["vendor", "-qb"],
+            "'--browser' cannot be used with the 'vendor' subcommand",
+            vendor,
+        ),
+        (
+            &["vendor", "--no-inline"],
+            "'--no-inline' cannot be used with the 'vendor' subcommand",
+            vendor,
+        ),
+        (
+            &["vendor", "--github-source", "nope"],
+            "invalid value 'nope' for '--github-source <URL>'",
+            vendor,
+        ),
+        (
+            &["cache", "clear", "--follow-symlinks"],
+            "'--follow-symlinks' cannot be used with the 'cache' subcommand",
+            "Usage: md-render cache clear [OPTIONS]",
+        ),
+        (
+            &["-b", "cache", "path"],
+            "'--browser' cannot be used with the 'cache' subcommand",
+            "Usage: md-render cache path [OPTIONS]",
+        ),
+        // Serving and grip's `--export` keep the top-level usage.
+        (
+            &["--export", "README.md", "README.md"],
+            "the export would overwrite its input",
+            top,
+        ),
+        (&["README.md", "::1"], "put IPv6 addresses in brackets", top),
+    ] {
+        let (msg, code) = error(&fx, args);
+        assert_eq!(code, 2, "{args:?}: {msg}");
+        assert!(msg.contains(needle), "{args:?}: {msg}");
+        assert_eq!(
+            msg.lines().find(|l| l.starts_with("Usage:")),
+            Some(usage),
+            "{args:?}: {msg}"
+        );
+        assert!(!msg.contains("similar argument"), "{args:?}: {msg}");
+    }
+    // Other unknown options keep clap's own error, in the subcommand's usage.
+    let (msg, code) = error(&fx, &["export", "--bogus"]);
+    assert_eq!(code, 2);
+    assert!(msg.contains("unexpected argument '--bogus'"), "{msg}");
+    assert!(msg.contains(export), "{msg}");
 }
 
 #[test]

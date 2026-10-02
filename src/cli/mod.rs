@@ -15,8 +15,8 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::Parser as _;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::{CommandFactory as _, Parser as _};
 
 pub mod address;
 pub mod args;
@@ -51,9 +51,14 @@ where
     T: Into<OsString> + Clone,
 {
     let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
-    let cli = Cli::try_parse_from(&argv).map_err(|e| match grip_hint(&e) {
-        Some(hint) => CliError::Hint(hint),
-        None => CliError::Clap(e),
+    let cli = Cli::try_parse_from(&argv).map_err(|e| {
+        if let Some(hint) = grip_hint(&e) {
+            CliError::Hint(hint)
+        } else if let Some(conflict) = serve_flag_after_subcommand(&e, &argv) {
+            conflict
+        } else {
+            CliError::Clap(e)
+        }
     })?;
     if cli.command.is_none() && cli.serve.poll.is_some() {
         if let Some(ms) = detached_poll_value(&argv) {
@@ -91,6 +96,52 @@ where
     T: Into<OsString> + Clone,
 {
     plan::plan(parse_args(argv)?, host)
+}
+
+/// A serve-only flag after a subcommand (`md-render export --browser`) is unknown to clap,
+/// which would suggest a lookalike option and print it in the usage line as if it were
+/// required (`Usage: md-render export --verbose... [PATH] [OUT]`). Report it like the same flag
+/// before the subcommand instead (CLI-14).
+fn serve_flag_after_subcommand(e: &clap::Error, argv: &[OsString]) -> Option<CliError> {
+    if e.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(arg)) = e.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    let flag = serve_flag(arg.split_once('=').map_or(arg.as_str(), |(n, _)| n))?;
+    // The subcommand the flag was given to (clap stops at the first error otherwise).
+    let matches = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(argv)
+        .ok()?;
+    let mut path = Vec::new();
+    let mut m = &matches;
+    while let Some((name, sub)) = m.subcommand() {
+        path.push(name);
+        m = sub;
+    }
+    (!path.is_empty()).then(|| plan::serve_flag_conflict(&flag, &path))
+}
+
+/// `--browser` for `--browser`, `-b` or the alias `--no-reload` → `--norefresh`: the canonical
+/// name of a serve-only option, if `name` is one.
+fn serve_flag(name: &str) -> Option<String> {
+    let cmd = Cli::command();
+    let found = cmd
+        .get_arguments()
+        .filter(|a| !a.is_global_set() && !a.is_positional())
+        .find(|a| {
+            if let Some(long) = name.strip_prefix("--") {
+                a.get_long() == Some(long)
+                    || a.get_all_aliases()
+                        .is_some_and(|aliases| aliases.contains(&long))
+            } else {
+                let mut short = name.strip_prefix('-').unwrap_or_default().chars();
+                short.next().is_some_and(|c| a.get_short() == Some(c)) && short.next().is_none()
+            }
+        })?;
+    found.get_long().map(|long| format!("--{long}"))
 }
 
 /// The hint for an unknown `-a`/`--address`/`--host` or `-p`/`--port` option, if `e` is one.

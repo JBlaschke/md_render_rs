@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::error::ErrorKind;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory as _, ValueEnum as _};
 
 use crate::export::{ExportConfig, ExportInput, ExportOutput};
@@ -125,9 +125,51 @@ impl From<clap::Error> for CliError {
     }
 }
 
-/// A clap-formatted usage error (exit 2).
+/// A clap-formatted usage error (exit 2) with the top-level usage line. Errors of a subcommand
+/// get its usage line instead (see [`CliError::in_subcommand`]).
 pub(crate) fn usage(kind: ErrorKind, message: impl fmt::Display) -> CliError {
-    CliError::Clap(Cli::command().error(kind, message))
+    usage_in(None, kind, message)
+}
+
+/// A clap-formatted usage error (exit 2) showing the usage line of `subcommand` (a path such as
+/// `["cache", "clear"]`; empty for the top level), so `md-render export …` errors print
+/// `Usage: md-render export [OPTIONS] [PATH] [OUT]` (CLI-14). The message is kept in the error's
+/// context so that it can be shown again with another usage line.
+pub(crate) fn usage_in(
+    subcommand: Option<&[&str]>,
+    kind: ErrorKind,
+    message: impl fmt::Display,
+) -> CliError {
+    let message = message.to_string();
+    let mut top = Cli::command();
+    // Building sets the subcommands' display names (`md-render export`).
+    top.build();
+    let mut cmd = &mut top;
+    for name in subcommand.unwrap_or_default() {
+        if cmd.find_subcommand(name).is_none() {
+            break;
+        }
+        cmd = cmd.find_subcommand_mut(name).expect("checked above");
+    }
+    let mut err = cmd.error(kind, &message);
+    err.insert(ContextKind::Custom, ContextValue::String(message));
+    CliError::Clap(err)
+}
+
+impl CliError {
+    /// A usage error made by [`usage`], shown with the usage line of `subcommand` instead of the
+    /// top-level one. Other errors are returned unchanged.
+    fn in_subcommand(self, subcommand: &[&str]) -> Self {
+        match &self {
+            CliError::Clap(e) => match e.get(ContextKind::Custom) {
+                Some(ContextValue::String(message)) => {
+                    usage_in(Some(subcommand), e.kind(), message)
+                }
+                _ => self,
+            },
+            _ => self,
+        }
+    }
 }
 
 fn runtime(message: impl fmt::Display) -> CliError {
@@ -318,30 +360,9 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
     let bundle = bundle_path(g, host, &cwd);
 
     let plan = match &cli.command {
-        Some(cmd) => {
-            reject_serve_args(&cli.serve, cmd)?;
-            match cmd {
-                Command::Export(a) => {
-                    let flavor = render_flavor(g, host)?;
-                    let render = render_plan(g, flavor, &bundle.0, &cwd, true, &mut warnings)?;
-                    let inline = !(a.no_inline || cli.serve.no_inline);
-                    Plan::Export(export_plan(a, inline, render, host, &cwd, &mut warnings)?)
-                }
-                // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the
-                // rendering flavor, while one bundle holds both (D9).
-                Command::Vendor(a) => {
-                    warn_ignored(g, false, "the 'vendor' subcommand", &mut warnings);
-                    Plan::Vendor(vendor_plan(a, g.flavor, bundle, &cwd, quiet)?)
-                }
-                Command::Cache(c) => {
-                    warn_ignored(g, true, "the 'cache' subcommand", &mut warnings);
-                    match c.action {
-                        CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
-                        CacheAction::Path => Plan::CachePath(bundle.0),
-                    }
-                }
-            }
-        }
+        // Usage errors of a subcommand show its usage line, not the top-level one (CLI-14).
+        Some(cmd) => subcommand_plan(&cli, cmd, bundle, host, &cwd, &mut warnings)
+            .map_err(|e| e.in_subcommand(&subcommand_path(cmd)))?,
         // grip runs `--clear` before any path resolution (GRIP §2.2 step 5).
         None if cli.serve.clear => {
             warn_ignored(g, true, "--clear", &mut warnings);
@@ -385,6 +406,52 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
         quiet,
         verbose: g.verbose,
     })
+}
+
+/// The plan for `export`, `vendor` or `cache`.
+fn subcommand_plan(
+    cli: &Cli,
+    cmd: &Command,
+    bundle: (PathBuf, BundleSource),
+    host: &mut dyn Host,
+    cwd: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Plan, CliError> {
+    let g = &cli.global;
+    reject_serve_args(&cli.serve, cmd)?;
+    Ok(match cmd {
+        Command::Export(a) => {
+            let flavor = render_flavor(g, host)?;
+            let render = render_plan(g, flavor, &bundle.0, cwd, true, warnings)?;
+            let inline = !(a.no_inline || cli.serve.no_inline);
+            Plan::Export(export_plan(a, inline, render, host, cwd, warnings)?)
+        }
+        // `vendor` only honours an explicit --flavor: MD_RENDER_FLAVOR selects the rendering
+        // flavor, while one bundle holds both (D9).
+        Command::Vendor(a) => {
+            warn_ignored(g, false, "the 'vendor' subcommand", warnings);
+            Plan::Vendor(vendor_plan(a, g.flavor, bundle, cwd, g.quiet)?)
+        }
+        Command::Cache(c) => {
+            warn_ignored(g, true, "the 'cache' subcommand", warnings);
+            match c.action {
+                CacheAction::Clear => Plan::CacheClear(cache_clear_plan(host, bundle)?),
+                CacheAction::Path => Plan::CachePath(bundle.0),
+            }
+        }
+    })
+}
+
+/// The names leading to `cmd`'s usage line: `["export"]`, `["cache", "clear"]`.
+fn subcommand_path(cmd: &Command) -> Vec<&'static str> {
+    let mut path = vec![subcommand_name(cmd)];
+    if let Command::Cache(c) = cmd {
+        path.push(match c.action {
+            CacheAction::Clear => "clear",
+            CacheAction::Path => "path",
+        });
+    }
+    path
 }
 
 /// Non-empty UTF-8 environment variable.
@@ -523,13 +590,24 @@ fn reject_serve_args(s: &ServeArgs, cmd: &Command) -> Result<(), CliError> {
         // `--no-inline export …` means the same as `export --no-inline …`.
         .filter(|f| !(*f == "--no-inline" && matches!(cmd, Command::Export(_))))
         .collect();
-    if let Some(flag) = flags.first() {
-        return Err(usage(
-            ErrorKind::ArgumentConflict,
-            format!("'{flag}' cannot be used with the '{name}' subcommand {hint}"),
-        ));
+    match flags.first() {
+        Some(flag) => Err(serve_flag_conflict(flag, &subcommand_path(cmd))),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The usage error for the serve-only `flag` combined with the subcommand at `path` (before or
+/// after its name), with that subcommand's usage line.
+pub(crate) fn serve_flag_conflict(flag: &str, path: &[&str]) -> CliError {
+    let name = path.first().copied().unwrap_or_default();
+    usage_in(
+        Some(path),
+        ErrorKind::ArgumentConflict,
+        format!(
+            "'{flag}' cannot be used with the '{name}' subcommand (to render a file named \
+             '{name}' use ./{name})"
+        ),
+    )
 }
 
 /// grip's `--export` ignores serve flags silently; reject the ones that cannot apply.
