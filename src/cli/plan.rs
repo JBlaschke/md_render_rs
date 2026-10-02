@@ -28,8 +28,8 @@ use super::args::{
     CacheAction, Cli, Command, ExportArgs, FlavorArg, GITHUB_THEMES, GlobalArgs, ServeArgs,
     ThemeArg, ThemesArg, VendorArgs,
 };
-use super::paths::{absolutize, decode_text};
-use crate::markdown_files::find_root_readme;
+use super::paths::absolutize;
+use crate::markdown_files::{self, find_root_readme};
 
 /// File name of the default style bundle inside the cache directory (D9).
 pub const BUNDLE_FILE_NAME: &str = "styles.tar.gz";
@@ -1052,7 +1052,9 @@ fn read_stdin(
     let bytes = host
         .read_stdin()
         .map_err(|e| CliError::Runtime(anyhow::Error::new(e).context("reading stdin")))?;
-    Ok(decode_text(bytes, STDIN_NAME, warnings))
+    let (text, warning) = markdown_files::decode(bytes, STDIN_NAME);
+    warnings.extend(warning);
+    Ok(text)
 }
 
 /// GRIP §2.6 output naming: default `<input without extension>.html` next to the input (a

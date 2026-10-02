@@ -209,24 +209,15 @@ fn read_input(cfg: &ExportConfig) -> anyhow::Result<(String, Option<PathBuf>, St
         ExportInput::Stdin { name, text } => Ok((strip_bom(text).to_owned(), None, name.clone())),
         ExportInput::File(path) => {
             let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-            let text = match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    if !cfg.quiet {
-                        eprintln!(
-                            "md-render: warning: {} is not valid UTF-8 (at byte {}); invalid bytes were replaced",
-                            path.display(),
-                            e.utf8_error().valid_up_to()
-                        );
-                    }
-                    String::from_utf8_lossy(e.as_bytes()).into_owned()
-                }
-            };
+            let (text, warning) = crate::markdown_files::decode(bytes, &path.display().to_string());
+            if let Some(w) = warning.filter(|_| !cfg.quiet) {
+                tracing::warn!("{w}");
+            }
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            Ok((strip_bom(&text).to_owned(), Some(path.clone()), name))
+            Ok((text, Some(path.clone()), name))
         }
     }
 }

@@ -775,26 +775,6 @@ fn cache_token() -> String {
         .unwrap_or_else(|_| "0".into())
 }
 
-/// Decode Markdown source: strip a UTF-8 BOM and decode lossily, returning a warning when
-/// the bytes were not valid UTF-8 (GRIP C38).
-pub fn decode_markdown(mut bytes: Vec<u8>, name: &str) -> (String, Option<String>) {
-    let bom = bytes.starts_with(b"\xEF\xBB\xBF");
-    if bom {
-        bytes.drain(..3);
-    }
-    match String::from_utf8(bytes) {
-        Ok(s) => (s, None),
-        Err(e) => {
-            let offset = e.utf8_error().valid_up_to() + if bom { 3 } else { 0 };
-            let text = String::from_utf8_lossy(e.as_bytes()).into_owned();
-            let warning = format!(
-                "{name} is not valid UTF-8 (first invalid byte at offset {offset}); showing a lossy decoding"
-            );
-            (text, Some(warning))
-        }
-    }
-}
-
 /// The Markdown source of one render: raw bytes, or text already decoded while gathering.
 enum Source {
     Bytes(Vec<u8>),
@@ -805,7 +785,7 @@ impl Source {
     /// The decoded text and the invalid-UTF-8 warning, if any.
     fn into_text(self, key: &str) -> (String, Option<String>) {
         match self {
-            Source::Bytes(b) => decode_markdown(b, key),
+            Source::Bytes(b) => crate::markdown_files::decode(b, key),
             Source::Text(t, w) => (t, w),
         }
     }
@@ -835,7 +815,7 @@ impl Inputs {
         // Reading the included files is blocking I/O.
         let (key, opts) = (key.to_owned(), opts.clone());
         tokio::task::spawn_blocking(move || {
-            let (text, warning) = decode_markdown(bytes, &key);
+            let (text, warning) = crate::markdown_files::decode(bytes, &key);
             let includes = crate::render::gitlab::included_files(&text, &opts);
             let hash = inputs_hash(doc_hash, &includes);
             Inputs {
@@ -1356,19 +1336,6 @@ mod tests {
             watcher: None,
         };
         (Hub::new(Arc::new(ctx), rx), tx)
-    }
-
-    #[test]
-    fn decoding() {
-        assert_eq!(
-            decode_markdown(b"\xEF\xBB\xBF# x".to_vec(), "a.md"),
-            ("# x".into(), None)
-        );
-        let (text, w) = decode_markdown(b"caf\xe9".to_vec(), "a.md");
-        assert_eq!(text, "caf\u{FFFD}");
-        assert!(w.unwrap().contains("offset 3"));
-        let (_, w) = decode_markdown(b"\xEF\xBB\xBFcaf\xe9".to_vec(), "a.md");
-        assert!(w.unwrap().contains("offset 6"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
-//! Which files are Markdown, and which README a directory shows (DESIGN §6). Shared by the
-//! server (`md-render DIR`) and the CLI (`md-render export DIR`), so both pick the same file.
+//! Which files are Markdown, which README a directory shows (DESIGN §6) and how Markdown bytes
+//! are decoded. Shared by the server (`md-render DIR`), the CLI (stdin) and `md-render export`,
+//! so all of them pick the same file and report undecodable input the same way.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -93,10 +94,62 @@ pub(crate) fn find_root_readme(root: &Path, flavor: Flavor) -> Option<String> {
     })
 }
 
+/// Decodes Markdown source bytes (GRIP C38): strips a UTF-8 byte order mark and replaces
+/// invalid UTF-8 with U+FFFD. The warning, when the bytes were not valid UTF-8, names the first
+/// invalid byte by its offset in `bytes` (counting the byte order mark).
+pub(crate) fn decode(mut bytes: Vec<u8>, name: &str) -> (String, Option<String>) {
+    const BOM: &[u8] = b"\xEF\xBB\xBF";
+    let skipped = if bytes.starts_with(BOM) {
+        bytes.drain(..BOM.len());
+        BOM.len()
+    } else {
+        0
+    };
+    match String::from_utf8(bytes) {
+        Ok(s) => (s, None),
+        Err(e) => {
+            let offset = skipped + e.utf8_error().valid_up_to();
+            let warning = format!(
+                "{name} is not valid UTF-8 (first invalid byte at offset {offset}); invalid bytes were replaced"
+            );
+            (
+                String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                Some(warning),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn decoding() {
+        assert_eq!(
+            decode(b"\xEF\xBB\xBF# a".to_vec(), "a.md"),
+            ("# a".into(), None)
+        );
+        assert_eq!(decode(b"# a".to_vec(), "a.md"), ("# a".into(), None));
+        // A BOM that is not at the start is content (U+FEFF).
+        assert_eq!(decode(b"a\xEF\xBB\xBF".to_vec(), "a.md").0, "a\u{feff}");
+        let (text, w) = decode(b"caf\xe9".to_vec(), "a.md");
+        assert_eq!(text, "caf\u{FFFD}");
+        assert_eq!(
+            w.as_deref(),
+            Some(
+                "a.md is not valid UTF-8 (first invalid byte at offset 3); invalid bytes were replaced"
+            )
+        );
+        // The offset counts the BOM: it is the byte offset in the file.
+        let (text, w) = decode(b"\xEF\xBB\xBF# a\xFFb\n".to_vec(), "stdin");
+        assert_eq!(text, "# a\u{FFFD}b\n");
+        assert!(
+            w.unwrap()
+                .starts_with("stdin is not valid UTF-8 (first invalid byte at offset 6)")
+        );
+    }
 
     #[test]
     fn markdown_extensions() {
