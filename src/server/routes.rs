@@ -36,7 +36,33 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/", get(document))
         .route("/{*path}", get(document))
         .layer(middleware::from_fn_with_state(app.clone(), host_guard))
+        .layer(middleware::from_fn(access_log))
         .with_state(app)
+}
+
+/// Log target of the access log.
+pub const ACCESS_LOG: &str = "md_render::access";
+
+/// One line per request (GRIP C24): method, path and query, status and the time to the
+/// response head (SSE streams: until the stream starts). Failed requests (4xx, 5xx: a
+/// missing image, a broken link) at INFO, which is shown by default; the rest at DEBUG,
+/// shown from `-v` on (CLI-7).
+async fn access_log(req: Request, next: Next) -> Response {
+    let started = std::time::Instant::now();
+    let method = req.method().clone();
+    let target = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| req.uri().path().to_owned(), |p| p.as_str().to_owned());
+    let resp = next.run(req).await;
+    let status = resp.status();
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    if status.is_client_error() || status.is_server_error() {
+        tracing::info!(target: ACCESS_LOG, "{method} {target} -> {status} ({ms:.1} ms)");
+    } else {
+        tracing::debug!(target: ACCESS_LOG, "{method} {target} -> {status} ({ms:.1} ms)");
+    }
+    resp
 }
 
 /// Host-header allowlist against DNS rebinding when bound to loopback (D14, GRIP C39).
