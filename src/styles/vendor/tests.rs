@@ -546,7 +546,12 @@ fn bundle_write_read_modify_write() {
     let mut fs = tarfs::InMemoryFileSystem::open(&o.output).expect("open fs");
     fs.delete_file("github/images/spinners/x.gif");
     fs.write_tarball_gz(&o.output).expect("flush");
-    assert!(Bundle::open(&o.output).is_err());
+    let damaged = Bundle::open(&o.output).expect("GitLab is intact");
+    assert!(
+        damaged.flavor(Flavor::Github).is_none(),
+        "damaged flavor dropped"
+    );
+    assert_eq!(damaged.flavor(Flavor::Gitlab), both.flavor(Flavor::Gitlab));
     let gl_out = vendor_flavor(Flavor::Gitlab, &o, &gl, &progress).expect("gitlab");
     write_bundle(&o.output, &[gl_out], &progress).expect("write");
     let repaired = Bundle::open(&o.output).expect("open");

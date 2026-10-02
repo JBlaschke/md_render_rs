@@ -6,9 +6,12 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use md_render::Flavor;
-use md_render::styles::manifest::MANIFEST_PATH;
+use md_render::styles::manifest::{MANIFEST_PATH, role};
 use md_render::styles::vendor::{Fetch, Response, VendorOptions, vendor_with};
-use md_render::styles::{Bundle, load_or_fallback, vendor_command};
+use md_render::styles::{
+    Asset, Bundle, FlavorManifest, Manifest, Stylesheet, flavor_warning, load_or_fallback,
+    vendor_command,
+};
 
 /// Canned responses keyed by URL (unknown URLs are 404), with a log of every request.
 #[derive(Default)]
@@ -189,4 +192,154 @@ fn a_directory_is_not_suggested_for_deletion() {
     let warning = load_or_fallback(dir.path()).1.expect("warning");
     assert!(!warning.contains("delete"), "{warning}");
     assert!(warning.contains("md-render vendor -o FILE"), "{warning}");
+}
+
+/// Add a small GitLab flavor to the bundle at `path` (as `md-render vendor --flavor gitlab`
+/// would) and return the paths it lists.
+fn add_gitlab(path: &Path) -> Vec<String> {
+    let files = [
+        ("gitlab/assets/application-1.css", "a{b:url(x.woff2)}"),
+        ("gitlab/assets/x.woff2", "font"),
+    ];
+    let mut fs = tarfs::InMemoryFileSystem::open(path).expect("open");
+    let mut manifest: Manifest =
+        serde_json::from_slice(fs.get(MANIFEST_PATH).expect("manifest")).expect("json");
+    manifest.flavors.insert(
+        Flavor::Gitlab,
+        FlavorManifest {
+            stylesheets: vec![Stylesheet {
+                path: files[0].0.into(),
+                role: role::APP.into(),
+                theme: Some("light".into()),
+                ..Default::default()
+            }],
+            assets: vec![Asset {
+                path: files[1].0.into(),
+                ..Default::default()
+            }],
+            themes: vec!["light".into()],
+            ..Default::default()
+        },
+    );
+    for (p, body) in files {
+        fs.write_file(p, body).expect("write");
+    }
+    fs.write_file(MANIFEST_PATH, serde_json::to_vec(&manifest).expect("json"))
+        .expect("write");
+    fs.write_tarball_gz(path).expect("flush");
+    files.iter().map(|(p, _)| (*p).to_owned()).collect()
+}
+
+/// Remove `victim` from the archive at `path`, leaving its manifest entry dangling.
+fn damage(path: &Path, victim: &str) {
+    let mut fs = tarfs::InMemoryFileSystem::open(path).expect("open");
+    assert!(fs.delete_file(victim), "{victim} was in the bundle");
+    fs.write_tarball_gz(path).expect("flush");
+}
+
+/// A vendored GitHub stylesheet in the bundle at `path`.
+fn github_css(path: &Path) -> String {
+    let fs = tarfs::InMemoryFileSystem::open(path).expect("open");
+    fs.paths()
+        .find(|p| p.starts_with("github/assets/global-"))
+        .expect("github css")
+        .to_owned()
+}
+
+#[test]
+fn one_damaged_flavor_leaves_the_other_usable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("styles.tar.gz");
+    vendored_bundle(&out);
+    let gitlab = add_gitlab(&out);
+    damage(&out, &gitlab[1]); // e.g. one KaTeX font lost
+
+    let bundle = Bundle::open(&out).expect("the GitHub styles are intact");
+    assert!(!bundle.is_fallback(Flavor::Github));
+    assert!(
+        bundle.flavor(Flavor::Gitlab).is_none(),
+        "damaged flavor dropped"
+    );
+    assert!(
+        !bundle.contains(&gitlab[0]),
+        "its files are dropped with it"
+    );
+
+    let (bundle, warning) = load_or_fallback(&out);
+    assert!(
+        !bundle.is_fallback(Flavor::Github),
+        "GitHub keeps its styles"
+    );
+    assert!(
+        bundle.is_fallback(Flavor::Gitlab),
+        "GitLab gets the fallback"
+    );
+    let warning = warning.expect("the damage is reported");
+    assert!(
+        warning.contains("damaged gitlab styles") && warning.contains(&gitlab[1]),
+        "names the broken flavor and file: {warning}"
+    );
+    assert_eq!(
+        quoted_command(&warning),
+        vendor_command(Some(Flavor::Gitlab), &out)
+    );
+    assert_eq!(flavor_warning(&bundle, Flavor::Github), None);
+    let gl = flavor_warning(&bundle, Flavor::Gitlab).expect("gitlab warning");
+    assert!(gl.contains("damaged gitlab styles"), "{gl}");
+}
+
+#[test]
+fn the_fix_suggested_for_a_damaged_flavor_works_and_keeps_the_other() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("styles.tar.gz");
+    vendored_bundle(&out);
+    let gitlab = add_gitlab(&out);
+    damage(&out, &github_css(&out));
+
+    let (bundle, warning) = load_or_fallback(&out);
+    assert!(bundle.is_fallback(Flavor::Github));
+    assert!(
+        !bundle.is_fallback(Flavor::Gitlab),
+        "GitLab keeps its styles"
+    );
+    let warning = warning.expect("warning");
+    let cmd = quoted_command(&warning);
+    assert_eq!(cmd, vendor_command(Some(Flavor::Github), &out));
+    assert!(
+        cmd.contains("--flavor github") && cmd.contains(" -o "),
+        "{cmd}"
+    );
+
+    // Running it: re-vendor GitHub into the same file.
+    vendor_with(&options(&out), &github_site()).expect("the suggested command works");
+    let (bundle, warning) = load_or_fallback(&out);
+    assert!(warning.is_none(), "{warning:?}");
+    assert!(!bundle.is_fallback(Flavor::Github));
+    assert!(
+        !bundle.is_fallback(Flavor::Gitlab),
+        "GitLab survived the repair"
+    );
+    for p in &gitlab {
+        assert!(bundle.contains(p), "{p}");
+    }
+}
+
+#[test]
+fn a_bundle_without_any_intact_flavor_is_still_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("styles.tar.gz");
+    vendored_bundle(&out);
+    let gitlab = add_gitlab(&out);
+    damage(&out, &gitlab[0]);
+    damage(&out, &github_css(&out));
+
+    let e = Bundle::open(&out).expect_err("nothing usable");
+    assert!(
+        format!("{e:#}").contains("missing from the archive"),
+        "{e:#}"
+    );
+    let (bundle, warning) = load_or_fallback(&out);
+    assert!(bundle.is_fallback(Flavor::Github) && bundle.is_fallback(Flavor::Gitlab));
+    let warning = warning.expect("warning");
+    assert!(warning.contains("missing from the archive"), "{warning}");
 }
