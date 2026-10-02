@@ -142,7 +142,7 @@ async fn extra_css(
 
 /// `GET /__/md-render/render?path=<doc>`: JSON resync (`{version, html, title, warnings}`).
 async fn render_json(State(app): State<Arc<App>>, Query(q): Query<DocQuery>) -> Response {
-    let key = match app.validate_doc_param(q.path.as_deref()) {
+    let key = match app.validate_doc_param(q.path.as_deref()).await {
         Ok(k) => k,
         Err((status, msg)) => return json_response(status, serde_json::json!({ "error": msg })),
     };
@@ -192,7 +192,7 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
     }
     let rel = rp.rel();
     let raw_requested = wants_raw(query);
-    match paths::resolve(&app.root, &rel, app.follows(&rel)) {
+    match app.resolve(&rel).await {
         Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m).await,
         Err(ResolveError::Io(e)) => {
             let msg = format!("cannot access /{rel}: {e}");
@@ -274,7 +274,7 @@ impl App {
                 &paths::url_for(rel, true),
                 query.as_deref(),
             ),
-            RootTarget::Dir(_) => match paths::find_root_readme(&self.root, self.flavor) {
+            RootTarget::Dir(_) => match self.find_readme(None).await {
                 Some(readme) => match readme.rsplit_once('/') {
                     Some((dir, _)) => redirect(
                         StatusCode::FOUND,
@@ -290,10 +290,23 @@ impl App {
 
     /// A directory URL (with trailing slash): its README or a listing.
     async fn dir_page(&self, rel: &str, abs: &std::path::Path) -> Response {
-        match paths::find_readme(abs, self.flavor) {
+        match self.find_readme(Some(abs)).await {
             Some(name) => self.checked_doc_page(&format!("{rel}/{name}")).await,
             None => self.listing_page(rel, abs).await,
         }
+    }
+
+    /// The README of directory `dir` ([`paths::find_readme`]), or of the root with its
+    /// fallbacks ([`paths::find_root_readme`]) for None; off the reactor (Q-ASYNC-1).
+    async fn find_readme(&self, dir: Option<&std::path::Path>) -> Option<String> {
+        let (root, dir, flavor) = (self.root.clone(), dir.map(ToOwned::to_owned), self.flavor);
+        super::blocking(move || match dir {
+            Some(d) => paths::find_readme(&d, flavor),
+            None => paths::find_root_readme(&root, flavor),
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn listing_page(&self, rel: &str, abs: &std::path::Path) -> Response {
@@ -346,7 +359,7 @@ impl App {
     /// with 403 like a requested path when it escapes the root, not read and failed as a 500
     /// (CLI-18).
     async fn checked_doc_page(&self, rel: &str) -> Response {
-        match paths::resolve(&self.root, rel, self.follows(rel)) {
+        match self.resolve(rel).await {
             Err(ResolveError::Forbidden(m)) => {
                 let msg = format!("cannot serve /{rel}: {m}");
                 self.error_page(StatusCode::FORBIDDEN, &msg).await

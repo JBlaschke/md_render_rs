@@ -873,7 +873,14 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
         if entry.retired.load(Ordering::SeqCst) {
             break;
         }
-        if entry.refresh_doc_watch(&ctx) {
+        // Canonicalisation and watcher calls: off the reactor (Q-ASYNC-1).
+        let refreshed = {
+            let (entry, ctx) = (entry.clone(), ctx.clone());
+            tokio::task::spawn_blocking(move || entry.refresh_doc_watch(&ctx))
+                .await
+                .unwrap_or(false)
+        };
+        if refreshed {
             recheck_after_watch(&entry, &ctx);
         }
         process(&entry, &ctx).await;

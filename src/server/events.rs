@@ -211,12 +211,19 @@ pub async fn events(
         )
             .into_response();
     }
-    let key = match app.validate_doc_param(q.path.as_deref()) {
+    let key = match app.validate_doc_param(q.path.as_deref()).await {
         Ok(k) => k,
         Err((status, msg)) => return (status, msg).into_response(),
     };
     let since = client_version(&headers, &q, &app.server_id);
-    let sub = app.hub.subscribe(&key);
+    // Subscribing sets up file watches (canonicalisation, watcher calls): off the reactor.
+    let sub = {
+        let app = app.clone();
+        match super::blocking(move || app.hub.subscribe(&key)).await {
+            Ok(sub) => sub,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    };
     let (tx, rx) = mpsc::channel::<Event>(32);
     tokio::spawn(client_task(app.clone(), sub, since, tx));
     let stream = ReceiverStream::new(rx).map(Ok::<Event, Infallible>);

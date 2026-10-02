@@ -334,8 +334,17 @@ impl App {
             || matches!(&self.target, RootTarget::File(t) if t == rel)
     }
 
+    /// [`paths::resolve`] for request path `rel`, off the reactor: canonicalisation and
+    /// metadata calls block on a slow or hung (network) file system (Q-ASYNC-1).
+    pub(crate) async fn resolve(&self, rel: &str) -> Result<paths::Resolved, paths::ResolveError> {
+        let (root, rel, follow) = (self.root.clone(), rel.to_owned(), self.follows(rel));
+        blocking(move || paths::resolve(&root, &rel, follow))
+            .await
+            .unwrap_or_else(|e| Err(paths::ResolveError::Io(e)))
+    }
+
     /// Validate a `?path=` document parameter of the events / render endpoints.
-    pub(crate) fn validate_doc_param(
+    pub(crate) async fn validate_doc_param(
         &self,
         path: Option<&str>,
     ) -> Result<String, (axum::http::StatusCode, String)> {
@@ -357,7 +366,7 @@ impl App {
                 format!("{path:?} is not a Markdown document path"),
             ));
         }
-        match paths::resolve(&self.root, &rel, self.follows(&rel)) {
+        match self.resolve(&rel).await {
             Ok(paths::Resolved::File(_) | paths::Resolved::Missing) => Ok(rel),
             Ok(paths::Resolved::Dir(_)) => {
                 Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory")))
@@ -618,6 +627,15 @@ async fn dispatch(
         app.styles.on_paths_changed(&paths);
         app.hub.on_paths_changed(&paths);
     }
+}
+
+/// Run blocking file-system work on tokio's blocking pool (Q-ASYNC-1).
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> std::io::Result<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(std::io::Error::other)
 }
 
 /// A content fragment showing an error (stdin render failures).
