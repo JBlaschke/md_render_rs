@@ -163,8 +163,10 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
                 }
                 state = Initial::open(path, flavor);
             }
-            Ok(Err(e)) => eprintln!("md-render: warning: vendoring {flavor} styles failed: {e:#}"),
-            Err(e) => eprintln!("md-render: warning: vendoring {flavor} styles failed: {e}"),
+            Ok(Err(e)) => eprintln!("md-render: warning: {}", auto_vendor_failure(&e)),
+            Err(e) => eprintln!(
+                "md-render: warning: --auto-vendor: vendoring {flavor} styles failed: {e}"
+            ),
         }
     }
     let hint = vendor_hint(flavor, path);
@@ -173,8 +175,8 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
         Initial::NoFlavor(b) => {
             if !quiet {
                 eprintln!(
-                    "md-render: {} has no vendored {flavor} styles; using minimal fallback styles.\n           Run `{hint}` to download them (or pass --auto-vendor).",
-                    path.display()
+                    "md-render: {}",
+                    fallback_notice(path, flavor, false, auto_vendor)
                 );
             }
             b.with_fallbacks()
@@ -182,8 +184,8 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
         Initial::Missing => {
             if !quiet {
                 eprintln!(
-                    "md-render: no style bundle at {}; using minimal fallback styles.\n           Run `{hint}` to download the {flavor} styles (or pass --auto-vendor).",
-                    path.display()
+                    "md-render: {}",
+                    fallback_notice(path, flavor, true, auto_vendor)
                 );
             }
             Bundle::fallback()
@@ -195,6 +197,35 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
             );
             Bundle::fallback()
         }
+    }
+}
+
+/// The warning for a failed `--auto-vendor` run. The vendoring error already says which
+/// flavor failed and that the bundle was left unchanged, so it is not prefixed again
+/// (CLI-16).
+fn auto_vendor_failure(e: &anyhow::Error) -> String {
+    format!("--auto-vendor: {e:#}")
+}
+
+/// The D11 notice when the flavor's styles are missing (`no_bundle`: there is no bundle file
+/// at all). Suggests `--auto-vendor` only to those who did not pass it (CLI-16).
+fn fallback_notice(path: &Path, flavor: Flavor, no_bundle: bool, auto_vendor: bool) -> String {
+    let hint = vendor_hint(flavor, path);
+    let or_auto = if auto_vendor {
+        ""
+    } else {
+        " (or pass --auto-vendor)"
+    };
+    if no_bundle {
+        format!(
+            "no style bundle at {}; using minimal fallback styles.\n           Run `{hint}` to download the {flavor} styles{or_auto}.",
+            path.display()
+        )
+    } else {
+        format!(
+            "{} has no vendored {flavor} styles; using minimal fallback styles.\n           Run `{hint}` to download them{or_auto}.",
+            path.display()
+        )
     }
 }
 
@@ -510,6 +541,48 @@ mod tests {
         );
         let default = vendor_hint(Flavor::Github, &crate::styles::default_bundle_path());
         assert_eq!(default, "md-render vendor --flavor github");
+    }
+
+    /// CLI-16: a failed `--auto-vendor` names its cause once, and the fallback notice does
+    /// not tell the user to pass the flag they passed.
+    #[test]
+    fn auto_vendor_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("av.tar.gz");
+        let opts = crate::styles::vendor::VendorOptions {
+            flavors: vec![Flavor::Github],
+            output: path.clone(),
+            github_source: "http://127.0.0.1:9/unreachable".into(),
+            gitlab_source: crate::styles::vendor::GITLAB_SOURCE.to_owned(),
+            all_github_themes: false,
+            libs: false,
+            quiet: true,
+        };
+        let refused: &dyn crate::styles::vendor::Fetch = &Refusing;
+        let err = crate::styles::vendor::vendor_with(&opts, refused).unwrap_err();
+        let msg = auto_vendor_failure(&err);
+        assert_eq!(
+            msg.matches("vendoring github styles failed").count(),
+            1,
+            "{msg}"
+        );
+        assert!(msg.starts_with("--auto-vendor: "), "{msg}");
+
+        for no_bundle in [true, false] {
+            let with = fallback_notice(&path, Flavor::Github, no_bundle, true);
+            assert!(!with.contains("--auto-vendor"), "{with}");
+            assert!(with.contains("md-render vendor --flavor github"), "{with}");
+            let without = fallback_notice(&path, Flavor::Github, no_bundle, false);
+            assert!(without.contains("(or pass --auto-vendor)"), "{without}");
+        }
+    }
+
+    /// An HTTP layer whose every request fails (no network in tests).
+    struct Refusing;
+    impl crate::styles::vendor::Fetch for Refusing {
+        fn get(&self, url: &str) -> anyhow::Result<crate::styles::vendor::Response> {
+            anyhow::bail!("GET {url}: io: Connection refused (os error 61)")
+        }
     }
 
     #[test]
