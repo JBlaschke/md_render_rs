@@ -1,5 +1,7 @@
 //! Finding and rewriting the external references of a stylesheet: every `url(...)` (quoted or
-//! unquoted, any case) and every `@import` (string or `url()` form). CR §7, GH §4.3, GL §11.2.
+//! unquoted, any case), every `@import` (string or `url()` form) and every bare string argument
+//! of `image-set()` / `-webkit-image-set()`, which CSS Images 4 also treats as a URL. CR §7,
+//! GH §4.3, GL §11.2.
 //!
 //! A small tokenizer is used instead of a regex so that references inside comments and strings
 //! (e.g. `content: "url(x)"`) are not mistaken for real ones and escapes are handled. Only the
@@ -10,7 +12,8 @@ use std::ops::Range;
 /// What kind of reference was found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RefKind {
-    /// `url(...)` anywhere except right after `@import`: an asset (image, font, ...).
+    /// `url(...)` anywhere except right after `@import`, or a string argument of `image-set()`:
+    /// an asset (image, font, ...).
     Url,
     /// `@import "x"` / `@import url(x)`: another stylesheet.
     Import,
@@ -182,17 +185,57 @@ fn parse_url(css: &str, start: usize, kind: RefKind) -> Option<(CssRef, usize)> 
     }
 }
 
-/// Find every `url()` and `@import` reference, in source order. Never panics.
+/// Whether the function whose `(` is at `open` is `image-set()` or `-webkit-image-set()`, whose
+/// direct string arguments are image URLs (CSS Images 4 §2.2: `image-set("a.png" 1x)`).
+fn is_image_set_call(b: &[u8], open: usize) -> bool {
+    let start = b[..open]
+        .iter()
+        .rposition(|&c| !is_ident_byte(c))
+        .map_or(0, |k| k + 1);
+    let name = &b[start..open];
+    name.eq_ignore_ascii_case(b"image-set") || name.eq_ignore_ascii_case(b"-webkit-image-set")
+}
+
+/// Find every `url()` and `@import` reference, and every string argument of `image-set()` /
+/// `-webkit-image-set()` (reported as [`RefKind::Url`]), in source order. Never panics.
 pub(crate) fn scan(css: &str) -> Vec<CssRef> {
     let b = css.as_bytes();
     let mut out = Vec::new();
+    // One entry per open parenthesis: whether it opened an image-set() call. `url()` tokens
+    // are consumed whole and never pushed.
+    let mut parens: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < b.len() {
         match b[i] {
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 i = find(b, i + 2, b"*/").map_or(b.len(), |j| j + 2);
             }
-            q @ (b'"' | b'\'') => i = parse_string(b, i, q).end.max(i + 1),
+            q @ (b'"' | b'\'') => {
+                let s = parse_string(b, i, q);
+                if s.closed && parens.last() == Some(&true) {
+                    out.push(CssRef {
+                        kind: RefKind::Url,
+                        value: unescape(&css[s.inner.clone()]),
+                        range: s.inner,
+                        quote: Some(q),
+                    });
+                }
+                i = s.end.max(i + 1);
+            }
+            b'(' => {
+                parens.push(is_image_set_call(b, i));
+                i += 1;
+            }
+            b')' => {
+                parens.pop();
+                i += 1;
+            }
+            // Function arguments never hold braces: an unclosed `(` ends with its rule, so a
+            // malformed `image-set(` cannot turn later `content: "..."` strings into URLs.
+            b'{' | b'}' => {
+                parens.clear();
+                i += 1;
+            }
             b'\\' => i += 2,
             b'@' if starts_with_ci(b, i + 1, b"import")
                 && !b.get(i + 7).copied().is_some_and(is_ident_byte) =>
@@ -217,7 +260,10 @@ pub(crate) fn scan(css: &str) -> Vec<CssRef> {
                                 out.push(r);
                                 i = end;
                             }
-                            None => i = j + 4,
+                            None => {
+                                parens.push(false); // the bad url's `(`, closed later
+                                i = j + 4;
+                            }
                         }
                     }
                     _ => i = j.max(i + 1),
@@ -231,7 +277,10 @@ pub(crate) fn scan(css: &str) -> Vec<CssRef> {
                         out.push(r);
                         i = end;
                     }
-                    None => i += 4,
+                    None => {
+                        parens.push(false); // the bad url's `(`, closed later
+                        i += 4;
+                    }
                 }
             }
             _ => i += 1,
@@ -419,6 +468,62 @@ mod tests {
         assert!(values("a{b:url(bad url.png)}").is_empty());
         // Recovery: a later good url() is still found.
         assert_eq!(values("a{b:url(bad url.png)}c{d:url(ok.png)}").len(), 1);
+    }
+
+    #[test]
+    fn image_set_strings_are_urls() {
+        let css = r#"e{background-image:image-set("img/hi.png" 1x, 'img/hi@2x.png' 2x)}f{background:-WEBKIT-image-set("w.png" 1x,url(u.png) 2x)}g{b:image-set("a.avif" type("image/avif"), "a.png")}"#;
+        assert_eq!(
+            values(css),
+            vec![
+                (RefKind::Url, "img/hi.png".into(), Some('"')),
+                (RefKind::Url, "img/hi@2x.png".into(), Some('\'')),
+                (RefKind::Url, "w.png".into(), Some('"')),
+                (RefKind::Url, "u.png".into(), None),
+                // type("image/avif") is a MIME type, not a URL.
+                (RefKind::Url, "a.avif".into(), Some('"')),
+                (RefKind::Url, "a.png".into(), Some('"')),
+            ]
+        );
+        let out = rewrite(css, &scan(css), |r| Some(format!("../{}", r.value)));
+        assert!(
+            out.starts_with(
+                r#"e{background-image:image-set("../img/hi.png" 1x, '../img/hi@2x.png' 2x)}"#
+            ),
+            "{out}"
+        );
+        assert!(out.contains(r#"type("image/avif")"#), "{out}");
+    }
+
+    #[test]
+    fn strings_outside_image_set_are_not_urls() {
+        for css in [
+            r#"a{content:"x.png"}"#,
+            r#"a{font-family:"img.png"}b{c:my-image-set("x.png")}d{e:imageset("y.png")}"#,
+            r#"a{b:image-set(linear-gradient(red, blue) 1x)}c{content:"after.png"}"#,
+            r#"@font-face{src:local("Name"),url(f.woff2) format("woff2")}"#,
+            // A bad url() inside image-set() closes properly; an unclosed image-set( ends with
+            // its rule.
+            r#"a{b:image-set(url(bad x) 1x)}c{content:"z.png"}"#,
+            r#"a{b:image-set(}c{content:"z.png"}"#,
+            r#"a{b:image-set(/* "comment.png" */ url(ok.png) 1x)}"#,
+        ] {
+            let v = values(css);
+            let strings: Vec<&str> = v
+                .iter()
+                .filter(|(_, _, quote)| quote.is_some())
+                .map(|(_, value, _)| value.as_str())
+                .collect();
+            assert!(strings.is_empty(), "{css}: {v:?}");
+        }
+        assert_eq!(
+            values(r#"a{b:image-set(/* "comment.png" */ url(ok.png) 1x)}"#),
+            vec![(RefKind::Url, "ok.png".into(), None)]
+        );
+        assert_eq!(
+            values(r#"a{b:image-set(url(bad x) 1x, "good.png" 2x)}"#),
+            vec![(RefKind::Url, "good.png".into(), Some('"'))]
+        );
     }
 
     #[test]

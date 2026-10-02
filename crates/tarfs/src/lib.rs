@@ -61,7 +61,8 @@
 //!
 //! Regular files only: no symlinks, hard links, permissions (everything is
 //! `0o644`), timestamps or GNU sparse members. The whole decompressed archive
-//! lives in memory for the lifetime of the value. The default writer is limited to
+//! lives in memory for the lifetime of the value; cap its size with [`Limits`]
+//! when reading archives you did not create. The default writer is limited to
 //! USTAR paths (100 bytes, or a 155-byte prefix plus a 100-byte name split at a
 //! `/`) and entries under 8 GiB; [`InMemoryFileSystem::write_tarball_gz_extended`]
 //! lifts both limits and adds directory entries.
@@ -132,6 +133,37 @@ pub struct InMemoryFileSystem {
 /// ```
 pub type TarFs = InMemoryFileSystem;
 
+/// Resource limits for reading an archive (see
+/// [`InMemoryFileSystem::open_with_limits`]).
+///
+/// The whole decompressed tarball is held in memory, and gzip compresses runs of
+/// identical bytes about 1000-fold: a 1 MB `.tar.gz` can expand to 1 GB. Set a
+/// limit before reading archives you did not create. The default is no limit, which
+/// is what [`InMemoryFileSystem::open`] and the other constructors without
+/// `_with_limits` use.
+///
+/// ```
+/// let limits = tarfs::Limits::default().with_max_decompressed_size(512 << 20);
+/// assert_eq!(limits.max_decompressed_size, Some(512 << 20));
+/// assert_eq!(tarfs::Limits::default().max_decompressed_size, None);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Limits {
+    /// Largest accepted size of the decompressed tarball, in bytes; `None` means
+    /// unlimited. Exceeding it stops decompression with [`Error::TooLarge`].
+    pub max_decompressed_size: Option<u64>,
+}
+
+impl Limits {
+    /// These limits with the decompressed size capped at `bytes`.
+    #[must_use]
+    pub const fn with_max_decompressed_size(mut self, bytes: u64) -> Self {
+        self.max_decompressed_size = Some(bytes);
+        self
+    }
+}
+
 impl fmt::Debug for InMemoryFileSystem {
     /// Summarizes instead of dumping the (possibly huge) buffer.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -158,9 +190,15 @@ impl InMemoryFileSystem {
     /// Load the `.tar.gz` at `path`, decompress it into memory and index its
     /// regular files (TarFS.jl `InMemoryFileSystem(path)`).
     ///
-    /// The file is read once and not kept open. Multi-member gzip is supported.
-    /// Directories, links and other non-regular members are skipped, as are macOS
-    /// AppleDouble `._*` companions; a leading `./` is stripped from member paths.
+    /// The file is read once and not kept open. Multi-member gzip is supported, and
+    /// zero padding after the last member is ignored. Directories, links and other
+    /// non-regular members are skipped, as are macOS AppleDouble companions (`._*`
+    /// members whose data starts with the AppleDouble magic number; other `._*`
+    /// files are kept); empty and `.` segments are dropped from member paths
+    /// (`./a`, `a//b` and `a/./b` read as `a`, `a/b`, `a/b`).
+    ///
+    /// The decompressed size is not limited: use
+    /// [`open_with_limits`](Self::open_with_limits) for archives you did not create.
     ///
     /// # Errors
     ///
@@ -185,6 +223,37 @@ impl InMemoryFileSystem {
     /// # }
     /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_limits(path, Limits::default())
+    }
+
+    /// [`open`](Self::open) with resource limits: decompression stops with
+    /// [`Error::TooLarge`] as soon as the tarball exceeds
+    /// [`Limits::max_decompressed_size`], so memory use stays bounded however
+    /// small and hostile the file is.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open), plus [`Error::TooLarge`].
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// # let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("zeros.tar.gz");
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("zeros.bin", vec![0u8; 1 << 20])?;
+    /// fs.write_tarball_gz(&path)?; // about 1 KB on disk
+    ///
+    /// let small = tarfs::Limits::default().with_max_decompressed_size(64 << 10);
+    /// assert!(matches!(
+    ///     tarfs::InMemoryFileSystem::open_with_limits(&path, small),
+    ///     Err(tarfs::Error::TooLarge { limit }) if limit == 64 << 10
+    /// ));
+    /// let roomy = tarfs::Limits::default().with_max_decompressed_size(8 << 20);
+    /// assert_eq!(tarfs::InMemoryFileSystem::open_with_limits(&path, roomy)?.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<Self> {
         let path = path.as_ref();
         let with_path = |err| match err {
             Error::Io(e) => error::io_context(e, "reading", path),
@@ -192,12 +261,14 @@ impl InMemoryFileSystem {
             other => other,
         };
         let file = File::open(path).map_err(|e| error::io_context(e, "opening", path))?;
-        read::gunzip(file)
+        read::gunzip(file, limits)
             .and_then(Self::from_tar_bytes)
             .map_err(with_path)
     }
 
     /// Decompress a `.tar.gz` stream (multi-member gzip supported) and index it.
+    /// The decompressed size is not limited (see
+    /// [`from_tar_gz_reader_with_limits`](Self::from_tar_gz_reader_with_limits)).
     ///
     /// # Errors
     ///
@@ -218,10 +289,22 @@ impl InMemoryFileSystem {
     /// # }
     /// ```
     pub fn from_tar_gz_reader(r: impl Read) -> Result<Self> {
-        Self::from_tar_bytes(read::gunzip(r)?)
+        Self::from_tar_gz_reader_with_limits(r, Limits::default())
     }
 
-    /// Decompress `.tar.gz` bytes and index them.
+    /// [`from_tar_gz_reader`](Self::from_tar_gz_reader) with resource limits (see
+    /// [`open_with_limits`](Self::open_with_limits)).
+    ///
+    /// # Errors
+    ///
+    /// As [`from_tar_gz_reader`](Self::from_tar_gz_reader), plus
+    /// [`Error::TooLarge`].
+    pub fn from_tar_gz_reader_with_limits(r: impl Read, limits: Limits) -> Result<Self> {
+        Self::from_tar_bytes(read::gunzip(r, limits)?)
+    }
+
+    /// Decompress `.tar.gz` bytes and index them. The decompressed size is not
+    /// limited (see [`from_tar_gz_bytes_with_limits`](Self::from_tar_gz_bytes_with_limits)).
     ///
     /// # Errors
     ///
@@ -233,6 +316,33 @@ impl InMemoryFileSystem {
     /// ```
     pub fn from_tar_gz_bytes(gz: &[u8]) -> Result<Self> {
         Self::from_tar_gz_reader(gz)
+    }
+
+    /// [`from_tar_gz_bytes`](Self::from_tar_gz_bytes) with resource limits (see
+    /// [`open_with_limits`](Self::open_with_limits)).
+    ///
+    /// # Errors
+    ///
+    /// As [`from_tar_gz_bytes`](Self::from_tar_gz_bytes), plus [`Error::TooLarge`].
+    ///
+    /// ```
+    /// # fn main() -> tarfs::Result<()> {
+    /// let mut fs = tarfs::InMemoryFileSystem::new();
+    /// fs.write_file("a.txt", "hello")?;
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("a.tar.gz");
+    /// fs.write_tarball_gz(&path)?;
+    /// let gz = std::fs::read(&path)?;
+    /// // Tar data comes in 512-byte blocks: one header, one data block, two end blocks.
+    /// let limits = tarfs::Limits::default().with_max_decompressed_size(2048);
+    /// assert!(tarfs::InMemoryFileSystem::from_tar_gz_bytes_with_limits(&gz, limits).is_ok());
+    /// let limits = tarfs::Limits::default().with_max_decompressed_size(2047);
+    /// assert!(tarfs::InMemoryFileSystem::from_tar_gz_bytes_with_limits(&gz, limits).is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_tar_gz_bytes_with_limits(gz: &[u8], limits: Limits) -> Result<Self> {
+        Self::from_tar_gz_reader_with_limits(gz, limits)
     }
 
     /// Index an uncompressed tarball held in memory. The buffer is kept (shared,
@@ -528,8 +638,10 @@ impl InMemoryFileSystem {
     ///
     /// [`Error::PathTooLong`] for a path the ustar name/prefix fields cannot hold,
     /// [`Error::EntryTooLarge`] for a file of 8 GiB or more (use
-    /// [`write_tarball_extended`](Self::write_tarball_extended) for either), and
-    /// [`Error::Io`] if `w` fails.
+    /// [`write_tarball_extended`](Self::write_tarball_extended) for either),
+    /// [`Error::InvalidPath`] if a file path is also the parent directory of other
+    /// files (`a` and `a/b`), which no extractor can reproduce, and [`Error::Io`]
+    /// if `w` fails.
     ///
     /// ```
     /// # fn main() -> tarfs::Result<()> {
@@ -540,6 +652,12 @@ impl InMemoryFileSystem {
     /// assert_eq!(&tar[..5], b"a.txt");
     ///
     /// assert!(tarfs::InMemoryFileSystem::new().write_tarball(Vec::new())? == vec![0; 1024]);
+    ///
+    /// fs.write_file("a.txt/b", "a.txt cannot be a file and a directory")?;
+    /// assert!(matches!(
+    ///     fs.write_tarball(Vec::new()),
+    ///     Err(tarfs::Error::InvalidPath { path, .. }) if path == "a.txt"
+    /// ));
     /// # Ok(())
     /// # }
     /// ```
@@ -611,9 +729,7 @@ impl InMemoryFileSystem {
     pub fn write_tarball_gz(&self, path: impl AsRef<Path>) -> Result<()> {
         // Validate before creating the temporary file: cheap, and keeps the
         // directory untouched for an unencodable filesystem.
-        for (p, data) in self.iter() {
-            ustar::validate(p, data.len() as u64)?;
-        }
+        write::validate_ustar(self)?;
         write::atomic_gz(path.as_ref(), |gz| self.write_tarball(gz).map(drop))
     }
 

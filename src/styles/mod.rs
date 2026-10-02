@@ -7,6 +7,7 @@
 //! no bundle exists (D11), and [`SharedBundle`] lets a running server hot-swap a re-vendored
 //! bundle while keeping the old one if the new file is corrupt.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +46,9 @@ pub struct Bundle {
     /// SHA-256 of the `.tar.gz` bytes this bundle was read from (`None` for the fallback), so
     /// [`SharedBundle::reload`] can detect an unchanged file without decompressing it.
     source_sha256: Option<String>,
+    /// Flavors dropped when the bundle was opened because their manifest entry did not match the
+    /// archive, with the reason (see [`Bundle::open`]).
+    damaged: BTreeMap<Flavor, String>,
 }
 
 impl fmt::Debug for Bundle {
@@ -54,8 +58,45 @@ impl fmt::Debug for Bundle {
             .field("etag", &self.etag)
             .field("files", &self.fs.len())
             .field("flavors", &self.manifest.flavors.keys().collect::<Vec<_>>())
+            .field("damaged", &self.damaged)
             .finish()
     }
+}
+
+/// Largest style bundle md-render reads, compressed or decompressed: 512 MiB. A complete bundle
+/// (both flavors with their client libraries) decompresses to about 16 MB; the cap only stops a
+/// small hostile `.tar.gz` (a "gzip bomb" expands ~1000-fold) from exhausting memory.
+pub const MAX_BUNDLE_SIZE: u64 = 512 << 20;
+
+/// The tarfs limits every bundle is read with ([`MAX_BUNDLE_SIZE`]).
+pub(crate) fn bundle_limits() -> tarfs::Limits {
+    tarfs::Limits::default().with_max_decompressed_size(MAX_BUNDLE_SIZE)
+}
+
+/// Read the `.tar.gz` bytes of a bundle file, refusing files larger than [`MAX_BUNDLE_SIZE`]
+/// (`InvalidData`) without reading them whole.
+fn read_bundle_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let too_large = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file is larger than the {} MiB limit",
+                MAX_BUNDLE_SIZE >> 20
+            ),
+        )
+    };
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_BUNDLE_SIZE {
+        return Err(too_large());
+    }
+    let mut gz = Vec::new();
+    // `take`: the file may grow while we read it.
+    file.take(MAX_BUNDLE_SIZE + 1).read_to_end(&mut gz)?;
+    if gz.len() as u64 > MAX_BUNDLE_SIZE {
+        return Err(too_large());
+    }
+    Ok(gz)
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -90,8 +131,8 @@ pub(crate) fn validate_flavor(
     Ok(())
 }
 
-/// Check a whole manifest (schema version and every listed path).
-pub(crate) fn validate_manifest(m: &Manifest, exists: impl Fn(&str) -> bool) -> anyhow::Result<()> {
+/// Check that this md-render reads the manifest's schema version.
+fn validate_schema(m: &Manifest) -> anyhow::Result<()> {
     if m.schema != SCHEMA {
         bail!(
             "unsupported bundle schema {} (this md-render reads schema {SCHEMA}); re-run `md-render \
@@ -99,6 +140,12 @@ pub(crate) fn validate_manifest(m: &Manifest, exists: impl Fn(&str) -> bool) -> 
             m.schema
         );
     }
+    Ok(())
+}
+
+/// Check a whole manifest (schema version and every listed path).
+pub(crate) fn validate_manifest(m: &Manifest, exists: impl Fn(&str) -> bool) -> anyhow::Result<()> {
+    validate_schema(m)?;
     for (flavor, fm) in &m.flavors {
         validate_flavor(*flavor, fm, &exists)?;
     }
@@ -127,9 +174,15 @@ fn fallback_tag(flavors: &[Flavor]) -> String {
 
 impl Bundle {
     /// Open a bundle file (decompressed into memory, never unpacked to disk), parse and validate
-    /// its manifest: the schema must be [`SCHEMA`] and every listed path must exist.
+    /// its manifest: the schema must be [`SCHEMA`] and every listed path must exist. Neither the
+    /// file nor its decompressed contents may exceed [`MAX_BUNDLE_SIZE`].
+    ///
+    /// Each flavor is validated on its own: a flavor whose entry lists a missing file (or a path
+    /// outside `<flavor>/`) is dropped, files and all, and the others stay usable
+    /// ([`Bundle::with_fallbacks`] then fills it in; [`load_or_fallback`] and [`flavor_warning`]
+    /// say why). Only a bundle without a single intact flavor is rejected.
     pub fn open(path: &Path) -> anyhow::Result<Bundle> {
-        let gz = std::fs::read(path)
+        let gz = read_bundle_file(path)
             .with_context(|| format!("reading style bundle {}", path.display()))?;
         Self::from_tar_gz_bytes(&gz, BundleOrigin::File(path.to_owned()))
             .with_context(|| format!("invalid style bundle {}", path.display()))
@@ -147,19 +200,40 @@ impl Bundle {
         sha256: String,
         origin: BundleOrigin,
     ) -> anyhow::Result<Bundle> {
-        let fs = tarfs::InMemoryFileSystem::from_tar_gz_bytes(gz).context("reading the archive")?;
+        let mut fs = tarfs::InMemoryFileSystem::from_tar_gz_bytes_with_limits(gz, bundle_limits())
+            .context("reading the archive")?;
         let raw = fs
             .get(MANIFEST_PATH)
             .with_context(|| format!("no {MANIFEST_PATH} in the archive"))?;
-        let manifest: Manifest =
+        let mut manifest: Manifest =
             serde_json::from_slice(raw).with_context(|| format!("parsing {MANIFEST_PATH}"))?;
-        validate_manifest(&manifest, |p| fs.contains(p))?;
+        validate_schema(&manifest)?;
+        // Per flavor, as `md-render vendor` does when it keeps the other flavor: one damaged
+        // GitLab font must not cost the GitHub pages their styles.
+        let mut damaged = BTreeMap::new();
+        let mut first_error = None;
+        for (&flavor, fm) in &manifest.flavors {
+            if let Err(e) = validate_flavor(flavor, fm, |p| fs.contains(p)) {
+                damaged.insert(flavor, format!("{e:#}"));
+                first_error.get_or_insert(e);
+            }
+        }
+        if let Some(e) = first_error
+            && damaged.len() == manifest.flavors.len()
+        {
+            return Err(e); // nothing usable is left: the bundle as a whole is broken
+        }
+        for flavor in damaged.keys() {
+            manifest.flavors.remove(flavor);
+            fs.delete_prefix(flavor.as_str());
+        }
         Ok(Bundle {
             fs,
             manifest,
             origin,
             etag: sha256.clone(),
             source_sha256: Some(sha256),
+            damaged,
         })
     }
 
@@ -177,6 +251,7 @@ impl Bundle {
             origin: BundleOrigin::Fallback,
             etag: format!("fallback-{}", fallback_tag(&Flavor::ALL)),
             source_sha256: None,
+            damaged: BTreeMap::new(),
         }
     }
 
@@ -274,8 +349,9 @@ impl Bundle {
     }
 }
 
-/// The values of every `url()` and `@import` reference in `css`, in source order, with CSS
-/// escapes resolved. References inside comments and strings are not reported (CR §7).
+/// The values of every `url()` and `@import` reference in `css`, and of every string argument
+/// of `image-set()` / `-webkit-image-set()` (an image URL too), in source order, with CSS
+/// escapes resolved. References inside comments and other strings are not reported (CR §7).
 pub fn css_references(css: &str) -> Vec<String> {
     vendor::css::scan(css)
         .into_iter()
@@ -283,7 +359,7 @@ pub fn css_references(css: &str) -> Vec<String> {
         .collect()
 }
 
-/// Rewrite the value of every `url()` / `@import` reference in `css` for which `replace`
+/// Rewrite the value of every reference [`css_references`] reports in `css` for which `replace`
 /// returns a new (unescaped) value; it is escaped as the reference's quoting requires. Other
 /// bytes are kept verbatim. Export uses this to inline bundle files as `data:` URIs, e.g. with
 /// [`resolve_bundle_ref`] and [`Bundle::read`].
@@ -397,11 +473,22 @@ fn is_not_found(e: &anyhow::Error) -> bool {
 }
 
 /// Load a bundle, filling missing flavors with the fallback. Never fails; returns a warning for
-/// the user when the bundle is missing or unusable (with the exact command that fixes it).
-/// Use [`flavor_warning`] to warn about a single flavor that only has fallback styles.
+/// the user when the bundle is missing or unusable, or when a damaged flavor was dropped from it
+/// (with the exact command that fixes it). Use [`flavor_warning`] to warn about a single flavor
+/// that only has fallback styles.
 pub fn load_or_fallback(path: &Path) -> (Bundle, Option<String>) {
     match Bundle::open(path) {
-        Ok(b) => (b.with_fallbacks(), None),
+        Ok(b) => {
+            let warning = (!b.damaged.is_empty()).then(|| {
+                let parts: Vec<String> = b
+                    .damaged
+                    .iter()
+                    .map(|(flavor, why)| damaged_flavor_warning(path, *flavor, why))
+                    .collect();
+                parts.join("; ")
+            });
+            (b.with_fallbacks(), warning)
+        }
         Err(e) if is_not_found(&e) => (
             Bundle::fallback(),
             Some(format!(
@@ -411,23 +498,37 @@ pub fn load_or_fallback(path: &Path) -> (Bundle, Option<String>) {
                 vendor_command(None, path)
             )),
         ),
-        Err(e) => (
-            Bundle::fallback(),
-            Some(format!(
-                "{e:#}; using minimal fallback styles (run `{}` to download them again)",
-                vendor_command(None, path)
-            )),
-        ),
+        Err(e) => {
+            // Suggest only what `md-render vendor` will do: it refuses to overwrite a file it
+            // cannot read as an md-render bundle, except at the default location.
+            let cmd = vendor_command(None, path);
+            let fix = if vendor::accepts_output(path, &e) {
+                format!("run `{cmd}` to download them again")
+            } else if path.is_file() {
+                format!("delete it, then run `{cmd}` to download them again")
+            } else {
+                // A directory, or a path we cannot even stat: deleting it is not the answer.
+                "choose another bundle file; `md-render vendor -o FILE` creates one".to_owned()
+            };
+            (
+                Bundle::fallback(),
+                Some(format!("{e:#}; using minimal fallback styles ({fix})")),
+            )
+        }
     }
 }
 
-/// A warning when `flavor` has only fallback styles in a bundle read from a file (D11). `None`
-/// when the flavor was vendored, or when the whole bundle is the fallback (then
-/// [`load_or_fallback`] already returned a warning).
+/// A warning when `flavor` has only fallback styles in a bundle read from a file (D11), saying
+/// so when [`Bundle::open`] dropped the flavor as damaged. `None` when the flavor was vendored,
+/// or when the whole bundle is the fallback (then [`load_or_fallback`] already returned a
+/// warning).
 pub fn flavor_warning(bundle: &Bundle, flavor: Flavor) -> Option<String> {
     let BundleOrigin::File(path) = bundle.origin() else {
         return None;
     };
+    if let Some(why) = bundle.damaged.get(&flavor) {
+        return Some(damaged_flavor_warning(path, flavor, why));
+    }
     bundle.is_fallback(flavor).then(|| {
         format!(
             "style bundle {} has no {flavor} styles; using minimal fallback styles (run `{}`)",
@@ -435,6 +536,17 @@ pub fn flavor_warning(bundle: &Bundle, flavor: Flavor) -> Option<String> {
             vendor_command(Some(flavor), path)
         )
     })
+}
+
+/// The warning for a flavor that [`Bundle::open`] dropped from the bundle at `path` because of
+/// `why`, with the command that repairs it (it re-vendors only that flavor and keeps the rest).
+fn damaged_flavor_warning(path: &Path, flavor: Flavor, why: &str) -> String {
+    format!(
+        "style bundle {} has damaged {flavor} styles ({why}); using minimal fallback styles for \
+         {flavor} (run `{}` to repair them)",
+        path.display(),
+        vendor_command(Some(flavor), path)
+    )
 }
 
 /// A bundle shared by a running server and swapped atomically when the file changes (DESIGN §4,
@@ -493,7 +605,7 @@ impl SharedBundle {
     /// written file.
     pub fn reload(&self) -> anyhow::Result<bool> {
         let keep = "keeping the previously loaded styles";
-        let gz = match std::fs::read(&self.path) {
+        let gz = match read_bundle_file(&self.path) {
             Ok(gz) => gz,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(self.replace(Bundle::fallback()));

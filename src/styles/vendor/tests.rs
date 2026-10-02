@@ -174,6 +174,46 @@ fn chrono_like(s: &str) -> bool {
 }
 
 #[test]
+fn image_set_strings_are_vendored() {
+    let dir = tmp();
+    let mut site = github_site();
+    site.add(
+        &format!("{GH}global-0123456789abcdef.css"),
+        "text/css",
+        r#"e{background-image:image-set("img/hi.png" 1x, "/images/hi@2x.png" 2x)}f{background:-webkit-image-set('img/w.png' 1x)}g{content:"img/not-a-url.png"}"#,
+    );
+    for u in [
+        format!("{GH}img/hi.png"),
+        "https://github.githubassets.com/images/hi@2x.png".to_owned(),
+        format!("{GH}img/w.png"),
+    ] {
+        site.add(&u, "image/png", "PNG");
+    }
+    let o = opts(dir.path(), &[Flavor::Github]);
+    let out = vendor_flavor(Flavor::Github, &o, &site, &Progress { quiet: true }).expect("vendor");
+    let global = std::str::from_utf8(&out.files["github/assets/global-0123456789abcdef.css"])
+        .expect("utf8")
+        .to_owned();
+    assert_eq!(
+        global,
+        r#"e{background-image:image-set("img/hi.png" 1x, "../images/hi@2x.png" 2x)}f{background:-webkit-image-set('img/w.png' 1x)}g{content:"img/not-a-url.png"}"#
+    );
+    for p in [
+        "github/assets/img/hi.png",
+        "github/images/hi@2x.png",
+        "github/assets/img/w.png",
+    ] {
+        assert_eq!(out.files.get(p).map(|b| &b[..]), Some(&b"PNG"[..]), "{p}");
+    }
+    assert!(
+        out.manifest.failures.is_empty(),
+        "{:?}",
+        out.manifest.failures
+    );
+    assert!(!site.requests().iter().any(|r| r.contains("not-a-url")));
+}
+
+#[test]
 fn stylesheet_failures_are_fatal() {
     let dir = tmp();
     let progress = Progress { quiet: true };
@@ -546,7 +586,12 @@ fn bundle_write_read_modify_write() {
     let mut fs = tarfs::InMemoryFileSystem::open(&o.output).expect("open fs");
     fs.delete_file("github/images/spinners/x.gif");
     fs.write_tarball_gz(&o.output).expect("flush");
-    assert!(Bundle::open(&o.output).is_err());
+    let damaged = Bundle::open(&o.output).expect("GitLab is intact");
+    assert!(
+        damaged.flavor(Flavor::Github).is_none(),
+        "damaged flavor dropped"
+    );
+    assert_eq!(damaged.flavor(Flavor::Gitlab), both.flavor(Flavor::Gitlab));
     let gl_out = vendor_flavor(Flavor::Gitlab, &o, &gl, &progress).expect("gitlab");
     write_bundle(&o.output, &[gl_out], &progress).expect("write");
     let repaired = Bundle::open(&o.output).expect("open");

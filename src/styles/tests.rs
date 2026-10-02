@@ -511,6 +511,13 @@ fn css_reference_helpers() {
     // Values needing escapes stay valid CSS.
     let out = rewrite_css_references("a{b:url(x)}", |_| Some("a b(c)".into()));
     assert_eq!(css_references(&out), vec!["a b(c)"]);
+    // image-set() string arguments are image URLs, other strings are not.
+    let css = r#"a{b:image-set("i.png" 1x)}c{content:"t.png"}"#;
+    assert_eq!(css_references(css), vec!["i.png"]);
+    assert_eq!(
+        rewrite_css_references(css, |_| Some("data:,\"q\"".into())),
+        r#"a{b:image-set("data:,\"q\"" 1x)}c{content:"t.png"}"#
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //! sanitized so it is a valid [`tarfs::check_path`] path, needs no percent-encoding in a URL,
 //! survives the tarfs reader (no `._*` AppleDouble names) and fits a USTAR header.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use url::Url;
 
@@ -99,13 +99,16 @@ struct Mount {
     prefix: String,
 }
 
-/// Assigns bundle paths to URLs for one flavor: deterministic, collision-free, idempotent.
+/// Assigns bundle paths to URLs for one flavor: deterministic, collision-free (no two URLs share
+/// a path, and no path is both a file and a directory), idempotent.
 #[derive(Debug)]
 pub(crate) struct Mapper {
     flavor_prefix: String,
     mounts: Vec<Mount>,
     by_url: HashMap<String, String>,
     by_path: HashMap<String, String>,
+    /// Every parent directory of a path in `by_path`.
+    dirs: HashSet<String>,
 }
 
 impl Mapper {
@@ -116,6 +119,7 @@ impl Mapper {
             mounts: Vec::new(),
             by_url: HashMap::new(),
             by_path: HashMap::new(),
+            dirs: HashSet::new(),
         }
     }
 
@@ -207,26 +211,51 @@ impl Mapper {
         path
     }
 
-    /// `path`, or a variant tagged with a hash of `key` if another URL already has it.
+    /// Whether `path` can go to the URL `key`: no other URL has it, and it neither is a
+    /// directory of other paths nor lies below another URL's file. A bundle with a file `a` next
+    /// to `a/b` cannot be written (tarfs refuses it, `tar -x` and export directories cannot hold
+    /// it), and sites do have such URLs (`/fonts` and `/fonts/x.woff2`).
+    fn free(&self, path: &str, key: &str) -> bool {
+        self.by_path.get(path).is_none_or(|k| k == key)
+            && !self.dirs.contains(path)
+            && !parent_dirs(path).any(|dir| self.by_path.contains_key(dir))
+    }
+
+    /// `path`, or a variant tagged with a hash of `key` if it is not [`free`](Self::free).
+    ///
+    /// When a parent directory of `path` is another URL's file, renaming the file itself cannot
+    /// help, so the topmost such directory segment is tagged instead (`a/b` → `a-<tag>/b`), with
+    /// a hash of the directory so that everything below it moves to the same place. Each tag
+    /// names a distinct segment and only finitely many paths are taken, so this ends.
     fn unique(&self, path: &str, key: &str) -> String {
-        let free = |p: &str| self.by_path.get(p).is_none_or(|k| k == key);
-        if free(path) {
+        if self.free(path, key) {
             return path.to_owned();
         }
-        let tag = &sha256_hex(key.as_bytes())[..8];
-        let mut candidate = with_tag(path, tag);
+        let (head, tail, tagged) =
+            match parent_dirs(path).find(|dir| self.by_path.contains_key(*dir)) {
+                Some(file) => (file, &path[file.len()..], file),
+                None => (path, "", key),
+            };
+        let tag = &sha256_hex(tagged.as_bytes())[..8];
+        let mut candidate = format!("{}{tail}", with_tag(head, tag));
         let mut n = 2;
-        while !free(&candidate) {
-            candidate = with_tag(path, &format!("{tag}{n}"));
+        while !self.free(&candidate, key) {
+            candidate = format!("{}{tail}", with_tag(head, &format!("{tag}{n}")));
             n += 1;
         }
         candidate
     }
 
     fn insert(&mut self, key: String, path: String) {
+        self.dirs.extend(parent_dirs(&path).map(str::to_owned));
         self.by_path.insert(path.clone(), key.clone());
         self.by_url.insert(key, path);
     }
+}
+
+/// The parent directories of the bundle path `path`, shortest first (`a/b/c` → `a`, `a/b`).
+fn parent_dirs(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(move |(i, _)| &path[..i])
 }
 
 #[cfg(test)]
@@ -439,6 +468,59 @@ mod tests {
             m.reserve(&other, "gitlab/lib/mermaid/mermaid.min.js"),
             "gitlab/lib/mermaid/mermaid.min.js"
         );
+    }
+
+    #[test]
+    fn mapper_never_makes_a_file_a_directory() {
+        // Site URLs where one path is the parent of another, in both orders.
+        let mut m = Mapper::new("gitlab");
+        m.mount(&url("https://gitlab.com/"), "gitlab");
+        let file = m.map(&url("https://gitlab.com/assets/fonts"));
+        let below = m.map(&url("https://gitlab.com/assets/fonts/a.woff2"));
+        let dir = m.map(&url("https://gitlab.com/assets/icons/x.svg"));
+        let over = m.map(&url("https://gitlab.com/assets/icons"));
+        let deep = m.map(&url("https://gitlab.com/assets/fonts/sub/b.woff2"));
+        let slash = m.map(&url("https://gitlab.com/assets/fonts/"));
+        assert_eq!(file, "gitlab/assets/fonts");
+        assert!(
+            below.starts_with("gitlab/assets/fonts-") && below.ends_with("/a.woff2"),
+            "{below}"
+        );
+        assert_eq!(dir, "gitlab/assets/icons/x.svg");
+        assert!(over.starts_with("gitlab/assets/icons-"), "{over}");
+        // The renamed directory is reused for the next file below it.
+        let (below_dir, _) = below.rsplit_once('/').expect("dir");
+        assert_eq!(deep, format!("{below_dir}/sub/b.woff2"));
+        assert_eq!(slash, format!("{below_dir}/index"));
+        // Idempotent.
+        assert_eq!(
+            m.map(&url("https://gitlab.com/assets/fonts/a.woff2")),
+            below
+        );
+
+        // What tarfs and `tar -x` require: the paths form a valid tree.
+        let mut fs = tarfs::InMemoryFileSystem::new();
+        for p in [&file, &below, &dir, &over, &deep, &slash] {
+            fs.write_file(p, "x").expect("valid path");
+        }
+        fs.write_tarball(Vec::new())
+            .expect("no file/directory clash");
+        fs.write_tarball_extended(Vec::new())
+            .expect("no file/directory clash");
+    }
+
+    #[test]
+    fn mapper_reserved_paths_stay_clear_of_site_files() {
+        let mut m = Mapper::new("github");
+        m.mount(&url("https://h/"), "github");
+        let lib = url("https://cdn.example/mathjax/es5/tex-chtml-full.js");
+        assert_eq!(
+            m.reserve(&lib, "github/lib/mathjax/es5/tex-chtml-full.js"),
+            "github/lib/mathjax/es5/tex-chtml-full.js"
+        );
+        // A site file at a reserved directory moves aside instead.
+        let site = m.map(&url("https://h/lib/mathjax"));
+        assert!(site.starts_with("github/lib/mathjax-"), "{site}");
     }
 
     #[test]
