@@ -244,11 +244,11 @@ pub fn execute(inv: Invocation) -> anyhow::Result<()> {
 
 fn vendor(plan: &VendorPlan) -> anyhow::Result<()> {
     let output = &plan.options.output;
-    if plan.create_parent {
-        if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating the cache directory {}", parent.display()))?;
-        }
+    if plan.create_parent
+        && let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating the cache directory {}", parent.display()))?;
     }
     // The vendor module reports progress, every failed download and the final summary itself
     // (unless quiet); repeating the summary here printed it twice, in other units (CLI-15).

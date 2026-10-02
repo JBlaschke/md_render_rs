@@ -194,20 +194,20 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
 
     // 6. Serialize.
     let mut out = String::new();
-    if let Some(fm) = &front {
-        if let Some(table) = &fm.table {
-            out.push_str("<markdown-accessiblity-table");
-            if ctx.sourcepos {
-                out.push_str(&format!(
-                    " data-sourcepos=\"1:1-{}:{}\"",
-                    fm.lines,
-                    fm.last_line_len.max(1)
-                ));
-            }
-            out.push('>');
-            out.push_str(table);
-            out.push_str("</markdown-accessiblity-table>\n\n");
+    if let Some(fm) = &front
+        && let Some(table) = &fm.table
+    {
+        out.push_str("<markdown-accessiblity-table");
+        if ctx.sourcepos {
+            out.push_str(&format!(
+                " data-sourcepos=\"1:1-{}:{}\"",
+                fm.lines,
+                fm.last_line_len.max(1)
+            ));
         }
+        out.push('>');
+        out.push_str(table);
+        out.push_str("</markdown-accessiblity-table>\n\n");
     }
     let inner = dom::root(&doc).inner_html();
     out.push_str(&octicons::expand(&inner));

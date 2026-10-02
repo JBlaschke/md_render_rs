@@ -1647,10 +1647,11 @@ pub(crate) fn postprocess_github(
         let old = img.attr("src").map(|v| v.to_string());
         if !canonical.is_empty() {
             img.set_attr("src", &canonical);
-            if let Some(parent) = img.parent().filter(|p| p.has_name("a")) {
-                if old.is_some() && parent.attr("href").map(|h| h.to_string()) == old {
-                    parent.set_attr("href", &canonical);
-                }
+            if let Some(parent) = img.parent().filter(|p| p.has_name("a"))
+                && old.is_some()
+                && parent.attr("href").map(|h| h.to_string()) == old
+            {
+                parent.set_attr("href", &canonical);
             }
         }
         img.remove_attr("data-canonical-src");
@@ -1761,10 +1762,10 @@ fn rewrite_blob_url(node: &NodeRef, attr: &str) {
     let re = BLOB.get_or_init(|| {
         Regex::new(r"(https://github\.com/[^/\s]+/[^/\s]+)/blob/").expect("valid blob-url regex")
     });
-    if let Some(value) = node.attr(attr) {
-        if let std::borrow::Cow::Owned(rewritten) = re.replace_all(&value, "$1/raw/") {
-            node.set_attr(attr, &rewritten);
-        }
+    if let Some(value) = node.attr(attr)
+        && let std::borrow::Cow::Owned(rewritten) = re.replace_all(&value, "$1/raw/")
+    {
+        node.set_attr(attr, &rewritten);
     }
 }
 
@@ -1894,10 +1895,10 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
     // GitLab-internal routes (`/-/project/<id>/uploads/…`) cannot be served locally.
     let internal = format!("{prefix}/-/");
     let absolutize = |node: &NodeRef, attr: &str| {
-        if let Some(v) = node.attr(attr) {
-            if v.starts_with(&internal) {
-                node.set_attr(attr, &format!("{origin}{v}"));
-            }
+        if let Some(v) = node.attr(attr)
+            && v.starts_with(&internal)
+        {
+            node.set_attr(attr, &format!("{origin}{v}"));
         }
     };
 

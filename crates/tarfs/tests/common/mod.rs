@@ -170,10 +170,10 @@ impl TarTool {
     pub fn all() -> Vec<TarTool> {
         let mut tools: Vec<TarTool> = Vec::new();
         for name in ["tar", "gtar", "bsdtar"] {
-            if let Some(t) = TarTool::probe(name) {
-                if !tools.iter().any(|known| known.kind == t.kind) {
-                    tools.push(t);
-                }
+            if let Some(t) = TarTool::probe(name)
+                && !tools.iter().any(|known| known.kind == t.kind)
+            {
+                tools.push(t);
             }
         }
         tools

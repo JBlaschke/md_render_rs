@@ -1010,17 +1010,16 @@ fn fs_target(
     })?;
     if !is_dir && !follow_symlinks {
         let is_link = fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink());
-        if is_link {
-            if let Ok(real) = fs::canonicalize(&abs) {
-                if !real.starts_with(&root) {
-                    warnings.push(format!(
+        if is_link
+            && let Ok(real) = fs::canonicalize(&abs)
+            && !real.starts_with(&root)
+        {
+            warnings.push(format!(
                         "{} is a symlink to {}, outside the served root {}; pass --follow-symlinks to serve it",
                         path.display(),
                         real.display(),
                         root.display()
                     ));
-                }
-            }
         }
     }
     Ok((

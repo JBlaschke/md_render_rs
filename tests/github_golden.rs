@@ -239,13 +239,12 @@ fn canon_children(n: &NodeRef<'_>, norm: Norm) -> Vec<C> {
     };
     let mut out = Vec::with_capacity(kids.len());
     for i in 0..kids.len() {
-        if let C::T(t) = &kids[i] {
-            if t.trim().is_empty()
-                && is_block(if i == 0 { None } else { kids.get(i - 1) })
-                && is_block(kids.get(i + 1))
-            {
-                continue;
-            }
+        if let C::T(t) = &kids[i]
+            && t.trim().is_empty()
+            && is_block(if i == 0 { None } else { kids.get(i - 1) })
+            && is_block(kids.get(i + 1))
+        {
+            continue;
         }
         out.push(kids[i].clone());
     }

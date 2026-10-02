@@ -178,26 +178,27 @@ fn unicode_pass(text: &str, budget: &mut usize) -> Vec<Piece<'static>> {
         let candidate = !c.is_ascii()
             || (matches!(c, '0'..='9' | '#' | '*')
                 && matches!(chars.get(i + 1), Some(&VS16 | &KEYCAP)));
-        if candidate && replaced < FILTER_ITEM_LIMIT {
-            if let Some(end) = sequence_end(&chars, i) {
-                let seq: String = chars[i..end].iter().collect();
-                // IGNORE_UNICODE_EMOJIS = %w[™ © ®]
-                if !matches!(seq.as_str(), "™" | "©" | "®") {
-                    if let Some(e) = by_chars(&seq) {
-                        if !buf.is_empty() {
-                            out.push(Piece::Text(std::mem::take(&mut buf)));
-                        }
-                        out.push(Piece::Emoji(e));
-                        *budget += 1;
-                        replaced += 1;
-                        i = end;
-                        continue;
-                    }
+        if candidate
+            && replaced < FILTER_ITEM_LIMIT
+            && let Some(end) = sequence_end(&chars, i)
+        {
+            let seq: String = chars[i..end].iter().collect();
+            // IGNORE_UNICODE_EMOJIS = %w[™ © ®]
+            if !matches!(seq.as_str(), "™" | "©" | "®")
+                && let Some(e) = by_chars(&seq)
+            {
+                if !buf.is_empty() {
+                    out.push(Piece::Text(std::mem::take(&mut buf)));
                 }
-                buf.push_str(&seq);
+                out.push(Piece::Emoji(e));
+                *budget += 1;
+                replaced += 1;
                 i = end;
                 continue;
             }
+            buf.push_str(&seq);
+            i = end;
+            continue;
         }
         buf.push(c);
         i += 1;
@@ -238,18 +239,20 @@ fn alpha_pass(text: &str, out: &mut Vec<Piece<'static>>, budget: &mut usize, rep
             .chars()
             .next()
             .is_none_or(|n| n == '\n' || !(is_alnum(n) || n == ':'));
-        if before_ok && after_ok && !name.is_empty() {
-            if let Some(e) = by_name(name) {
-                if last < i {
-                    out.push(Piece::Text(text[last..i].to_owned()));
-                }
-                out.push(Piece::Emoji(e));
-                *budget += 1;
-                *replaced += 1;
-                last = j + 1;
-                i = j + 1;
-                continue;
+        if before_ok
+            && after_ok
+            && !name.is_empty()
+            && let Some(e) = by_name(name)
+        {
+            if last < i {
+                out.push(Piece::Text(text[last..i].to_owned()));
             }
+            out.push(Piece::Emoji(e));
+            *budget += 1;
+            *replaced += 1;
+            last = j + 1;
+            i = j + 1;
+            continue;
         }
         i += 1;
     }

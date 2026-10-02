@@ -197,10 +197,9 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
         // HeadingLocalizationFilter translated the anchor label for the viewer's locale.
         if let (Some(content), Some(label)) =
             (attr(&n, "data-heading-content"), attr(&n, "aria-label"))
+            && !label.starts_with("Link to heading '")
         {
-            if !label.starts_with("Link to heading '") {
-                n.set_attr("aria-label", &format!("Link to heading '{content}'"));
-            }
+            n.set_attr("aria-label", &format!("Link to heading '{content}'"));
         }
         if let Some(sfx) = &suffix {
             for a in ["id", "href"] {
@@ -209,10 +208,8 @@ fn normalize_oracle(root: &NodeRef<'_>, live: bool) {
                         || v.starts_with("fnref-")
                         || v.starts_with("#fn-")
                         || v.starts_with("#fnref-");
-                    if is_fn {
-                        if let Some(stripped) = v.strip_suffix(sfx.as_str()) {
-                            n.set_attr(a, stripped);
-                        }
+                    if is_fn && let Some(stripped) = v.strip_suffix(sfx.as_str()) {
+                        n.set_attr(a, stripped);
                     }
                 }
             }
@@ -441,13 +438,12 @@ fn compare(name: &str, ours_html: &str, oracle_html: &str, blob: bool, live: boo
 
     let oracle_doc = Document::fragment(oracle_html);
     let mut oracle = oracle_doc.html_root();
-    if blob {
-        if let Some(fc) = all_elements(&oracle)
+    if blob
+        && let Some(fc) = all_elements(&oracle)
             .into_iter()
             .find(|n| classes(n).iter().any(|c| c == "file-content"))
-        {
-            oracle = fc;
-        }
+    {
+        oracle = fc;
     }
     normalize_oracle(&oracle, live);
     normalize_code(&oracle, strict, registry);
@@ -657,14 +653,12 @@ fn differential_inputs(dir: &Path) -> Vec<(String, String)> {
     }
     if let Ok(s) = std::fs::read_to_string(
         g.join("glfm_specification_2024-09-23/output_example_snapshots/markdown.yml"),
-    ) {
-        if let Ok(docs) = yaml_rust2::YamlLoader::load_from_str(&s) {
-            if let Some(map) = docs.first().and_then(|d| d.as_hash()) {
-                for (k, v) in map {
-                    if let (Some(k), Some(v)) = (k.as_str(), v.as_str()) {
-                        inputs.push((k.to_owned(), v.to_owned()));
-                    }
-                }
+    ) && let Ok(docs) = yaml_rust2::YamlLoader::load_from_str(&s)
+        && let Some(map) = docs.first().and_then(|d| d.as_hash())
+    {
+        for (k, v) in map {
+            if let (Some(k), Some(v)) = (k.as_str(), v.as_str()) {
+                inputs.push((k.to_owned(), v.to_owned()));
             }
         }
     }

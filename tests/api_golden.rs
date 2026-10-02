@@ -78,10 +78,10 @@ fn normalize(html: &str) -> Vec<String> {
             .map(|v| v.to_string())
             .unwrap_or_default();
         let src = img.attr("src").map(|v| v.to_string());
-        if let Some(a) = img.parent().filter(|p| p.has_name("a")) {
-            if a.attr("href").map(|h| h.to_string()) == src {
-                a.set_attr("href", &canonical);
-            }
+        if let Some(a) = img.parent().filter(|p| p.has_name("a"))
+            && a.attr("href").map(|h| h.to_string()) == src
+        {
+            a.set_attr("href", &canonical);
         }
         img.set_attr("src", &canonical);
         img.remove_attr("data-canonical-src");

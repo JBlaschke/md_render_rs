@@ -115,15 +115,13 @@ pub(super) fn find(s: &str) -> Vec<(usize, usize, String)> {
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_whitespace() || "*_~(".contains(c));
-            if boundary {
-                if let Some(d) = check_domain(s, i, false) {
-                    let end = link_end(s, i, d, true);
-                    if end > i + 4 {
-                        out.push((i, end, format!("http://{}", &s[i..end])));
-                        i = end;
-                        floor = end;
-                        continue;
-                    }
+            if boundary && let Some(d) = check_domain(s, i, false) {
+                let end = link_end(s, i, d, true);
+                if end > i + 4 {
+                    out.push((i, end, format!("http://{}", &s[i..end])));
+                    i = end;
+                    floor = end;
+                    continue;
                 }
             }
         } else if b[i] == b':' && s[i..].starts_with("://") {
@@ -132,15 +130,15 @@ pub(super) fn find(s: &str) -> Vec<(usize, usize, String)> {
                 st -= 1;
             }
             let scheme = s[st..i].to_ascii_lowercase();
-            if matches!(scheme.as_str(), "http" | "https" | "ftp") {
-                if let Some(d) = check_domain(s, i + 3, true) {
-                    let end = link_end(s, st, d, true);
-                    if end > i + 3 {
-                        out.push((st, end, s[st..end].to_owned()));
-                        i = end;
-                        floor = end;
-                        continue;
-                    }
+            if matches!(scheme.as_str(), "http" | "https" | "ftp")
+                && let Some(d) = check_domain(s, i + 3, true)
+            {
+                let end = link_end(s, st, d, true);
+                if end > i + 3 {
+                    out.push((st, end, s[st..end].to_owned()));
+                    i = end;
+                    floor = end;
+                    continue;
                 }
             }
         }

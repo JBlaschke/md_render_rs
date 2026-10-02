@@ -137,10 +137,10 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
                 }
             },
         };
-        if params.is_none() {
-            if let Some(m) = meta.filter(|m| !dom::is_blank(m)) {
-                params = Some(m);
-            }
+        if params.is_none()
+            && let Some(m) = meta.filter(|m| !dom::is_blank(m))
+        {
+            params = Some(m);
         }
         code.remove_attr("lang");
         code.remove_attr("data-lang");
@@ -798,10 +798,10 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
         // sanitize_link_text!
         for d in dom::descendants(&a) {
             let n = root.tree.get_unchecked(&d);
-            if let Some(t) = dom::text_of(&n) {
-                if t.contains(RTLO) {
-                    dom::set_text_node_contents(&n, &t.replace(RTLO, ENCODED_RTLO));
-                }
+            if let Some(t) = dom::text_of(&n)
+                && t.contains(RTLO)
+            {
+                dom::set_text_node_contents(&n, &t.replace(RTLO, ENCODED_RTLO));
             }
         }
         if let Some((_, host)) = &parts {
@@ -918,10 +918,10 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
         Some(i) => (&s[..i], Some(&s[i + 1..])),
         None => (s, None),
     };
-    if let Some(f) = fragment {
-        if !valid_pct(f, ":@/?") {
-            return None;
-        }
+    if let Some(f) = fragment
+        && !valid_pct(f, ":@/?")
+    {
+        return None;
     }
     // The query is `[^#]*+`: anything goes (non-ASCII was rejected above).
     let (before_query, query) = match before_frag.find('?') {
@@ -954,10 +954,10 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
             Some(i) => (Some(&authority[..i]), &authority[i + 1..]),
             None => (None, authority),
         };
-        if let Some(u) = userinfo {
-            if !valid_pct(u, ":") {
-                return None;
-            }
+        if let Some(u) = userinfo
+            && !valid_pct(u, ":")
+        {
+            return None;
         }
         let (host, port) = if hostport.starts_with('[') {
             let close = hostport.find(']')?;
@@ -994,11 +994,11 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
             Some("ftp") => Some("21"),
             _ => None,
         };
-        if let Some(p) = port.filter(|p| !p.is_empty()) {
-            if Some(p.trim_start_matches('0')) != default.map(|d| d.trim_start_matches('0')) {
-                out.push(':');
-                out.push_str(p);
-            }
+        if let Some(p) = port.filter(|p| !p.is_empty())
+            && Some(p.trim_start_matches('0')) != default.map(|d| d.trim_start_matches('0'))
+        {
+            out.push(':');
+            out.push_str(p);
         }
         &auth_rest[end..]
     } else {
@@ -1118,13 +1118,13 @@ pub(super) fn task_list(root: &NodeRef<'_>) {
         };
         let is_table_item = dom::classes(&parent).iter().any(|c| c == "task-table-item");
         if is_table_item {
-            if let Some(header) = column_header_text(&input, &parent, root) {
-                if !dom::is_blank(&header) {
-                    input.set_attr(
-                        "aria-label",
-                        &format!("Check option in column \"{header}\""),
-                    );
-                }
+            if let Some(header) = column_header_text(&input, &parent, root)
+                && !dom::is_blank(&header)
+            {
+                input.set_attr(
+                    "aria-label",
+                    &format!("Check option in column \"{header}\""),
+                );
             }
         } else {
             let mut text = String::new();
@@ -1161,10 +1161,10 @@ pub(super) fn task_list(root: &NodeRef<'_>) {
                     it.insert_before(&s);
                     s.append_child(&it);
                 }
-            } else if !dom::is_any(&it, &["p", "div", "ul", "ol"]) {
-                if let Some(first) = it.first_child() {
-                    stack.push(first);
-                }
+            } else if !dom::is_any(&it, &["p", "div", "ul", "ol"])
+                && let Some(first) = it.first_child()
+            {
+                stack.push(first);
             }
         }
     }

@@ -108,14 +108,14 @@ fn convert(doc: &Document, bq: &NodeRef<'_>) {
         _ => first.remove_from_parent(),
     }
     if let Some(b) = br {
-        if let Some(next) = b.next_sibling() {
-            if let Some(t) = dom::text_of(&next) {
-                let stripped = t.strip_prefix('\n').unwrap_or(&t).to_owned();
-                if stripped.is_empty() {
-                    next.remove_from_parent();
-                } else {
-                    next.set_text(stripped.as_str());
-                }
+        if let Some(next) = b.next_sibling()
+            && let Some(t) = dom::text_of(&next)
+        {
+            let stripped = t.strip_prefix('\n').unwrap_or(&t).to_owned();
+            if stripped.is_empty() {
+                next.remove_from_parent();
+            } else {
+                next.set_text(stripped.as_str());
             }
         }
         b.remove_from_parent();

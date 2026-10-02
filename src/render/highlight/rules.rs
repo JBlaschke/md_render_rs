@@ -156,10 +156,10 @@ impl<T> RuleSet<T> {
             if !rule.scope.is_prefix_of(scope) {
                 continue;
             }
-            if let Some(p) = rule.previous {
-                if !previous.is_some_and(|prev| p.is_prefix_of(prev)) {
-                    continue;
-                }
+            if let Some(p) = rule.previous
+                && !previous.is_some_and(|prev| p.is_prefix_of(prev))
+            {
+                continue;
             }
             if !rule
                 .ancestors

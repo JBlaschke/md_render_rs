@@ -186,10 +186,10 @@ pub(super) fn images(doc: &Document, ctx: &Ctx) {
         }
     }
     for source in dom::elements_named(doc, "source") {
-        if let Some(set) = source.attr("srcset").map(|s| s.to_string()) {
-            if let Some(r) = blob_to_raw(&set).filter(|_| rewrite_blobs) {
-                source.set_attr("srcset", &r);
-            }
+        if let Some(set) = source.attr("srcset").map(|s| s.to_string())
+            && let Some(r) = blob_to_raw(&set).filter(|_| rewrite_blobs)
+        {
+            source.set_attr("srcset", &r);
         }
     }
     for img in dom::elements_named(doc, "img") {
@@ -284,10 +284,10 @@ pub(super) fn links(doc: &Document) {
             if !url_allowed(&href, &["http", "https", "mailto", "xmpp"]) {
                 a.remove_attr("href");
             } else {
-                if let Some(rest) = href.strip_prefix("http://github.com") {
-                    if rest.is_empty() || rest.starts_with(['/', '?', '#']) {
-                        a.set_attr("href", &format!("https://github.com{rest}"));
-                    }
+                if let Some(rest) = href.strip_prefix("http://github.com")
+                    && (rest.is_empty() || rest.starts_with(['/', '?', '#']))
+                {
+                    a.set_attr("href", &format!("https://github.com{rest}"));
                 }
                 if !a.has_attr("rel")
                     && url_scheme(&href).is_none_or(|s| s != "mailto")

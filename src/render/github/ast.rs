@@ -171,10 +171,10 @@ fn dedupe_footnotes<'a>(root: &'a AstNode<'a>) {
         return;
     }
     for node in root.descendants() {
-        if let NodeValue::FootnoteReference(r) = &mut node.data_mut().value {
-            if let Some(name) = canonical.get(&normalize_label(&r.name)) {
-                r.name = name.clone();
-            }
+        if let NodeValue::FootnoteReference(r) = &mut node.data_mut().value
+            && let Some(name) = canonical.get(&normalize_label(&r.name))
+        {
+            r.name = name.clone();
         }
     }
 }

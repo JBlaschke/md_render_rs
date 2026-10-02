@@ -177,10 +177,11 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
 /// its Linguist scope (`highlight-source-js`).
 fn with_jsx<'a>(grammar: Grammar, tm_scope: &'a str, code: &str) -> (Grammar, &'a str) {
     const JSX_SCOPE: &str = "source.tsx";
-    if tm_scope == "source.js" && super::jsx::contains_jsx(code) {
-        if let Some(tsx) = engine::syntax_by_scope(JSX_SCOPE) {
-            return (Grammar::Syntect(tsx), JSX_SCOPE);
-        }
+    if tm_scope == "source.js"
+        && super::jsx::contains_jsx(code)
+        && let Some(tsx) = engine::syntax_by_scope(JSX_SCOPE)
+    {
+        return (Grammar::Syntect(tsx), JSX_SCOPE);
     }
     (grammar, tm_scope)
 }
@@ -386,11 +387,11 @@ impl<'s> SpanWriter<'s> {
     /// Drop the class of the innermost scope if its span has not been opened yet (no text since
     /// it was pushed), so that the scope being pushed takes its place.
     fn absorb_parent(&mut self) {
-        if self.opened < self.some {
-            if let Some(last) = self.entries.last_mut().filter(|e| e.class.is_some()) {
-                last.class = None;
-                self.some -= 1;
-            }
+        if self.opened < self.some
+            && let Some(last) = self.entries.last_mut().filter(|e| e.class.is_some())
+        {
+            last.class = None;
+            self.some -= 1;
         }
     }
 

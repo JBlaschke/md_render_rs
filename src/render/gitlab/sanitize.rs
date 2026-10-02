@@ -541,10 +541,10 @@ fn clean_element(node: &NodeRef<'_>, name: &str) {
                 return false;
             }
             if let Some(allowed) = protocol_rules(&attr_name) {
-                if let Some(proto) = protocol_prefix(&a.value) {
-                    if !allowed.contains(&proto.to_lowercase().as_str()) {
-                        return false;
-                    }
+                if let Some(proto) = protocol_prefix(&a.value)
+                    && !allowed.contains(&proto.to_lowercase().as_str())
+                {
+                    return false;
                 }
                 let stripped = a.value.trim_matches(is_ruby_space).to_owned();
                 if stripped.len() != a.value.len() {
@@ -671,11 +671,12 @@ pub(super) fn parse_uri(url: &str) -> Result<UriParts<'_>, ()> {
     // which fails the scheme format check, like Addressable's `InvalidURIError`.
     let mut rest = url;
     let mut parts = UriParts::default();
-    if let Some(i) = rest.find([':', '/', '?', '#']) {
-        if rest.as_bytes()[i] == b':' && i > 0 {
-            parts.scheme = Some(&rest[..i]);
-            rest = &rest[i + 1..];
-        }
+    if let Some(i) = rest.find([':', '/', '?', '#'])
+        && rest.as_bytes()[i] == b':'
+        && i > 0
+    {
+        parts.scheme = Some(&rest[..i]);
+        rest = &rest[i + 1..];
     }
     if let Some(after) = rest.strip_prefix("//") {
         let end = after.find(['/', '?', '#']).unwrap_or(after.len());
@@ -707,17 +708,16 @@ pub(super) fn parse_uri(url: &str) -> Result<UriParts<'_>, ()> {
             return Err(());
         }
     }
-    if let Some(p) = parts.port {
-        if !p.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(());
-        }
+    if let Some(p) = parts.port
+        && !p.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(());
     }
-    if let Some(h) = parts.host {
-        if h.contains(['<', '>', '{', '}', '/', '\\', '?', '#', '@', '"'])
-            || h.chars().any(char::is_whitespace)
-        {
-            return Err(());
-        }
+    if let Some(h) = parts.host
+        && (h.contains(['<', '>', '{', '}', '/', '\\', '?', '#', '@', '"'])
+            || h.chars().any(char::is_whitespace))
+    {
+        return Err(());
     }
     if parts.host.is_none() && parts.path.starts_with("//") {
         return Err(());
@@ -726,13 +726,12 @@ pub(super) fn parse_uri(url: &str) -> Result<UriParts<'_>, ()> {
         "http", "https", "ftp", "tftp", "sftp", "ssh", "svn+ssh", "telnet", "nntp", "gopher",
         "wais", "ldap", "prospero",
     ];
-    if let Some(s) = parts.scheme {
-        if IP_BASED.contains(&s.to_ascii_lowercase().as_str())
-            && parts.host.is_none_or(str::is_empty)
-            && parts.path.is_empty()
-        {
-            return Err(());
-        }
+    if let Some(s) = parts.scheme
+        && IP_BASED.contains(&s.to_ascii_lowercase().as_str())
+        && parts.host.is_none_or(str::is_empty)
+        && parts.path.is_empty()
+    {
+        return Err(());
     }
     // `URI#to_s`, which `URI.new` calls: "Cannot assemble URI string with ambiguous path".
     if parts.scheme.is_none() && ambiguous_path(parts.path) {

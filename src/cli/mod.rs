@@ -60,17 +60,18 @@ where
             CliError::Clap(e)
         }
     })?;
-    if cli.command.is_none() && cli.serve.poll.is_some() {
-        if let Some(ms) = detached_poll_value(&argv) {
-            return Err(plan::usage(
-                ErrorKind::ValueValidation,
-                format!(
-                    "'--poll {ms}' does not set the interval (it would be taken as the PATH or \
+    if cli.command.is_none()
+        && cli.serve.poll.is_some()
+        && let Some(ms) = detached_poll_value(&argv)
+    {
+        return Err(plan::usage(
+            ErrorKind::ValueValidation,
+            format!(
+                "'--poll {ms}' does not set the interval (it would be taken as the PATH or \
                      ADDRESS): write --poll={ms}, or put the address before the option \
                      (`md-render README.md {ms} --poll`)"
-                ),
-            ));
-        }
+            ),
+        ));
     }
     Ok(cli)
 }
