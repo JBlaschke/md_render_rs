@@ -536,7 +536,9 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
     }
 
     let url = display_url(&cfg.host, addr);
-    log(&format!("Running on {url} (Press CTRL+C to quit)"));
+    for line in banner(&url, &addrs, network_address) {
+        log(&line);
+    }
     if addrs.len() > 1 {
         let all: Vec<String> = addrs.iter().map(ToString::to_string).collect();
         tracing::debug!("listening on {}", all.join(", "));
@@ -773,6 +775,41 @@ fn display_url(host: &str, addr: SocketAddr) -> String {
     format!("http://{shown}:{}/", addr.port())
 }
 
+/// The startup lines (printed as ` * {line}`) for a server at `url` listening on `addrs`.
+///
+/// A wildcard bind is reachable from the network: the banner says so and adds this
+/// machine's address on the network (`lan(ipv6)`), like Werkzeug/grip, instead of showing
+/// only the local URL (CLI-19).
+fn banner(url: &str, addrs: &[SocketAddr], lan: impl Fn(bool) -> Option<IpAddr>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let wildcard = addrs.iter().find(|a| a.ip().is_unspecified());
+    if let Some(w) = wildcard {
+        lines.push(format!("Running on all addresses ({})", w.ip()));
+    }
+    lines.push(format!("Running on {url} (Press CTRL+C to quit)"));
+    if let Some(w) = wildcard
+        && let Some(ip) = lan(w.is_ipv6())
+    {
+        lines.push(format!("Running on {}", display_url(&ip.to_string(), *w)));
+    }
+    lines
+}
+
+/// This machine's address on its default route (the one other machines reach it by), for
+/// the startup banner of a wildcard bind. Connecting a UDP socket sends nothing; it only
+/// asks the OS which local address it would use (here towards a documentation address).
+fn network_address(v6: bool) -> Option<IpAddr> {
+    let (local, remote) = if v6 {
+        ("[::]:0", "[2001:db8::1]:80")
+    } else {
+        ("0.0.0.0:0", "192.0.2.1:80")
+    };
+    let socket = std::net::UdpSocket::bind(local).ok()?;
+    socket.connect(remote).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
+}
+
 /// A random identifier for this server process.
 fn new_server_id() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
@@ -830,6 +867,49 @@ mod tests {
         assert_eq!(display_url("::1", a), "http://[::1]:6419/");
         assert_eq!(display_url("[::1]", a), "http://[::1]:6419/");
         assert_eq!(display_url("192.168.1.2", a), "http://192.168.1.2:6419/");
+    }
+
+    /// CLI-19: a wildcard bind says that it serves all addresses and where the network
+    /// reaches it; other binds print the one URL as before.
+    #[test]
+    fn startup_banner() {
+        let lan = |v6: bool| {
+            Some(if v6 {
+                "2001:db8::5".parse().unwrap()
+            } else {
+                "192.168.1.5".parse().unwrap()
+            })
+        };
+        let any: SocketAddr = "0.0.0.0:6419".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:6419/", &[any], lan),
+            [
+                "Running on all addresses (0.0.0.0)",
+                "Running on http://localhost:6419/ (Press CTRL+C to quit)",
+                "Running on http://192.168.1.5:6419/",
+            ]
+        );
+        let any6: SocketAddr = "[::]:7213".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:7213/", &[any6], lan),
+            [
+                "Running on all addresses (::)",
+                "Running on http://localhost:7213/ (Press CTRL+C to quit)",
+                "Running on http://[2001:db8::5]:7213/",
+            ]
+        );
+        assert_eq!(banner("http://localhost:1/", &[any], |_| None).len(), 2);
+        let local: SocketAddr = "127.0.0.1:6419".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:6419/", &[local], lan),
+            ["Running on http://localhost:6419/ (Press CTRL+C to quit)"]
+        );
+        // Whatever the machine's network, it is never a loopback or wildcard address.
+        for v6 in [false, true] {
+            if let Some(ip) = network_address(v6) {
+                assert!(!ip.is_loopback() && !ip.is_unspecified(), "{ip}");
+            }
+        }
     }
 
     #[test]
