@@ -910,9 +910,9 @@ impl Renderer for ApiRenderer {
                 );
                 Ok(rendered)
             }
-            Err(err) => Err(anyhow::Error::new(err)).with_context(|| {
-                format!("rendering through the {} API", site_name(self.cfg.flavor))
-            }),
+            // Every ApiError names the site's API already; a "rendering through the GitHub
+            // API" context only repeated it (CLI-23).
+            Err(err) => Err(anyhow::Error::new(err)),
         }
     }
 
@@ -2255,7 +2255,9 @@ mod tests {
             .render("x", &opts(Flavor::Gitlab, Mode::Readme, None))
             .unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("rendering through the GitLab API"), "{msg}");
+        // One message, which names the API itself (no repeated "rendering through" context).
+        assert_eq!(msg, err.to_string(), "{msg}");
+        assert!(msg.starts_with("the GitLab API rejected"), "{msg}");
         assert!(
             msg.contains("unauthorized (401 Unauthorized); set GITLAB_TOKEN or pass --token"),
             "{msg}"
