@@ -98,7 +98,7 @@ PATH.
 | `md-render 8080` | `./` | `localhost:8080` |
 | `md-render docs/` | `docs/` | `localhost:6419` |
 | `md-render localhost` | the file or directory `./localhost` | `localhost:6419` |
-| `md-render README.md 0.0.0.0:6419` | `README.md` | every interface |
+| `md-render README.md 0.0.0.0:6419` | `README.md` | every IPv4 interface (`[::]:6419`: every IPv6 one) |
 | `md-render . [::1]:8080` | `./` | IPv6 loopback, port 8080 |
 | `md-render ./8080` | the file `./8080` | `localhost:6419` |
 | `md-render ./vendor` | the file `./vendor` (not the subcommand) | `localhost:6419` |
@@ -205,8 +205,9 @@ the *style bundle*.
   refuses to overwrite a file that is not an md-render bundle, so a typo in `-o` cannot destroy
   unrelated data.
 * **Re-vendoring while servers run.** The bundle is replaced atomically: md-render writes a
-  temporary file and renames it over the old one. Running servers watch the bundle file, load
-  the new one off the request path and swap the page stylesheets without a reload. A corrupt
+  temporary file and renames it over the old one. Running servers (unless started with
+  `--norefresh`) watch the bundle file, load the new one off the request path and swap the page
+  stylesheets without a reload. A corrupt
   new bundle is ignored: the server keeps the old one and shows an error banner. If you start a
   server first and vendor later, the server picks up the new bundle within a few seconds.
 * **Read in place.** Servers never unpack the bundle. The [`tarfs`](crates/tarfs/README.md)
@@ -334,9 +335,9 @@ them. It needs an output file, not stdout.
 
 Images and links of the document itself are not embedded. They stay relative and are rewritten
 when OUT is in a different directory than the source. Exports contain no live-update script and
-no `data-sourcepos` attributes. The file is written atomically: if OUT is a symlink, its target
-is replaced and its permissions are kept. Any rendering or `--api` error makes the export fail
-with exit code 1, so scripts can rely on it.
+no `data-sourcepos` attributes. The file is written atomically. An existing OUT keeps its
+permissions, and if OUT is a symlink, its target is replaced. Any rendering or `--api` error
+makes the export fail with exit code 1, so scripts can rely on it.
 
 ## API mode
 
@@ -453,8 +454,7 @@ rendering and API options they ignore.
 
 ## Coming from grip
 
-md-render keeps grip's command-line grammar, so most grip commands work unchanged (grip's
-parity checklist is in `.dev/research/grip.md` §10).
+md-render keeps grip's command-line grammar, so most grip commands work unchanged.
 
 | grip | md-render | |
 |---|---|---|
@@ -468,7 +468,7 @@ parity checklist is in `.dev/research/grip.md` §10).
 | `--api-url` | same, for GitHub Enterprise and self-managed GitLab | kept |
 | renders through the GitHub API | renders offline; `--api` opts in to the API | changed |
 | `--user`/`--pass` (basic auth) | usage error pointing to `--token` and `GITHUB_TOKEN` (GitHub dropped password authentication) | changed |
-| `-a`/`-p` | usage error (exit 2) showing the positional form | changed |
+| `-a`/`-p`: hint to use the positional form, exit 2 | same | kept |
 | invalid address: warning, then serve anyway | usage error, exit 2 | changed |
 | `--theme light\|dark` | `auto` (default), `light`, `dark` and 14 GitHub theme ids | changed |
 | styles scraped from github.com on first request, cached per version | `md-render vendor` writes a bundle; the server never downloads styles itself | changed |
@@ -480,7 +480,7 @@ parity checklist is in `.dev/research/grip.md` §10).
 | page title `<file> - Grip` | `<file>` | changed |
 | `--wide` | accepted, warns that it has no effect (it was a no-op in grip as well); see `--layout` | dropped |
 | `~/.grip/settings.py`, `GRIPHOME`, `GRIPURL` | no configuration file; `MD_RENDER_FLAVOR`, `MD_RENDER_STYLES` | dropped |
-| Python API (`grip.serve`, `grip.export`) | the `md-render` library crate (`md_render::render`, `export`, `server`) | dropped |
+| Python API (`grip.serve`, `grip.export`) | the `md-render` library crate (`md_render::render`, `export`, `server`) | changed |
 
 ## Differences from github.com and gitlab.com
 
@@ -565,7 +565,7 @@ cargo test -p tarfs --doc                        # includes the tarfs README exa
 * **Golden tests** compare the offline output with real github.com and gitlab.com HTML
   (`tests/github_golden.rs`, `tests/gitlab_golden.rs`, `tests/api_golden.rs`,
   `tests/highlight_golden.rs`). The fixtures are public files from other projects, several
-  under GPL, AGPL or CC-BY-SA licences or under no licence at all, so they are not committed.
+  under GPL, AGPL or CC-BY-SA licenses or under no license at all, so they are not committed.
   The tests read them from `MD_RENDER_GOLDEN_DIR` (default `<repo>/.dev/research`, laid out as
   `github/{ctx,pages,comments,probes}` and `gitlab/{samples,issue_samples}`) and print a loud
   `SKIPPED (set MD_RENDER_GOLDEN_DIR)` without it:
