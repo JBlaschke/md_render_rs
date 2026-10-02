@@ -10,8 +10,9 @@
 //! Asset references depend on [`AssetMode`]: server URLs, a copied assets directory, or a fully
 //! self-contained document (CSS inlined with `data:` URIs, libraries inlined when needed).
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use regex::Regex;
@@ -149,6 +150,54 @@ fn gitlab_icon_sprite(bundle: &Bundle) -> Option<&str> {
         .find(|p| re.is_match(p))
 }
 
+/// A warning when the colour mode of `theme` needs GitHub theme ids that the bundle does not
+/// have: the page then uses `light` / `dark` instead (sheets::resolve_theme), which looks like
+/// an ordinary light/dark page unless the user is told. `None` when every needed id is
+/// vendored, for GitLab (only `light`/`dark`), and for bundles without theme files at all.
+pub(crate) fn theme_fallback_warning(
+    flavor: Flavor,
+    theme: &ThemeSel,
+    bundle: &Bundle,
+) -> Option<String> {
+    if flavor != Flavor::Github {
+        return None;
+    }
+    let selection = sheets::github(bundle.flavor(flavor)?, theme);
+    let slots = [
+        (&theme.light, &selection.light, theme.theme != Theme::Dark),
+        (&theme.dark, &selection.dark, theme.theme != Theme::Light),
+    ];
+    let (mut missing, mut used): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    for (requested, got, needed) in slots {
+        if needed && requested != got && !missing.contains(&requested.as_str()) {
+            missing.push(requested);
+            used.push(got);
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let s = if missing.len() > 1 { "s" } else { "" };
+    Some(format!(
+        "the style bundle has no GitHub theme{s} {}; using {} instead (run `md-render vendor \
+         --flavor github --themes all` to vendor every theme)",
+        missing.join(", "),
+        used.join(", ")
+    ))
+}
+
+/// Log `warning` once per process (pages are rendered on every request when serving).
+fn warn_once(warning: String) {
+    static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let first = SEEN
+        .lock()
+        .map(|mut seen| seen.insert(warning.clone()))
+        .unwrap_or(true);
+    if first {
+        tracing::warn!("{warning}");
+    }
+}
+
 /// Build a complete HTML document.
 ///
 /// Fails only on I/O errors: copying files in [`AssetMode::Directory`], or reading a local
@@ -160,6 +209,12 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         Flavor::Github => sheets::github(m, input.theme),
         Flavor::Gitlab => sheets::gitlab(m, input.theme),
     });
+    // Serving: say once that a requested theme is missing (export reports it on stderr).
+    if matches!(input.assets, AssetMode::Server { .. })
+        && let Some(w) = theme_fallback_warning(input.flavor, input.theme, bundle)
+    {
+        warn_once(w);
+    }
     let (light, dark) = match &selection {
         Some(s) => (s.light.clone(), s.dark.clone()),
         None => (input.theme.light.clone(), input.theme.dark.clone()),

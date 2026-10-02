@@ -160,6 +160,9 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
                 cfg.flavor
             );
         }
+        if let Some(w) = crate::page::theme_fallback_warning(cfg.flavor, &cfg.theme, &bundle) {
+            eprintln!("md-render: warning: {w}");
+        }
     }
 
     // The file name, as when serving and as `--help` says (grip: the file name in both).

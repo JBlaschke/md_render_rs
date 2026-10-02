@@ -543,3 +543,42 @@ fn extra_css_is_embedded_or_linked() {
         );
     }
 }
+
+/// PAGE-1: an export whose GitHub theme is not vendored says so on stderr (with the vendor
+/// command) instead of silently looking like the default dark theme; `-q` silences it.
+#[test]
+fn missing_theme_is_reported_on_stderr() {
+    let s = Setup::new();
+    let md = s.markdown("doc.md", "# Doc\n");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_md-render"))
+            .arg("export")
+            .arg("--styles")
+            .arg(&s.bundle)
+            .args(args)
+            .arg(&md)
+            .arg(s.path("doc.html"))
+            .output()
+            .expect("md-render runs");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let stderr = run(&["--theme", "dark_high_contrast"]);
+    assert!(
+        stderr.contains(
+            "warning: the style bundle has no GitHub theme dark_high_contrast; using dark instead"
+        ) && stderr.contains("md-render vendor --flavor github --themes all"),
+        "{stderr}"
+    );
+    let html = std::fs::read_to_string(s.path("doc.html")).unwrap();
+    assert!(html.contains("data-dark-theme=\"dark\""));
+    // Vendored (the test bundle has dark_dimmed), not needed by the mode, or quiet: silent.
+    for args in [
+        &["--theme", "dark_dimmed"][..],
+        &["--theme", "light", "--dark-theme", "dark_high_contrast"],
+        &["-q", "--theme", "dark_high_contrast"],
+    ] {
+        let stderr = run(args);
+        assert!(!stderr.contains("GitHub theme"), "{args:?}: {stderr}");
+    }
+}

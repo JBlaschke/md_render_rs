@@ -397,6 +397,40 @@ impl<'a> Page<'a> {
     }
 }
 
+/// Collects what a `tracing` subscriber writes.
+#[derive(Clone, Default)]
+pub struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'w self) -> LogCapture {
+        self.clone()
+    }
+}
+
+/// Warnings (and errors) logged on this thread while `f` runs.
+pub fn warnings_during<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    let value = tracing::subscriber::with_default(subscriber, f);
+    let text = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
+    (value, text)
+}
+
 /// `href`s of the stylesheet `<link>`s, in document order.
 pub fn stylesheet_hrefs(doc: &Document) -> Vec<String> {
     doc.select("link[rel=stylesheet]")
