@@ -3,9 +3,9 @@
 //! optional removal of source positions.
 
 use dom_query::NodeRef;
-use sha2::{Digest, Sha256};
 
 use super::dom;
+use crate::hash::mdr_key;
 
 /// Applies the post-JavaScript transforms.
 pub(super) fn apply(root: &NodeRef<'_>) {
@@ -78,20 +78,9 @@ fn table_wrapper(root: &NodeRef<'_>, table: &NodeRef<'_>) {
     dom::add_class(table, "gl-min-w-full gl-overflow-y-hidden");
 }
 
-/// Stable content key: the first 16 hex digits of SHA-256 over the parts.
-pub(super) fn content_key(parts: &[&str]) -> String {
-    let mut h = Sha256::new();
-    for p in parts {
-        h.update(p.as_bytes());
-        h.update([0u8]);
-    }
-    let digest = h.finalize();
-    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
-}
-
 /// Adds `data-mdr-key` to code-block wrappers (including math and mermaid blocks) and to inline
 /// or display math elements, so the live client can keep already rendered nodes (DESIGN §7).
-pub(super) fn add_keys(root: &NodeRef<'_>) {
+pub(crate) fn add_keys(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["div", "span", "code", "pre"]) {
         let n = root.tree.get_unchecked(&id);
         let classes = dom::classes(&n);
@@ -107,19 +96,13 @@ pub(super) fn add_keys(root: &NodeRef<'_>) {
                 ),
                 None => (String::new(), String::new(), dom::text(&n)),
             };
-            n.set_attr(
-                "data-mdr-key",
-                &content_key(&["code", &lang, &params, &text]),
-            );
+            n.set_attr("data-mdr-key", &mdr_key(&["code", &lang, &params, &text]));
         } else if !dom::is(&n, "pre")
             && classes.iter().any(|c| c == "js-render-math")
             && !dom::has_ancestor(&n, &["pre"], root)
         {
             let style = dom::attr(&n, "data-math-style").unwrap_or_default();
-            n.set_attr(
-                "data-mdr-key",
-                &content_key(&["math", &style, &dom::text(&n)]),
-            );
+            n.set_attr("data-mdr-key", &mdr_key(&["math", &style, &dom::text(&n)]));
         }
     }
 }
@@ -190,8 +173,8 @@ mod tests {
         assert_eq!(key(&a), key(&b));
         assert_eq!(a.matches("data-mdr-key").count(), 2);
         assert_ne!(
-            content_key(&["code", "c", "", "x"]),
-            content_key(&["code", "c", "", "y"])
+            mdr_key(&["code", "c", "", "x"]),
+            mdr_key(&["code", "c", "", "y"])
         );
     }
 

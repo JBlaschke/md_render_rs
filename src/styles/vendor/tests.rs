@@ -6,7 +6,8 @@ use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
-use crate::styles::{Bundle, sha256_hex};
+use crate::hash::sha256_hex;
+use crate::styles::Bundle;
 
 /// Canned responses keyed by URL; unknown URLs are 404; `errors` simulate transport failures.
 #[derive(Default)]

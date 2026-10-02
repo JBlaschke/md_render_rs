@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use url::Url;
 
-pub(crate) use crate::styles::sha256_hex;
+pub(crate) use crate::hash::sha256_hex;
 
 /// Whether `path` fits a USTAR header: name ≤ 100 bytes, or a split at a `/` into a prefix of
 /// ≤ 155 bytes and a name of ≤ 100 bytes (the tarfs default writer's rule).

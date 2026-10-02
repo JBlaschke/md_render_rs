@@ -608,9 +608,10 @@ fn redirect(status: StatusCode, location: &str, query: Option<&str>) -> Response
 
 /// Strong ETag of an embedded asset: a truncated SHA-256 of its bytes.
 fn static_etag(bytes: &[u8]) -> String {
-    let digest = super::hub::sha256(bytes);
-    let hex: String = digest[..12].iter().map(|b| format!("{b:02x}")).collect();
-    format!("\"{hex}\"")
+    format!(
+        "\"{}\"",
+        crate::hash::hex(&crate::hash::sha256(bytes)[..12])
+    )
 }
 
 fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {

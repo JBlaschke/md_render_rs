@@ -29,6 +29,8 @@ mod glfm;
 mod highlight;
 mod parse;
 mod postjs;
+
+pub(crate) use postjs::add_keys as add_mdr_keys;
 mod preprocess;
 mod sanitize;
 mod spaced_link;

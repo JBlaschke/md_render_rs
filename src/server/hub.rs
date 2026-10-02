@@ -30,6 +30,7 @@ use super::events::{ErrorKind, WireEvent};
 use super::paths;
 use super::watcher::FsWatcher;
 use crate::flavor::{Flavor, Mode};
+use crate::hash::sha256;
 use crate::render::{RenderOptions, Rendered, Renderer};
 
 /// How long a page load waits for the worker to render the current file.
@@ -772,13 +773,6 @@ fn cache_token() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().to_string())
         .unwrap_or_else(|_| "0".into())
-}
-
-/// SHA-256 of a byte string.
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&Sha256::digest(bytes));
-    out
 }
 
 /// Decode Markdown source: strip a UTF-8 BOM and decode lossily, returning a warning when

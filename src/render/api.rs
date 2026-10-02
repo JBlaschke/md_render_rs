@@ -28,7 +28,7 @@ use regex::Regex;
 use sha2::{Digest as _, Sha256};
 
 use crate::flavor::{Flavor, Mode};
-use crate::html;
+use crate::{hash, html};
 
 use super::{Features, RenderOptions, Rendered, Renderer};
 
@@ -1025,19 +1025,6 @@ fn cache_key(flavor: Flavor, mode: Mode, context: Option<&str>, text: &str) -> [
     out
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    hex(&Sha256::digest(data))
-}
-
 /// Seed for the deterministic run id: stable across edits of the same file (GH §8.4).
 fn rid_seed(source: Option<&Path>) -> String {
     match source {
@@ -1278,6 +1265,9 @@ pub(crate) struct SourceHints {
     /// Code block contents in document order (the API drops leading blank lines, the clipboard
     /// text of the README view keeps them, GH §2.4).
     code: Vec<String>,
+    /// The info-string language (first word, as written) of each block in `code`: part of the
+    /// offline renderer's `data-mdr-key`, and lost in the API's highlighted blocks.
+    code_langs: Vec<String>,
 }
 
 impl SourceHints {
@@ -1310,7 +1300,11 @@ impl SourceHints {
                         hints.headings.push(h.text().to_string());
                     }
                 }
-                NodeValue::CodeBlock(block) => hints.code.push(block.literal.clone()),
+                NodeValue::CodeBlock(block) => {
+                    hints.code.push(block.literal.clone());
+                    let lang = block.info.split_ascii_whitespace().next().unwrap_or("");
+                    hints.code_langs.push(lang.to_owned());
+                }
                 _ => {}
             }
         }
@@ -1363,11 +1357,17 @@ fn heading_key(text: &str) -> String {
 struct HintCursor<'h> {
     hints: &'h [String],
     next: usize,
+    /// Index of the hint the last [`HintCursor::take`] returned.
+    last: Option<usize>,
 }
 
 impl<'h> HintCursor<'h> {
     fn new(hints: &'h [String]) -> Self {
-        HintCursor { hints, next: 0 }
+        HintCursor {
+            hints,
+            next: 0,
+            last: None,
+        }
     }
 
     /// The first unused hint (from the current position) for which `matches` holds; hints that
@@ -1379,7 +1379,8 @@ impl<'h> HintCursor<'h> {
         } else {
             self.hints.len()
         };
-        let found = (self.next..end).find(|&i| matches(&self.hints[i]))?;
+        self.last = (self.next..end).find(|&i| matches(&self.hints[i]));
+        let found = self.last?;
         self.next = found + 1;
         Some(&self.hints[found])
     }
@@ -1498,16 +1499,61 @@ fn has_ancestor(node: &NodeRef, pred: impl Fn(&NodeRef) -> bool) -> bool {
     node.ancestors_it(None).any(|a| a.is_element() && pred(&a))
 }
 
-/// Short content hash used as `data-mdr-key` (DESIGN §5).
-fn mdr_key(html: &str) -> String {
-    sha256_hex(html.as_bytes())[..16].to_owned()
-}
-
-fn set_mdr_keys(doc: &Document, selector: &str) {
-    for node in doc.select(selector).nodes().iter() {
-        if !node.has_attr("data-mdr-key") {
-            node.set_attr("data-mdr-key", &mdr_key(&node.html()));
-        }
+/// `data-mdr-key`s (DESIGN §5) for the elements of GitHub API output that the client mutates,
+/// built from the same parts as the offline renderer (`render/github/code.rs`, `math.rs`), so a
+/// block keeps its key when a page switches between `--api` and offline output. Code blocks
+/// were keyed by [`clipboard_wrappers`] already when a source hint gave their language.
+fn github_mdr_keys(doc: &Document) {
+    let unkeyed = |selector: &str| {
+        doc.select(selector)
+            .nodes()
+            .iter()
+            .filter(|n| !n.has_attr("data-mdr-key"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for node in unkeyed("math-renderer") {
+        let class = if node.has_class("js-display-math") {
+            "js-display-math"
+        } else {
+            "js-inline-math"
+        };
+        // `$…$`, `$$…$$` (or a longer run of `$`) around the TeX. GitHub double-escapes `<` and
+        // `&` in math, so such TeX keys differently from offline output.
+        let text = node.text().to_string();
+        let run = text.len() - text.trim_start_matches('$').len();
+        let delim = &text[..run];
+        let tex = text
+            .strip_prefix(delim)
+            .and_then(|t| t.strip_suffix(delim))
+            .filter(|_| run > 0)
+            .unwrap_or(&text);
+        node.set_attr("data-mdr-key", &hash::mdr_key(&["math", class, tex]));
+    }
+    for node in unkeyed("section.js-render-needs-enrichment") {
+        let kind = node
+            .attr("data-type")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let code = node
+            .descendants_it()
+            .find_map(|d| d.attr("data-plain").map(|v| v.to_string()))
+            .unwrap_or_else(|| code_text(&node));
+        node.set_attr(
+            "data-mdr-key",
+            &hash::mdr_key(&["enrichment", &kind, &code]),
+        );
+    }
+    for node in unkeyed("div.highlight, div.snippet-clipboard-content") {
+        let raw = node
+            .attr("data-snippet-clipboard-copy-content")
+            .map_or_else(|| code_text(&node), |v| v.to_string());
+        let lang = node
+            .descendants_it()
+            .find(|d| d.has_name("pre"))
+            .and_then(|pre| pre.attr("lang").map(|v| v.to_string()))
+            .unwrap_or_default();
+        node.set_attr("data-mdr-key", &hash::mdr_key(&["code", &lang, &raw]));
     }
 }
 
@@ -1527,7 +1573,7 @@ fn stabilize_run_id(html: &str, seed: &str) -> String {
     });
     match re.captures(html).and_then(|c| c.get(1)) {
         Some(rid) => {
-            let stable = &sha256_hex(seed.as_bytes())[..32];
+            let stable = &hash::sha256_hex(seed.as_bytes())[..32];
             html.replace(rid.as_str(), stable)
         }
         None => html.to_owned(),
@@ -1536,7 +1582,7 @@ fn stabilize_run_id(html: &str, seed: &str) -> String {
 
 /// UUID-shaped deterministic identity for enrichment sections.
 fn stable_identity(code: &str) -> String {
-    let h = sha256_hex(code.as_bytes());
+    let h = hash::sha256_hex(code.as_bytes());
     format!(
         "{}-{}-4{}-a{}-{}",
         &h[0..8],
@@ -1705,10 +1751,7 @@ pub(crate) fn postprocess_github(
 
     clipboard_wrappers(&doc, hints);
 
-    set_mdr_keys(
-        &doc,
-        "math-renderer, section.js-render-needs-enrichment, div.highlight, div.snippet-clipboard-content",
-    );
+    github_mdr_keys(&doc);
     let features = Features {
         math: doc.select("math-renderer").exists(),
         mermaid: doc.select(r#"section[data-type="mermaid"]"#).exists(),
@@ -1816,13 +1859,20 @@ fn readme_headings(doc: &Document, hints: &SourceHints) {
 
 /// Clipboard text: the source literal when a code hint matches, else the DOM text; without the
 /// final newline (GH §9 `RAW`).
-fn clipboard_text(cursor: &mut HintCursor<'_>, node: &NodeRef) -> String {
+/// The clipboard text of a code block, and the info-string language of the source block it
+/// was matched to.
+fn clipboard_text<'h>(
+    cursor: &mut HintCursor<'_>,
+    langs: &'h [String],
+    node: &NodeRef,
+) -> (String, Option<&'h str>) {
     let dom = code_text(node);
     let mut raw = cursor.code(&dom).map_or(dom, str::to_owned);
     if raw.ends_with('\n') {
         raw.pop();
     }
-    raw
+    let lang = cursor.last.and_then(|i| langs.get(i)).map(String::as_str);
+    (raw, lang)
 }
 
 /// Clipboard wrappers as stored by GitHub (GH §2.4, §5.3).
@@ -1832,9 +1882,12 @@ fn clipboard_wrappers(doc: &Document, hints: &SourceHints) {
         if div.has_attr("data-snippet-clipboard-copy-content") {
             continue;
         }
-        let raw = clipboard_text(&mut cursor, div);
+        let (raw, lang) = clipboard_text(&mut cursor, &hints.code_langs, div);
         add_classes(div, &["notranslate", "position-relative", "overflow-auto"]);
         div.set_attr("data-snippet-clipboard-copy-content", &raw);
+        if let Some(lang) = lang {
+            div.set_attr("data-mdr-key", &hash::mdr_key(&["code", lang, &raw]));
+        }
     }
     let mut cursor = HintCursor::new(&hints.code);
     for pre in doc.select("pre").nodes().iter() {
@@ -1850,10 +1903,18 @@ fn clipboard_wrappers(doc: &Document, hints: &SourceHints) {
         if skip {
             continue;
         }
-        let raw = clipboard_text(&mut cursor, pre);
+        let (raw, hint_lang) = clipboard_text(&mut cursor, &hints.code_langs, pre);
+        // As offline: the `pre`'s `lang` (the info-string language of an unknown language, or
+        // a raw HTML `<pre lang>`), else the source block's (empty for a plain block).
+        let lang = pre
+            .attr("lang")
+            .map(|v| v.to_string())
+            .or_else(|| hint_lang.map(str::to_owned))
+            .unwrap_or_default();
         let wrapper = format!(
-            r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="{}">{}</div>"#,
+            r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="{}" data-mdr-key="{}">{}</div>"#,
             html::attr(&raw),
+            hash::mdr_key(&["code", &lang, &raw]),
             pre.html()
         );
         pre.replace_with_html(wrapper);
@@ -1911,7 +1972,8 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
         add_classes(pre, &["code-syntax-highlight-theme"]);
     }
 
-    set_mdr_keys(&doc, ".js-render-math, div.markdown-code-block");
+    // The offline renderer's keys, computed by the same function.
+    super::gitlab::add_mdr_keys(&doc.html_root());
     let features = Features {
         math: doc.select(".js-render-math").exists(),
         mermaid: doc.select(".js-render-mermaid").exists(),
@@ -2945,7 +3007,7 @@ mod tests {
             html.contains(r#"<pre class="notranslate"><code>plain "q""#),
             "{html}"
         );
-        let stable = &sha256_hex(b"path:/a/README.md")[..32];
+        let stable = &hash::sha256_hex(b"path:/a/README.md")[..32];
         assert!(!html.contains("0123456789abcdef0123456789abcdef"), "{html}");
         assert!(
             html.contains(&format!("user-content-fn-1-{stable}"))
@@ -3158,6 +3220,62 @@ mod tests {
             &SourceHints::default(),
         );
         assert!(again.html.contains(&id));
+    }
+
+    /// The `data-mdr-key` values of `html`, in document order.
+    fn mdr_keys(html: &str) -> Vec<String> {
+        let doc = Document::fragment(html);
+        doc.select("[data-mdr-key]")
+            .nodes()
+            .iter()
+            .map(|n| n.attr("data-mdr-key").unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn github_api_keys_match_offline_keys() {
+        let md = concat!(
+            "```rust\nfn a() {}\n```\n\n",
+            "```\nplain\n```\n\n",
+            "```foo\nx\n```\n\n",
+            "Math $x^2$ inline.\n\n",
+            "$$\ny\n$$\n\n",
+            "```math\nz\n```\n\n",
+            "```mermaid\ngraph TD\n```\n",
+        );
+        // What `POST /markdown` (mode=gfm, no context) returns for it.
+        let api = concat!(
+            "<div class=\"highlight highlight-source-rust\"><pre class=\"notranslate\"><span class=\"pl-k\">fn</span> <span class=\"pl-en\">a</span>() {}\n</pre></div>\n",
+            "<pre class=\"notranslate\"><code class=\"notranslate\">plain\n</code></pre>\n",
+            "<pre lang=\"foo\" class=\"notranslate\"><code class=\"notranslate\">x\n</code></pre>\n",
+            "<p>Math <math-renderer class=\"js-inline-math\" style=\"display: inline-block\" data-run-id=\"0123456789abcdef0123456789abcdef\">$x^2$</math-renderer> inline.</p>\n",
+            "<math-renderer class=\"js-display-math\" style=\"display: block\" data-run-id=\"0123456789abcdef0123456789abcdef\">$$\ny\n$$</math-renderer>\n",
+            "<math-renderer class=\"js-display-math\" style=\"display: block\" data-run-id=\"0123456789abcdef0123456789abcdef\">$$z$$</math-renderer>\n",
+            "<div class=\"highlight highlight-source-mermaid\"><pre class=\"notranslate\">graph TD\n</pre></div>\n",
+        );
+        let offline = super::super::github::render(md, &opts(Flavor::Github, Mode::Readme, None));
+        let online =
+            postprocess_github(api, Mode::Readme, "stdin", &SourceHints::from_markdown(md));
+        let want = mdr_keys(&offline.html);
+        assert_eq!(want.len(), 7, "{}", offline.html);
+        assert_eq!(mdr_keys(&online.html), want, "{}", online.html);
+    }
+
+    #[test]
+    fn gitlab_api_keys_match_offline_keys() {
+        let md = "```rust\nfn a() {}\n```\n\nMath $`x`$.\n";
+        let offline = super::super::gitlab::render(md, &opts(Flavor::Gitlab, Mode::Readme, None));
+        let want = mdr_keys(&offline.html);
+        assert_eq!(want.len(), 2, "{}", offline.html);
+        // The offline output is the post-JavaScript DOM GitLab's API output turns into; its
+        // keys are computed by the same function.
+        let stripped = Document::fragment(offline.html.as_str());
+        for n in stripped.select("[data-mdr-key]").nodes().iter() {
+            n.remove_attr("data-mdr-key");
+        }
+        let api = stripped.html_root().inner_html().to_string();
+        let online = postprocess_gitlab(&api, "https://gitlab.com", "");
+        assert_eq!(mdr_keys(&online.html), want, "{}", online.html);
     }
 
     #[test]

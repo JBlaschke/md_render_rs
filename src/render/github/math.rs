@@ -16,8 +16,8 @@
 
 use dom_query::{Document, NodeRef};
 
-use super::util::mdr_key;
 use super::{Ctx, dom};
+use crate::hash::mdr_key;
 use crate::html::push_text;
 
 /// `<math-renderer>` markup as a string; `delim` is `$` or `$$`, `display` picks the class.

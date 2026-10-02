@@ -36,6 +36,7 @@ use dom_query::{Document, NodeData};
 
 use super::{Features, RenderOptions, Rendered};
 use crate::flavor::Mode;
+use crate::hash;
 
 /// Attribute marking formatter-generated elements for the sanitizer (removed by it).
 const MARK_ATTR: &str = "data-mdr-g";
@@ -67,12 +68,12 @@ impl Ctx {
         // stable across live reloads, so they derive from the file path when there is one
         // (GH §8.4 "emulate with a deterministic value"); stdin input uses its content.
         let run_id = match &opts.source_path {
-            Some(p) => {
-                util::hex(&util::digest(&["md-render/github/run-id", &p.to_string_lossy()])[..16])
-            }
-            None => util::hex(&util::digest(&["md-render/github/run-id", src])[..16]),
+            Some(p) => hash::hex(
+                &hash::sha256_parts(&["md-render/github/run-id", &p.to_string_lossy()])[..16],
+            ),
+            None => hash::hex(&hash::sha256_parts(&["md-render/github/run-id", src])[..16]),
         };
-        let token = util::hex(&util::digest(&["md-render/github/marker", src])[..8]);
+        let token = hash::hex(&hash::sha256_parts(&["md-render/github/marker", src])[..8]);
         Ctx {
             comment: opts.mode == Mode::Comment,
             sourcepos: opts.sourcepos,

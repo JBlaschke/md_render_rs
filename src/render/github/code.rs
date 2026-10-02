@@ -9,7 +9,8 @@ use super::Ctx;
 use super::dom;
 use super::math::math_html;
 use super::octicons;
-use super::util::{mdr_key, uuid_like};
+use super::util::uuid_like;
+use crate::hash::mdr_key;
 use crate::html::{push_attr, push_text};
 use crate::render::highlight;
 

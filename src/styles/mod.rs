@@ -17,6 +17,7 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 
 use crate::flavor::Flavor;
+use crate::hash::sha256_hex;
 
 pub mod manifest;
 pub mod vendor;
@@ -97,19 +98,6 @@ fn read_bundle_file(path: &Path) -> std::io::Result<Vec<u8>> {
         return Err(too_large());
     }
     Ok(gz)
-}
-
-/// Lowercase hex SHA-256 of `bytes`.
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest as _, Sha256};
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
-    let mut s = String::with_capacity(64);
-    for &b in digest.iter() {
-        s.push(char::from(DIGITS[usize::from(b >> 4)]));
-        s.push(char::from(DIGITS[usize::from(b & 0xf)]));
-    }
-    s
 }
 
 /// Check one flavor's manifest entry against the archive: every path lives below `<flavor>/`
