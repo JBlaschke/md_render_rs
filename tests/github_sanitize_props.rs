@@ -417,6 +417,52 @@ fn generated_documents_are_sanitized() {
     }
 }
 
+/// Styles the renderer writes itself; any other `style` value came from raw input.
+const OWN_STYLES: &[&str] = &[
+    "max-width: 100%",
+    "display: block",
+    "display: inline-block",
+    "background-color: ",
+    "min-height:100px",
+    "box-sizing: content-box",
+];
+
+/// Runs the invariants over every `.md` file in `$MD_RENDER_PROP_CORPUS` (for example a
+/// fuzzer's output directory), with a stricter style check: every `style` value must be one
+/// the renderer writes itself. Skipped when the variable is unset.
+#[test]
+fn corpus_is_sanitized() {
+    let Some(dir) = std::env::var_os("MD_RENDER_PROP_CORPUS") else {
+        eprintln!("corpus_is_sanitized: SKIPPED (set MD_RENDER_PROP_CORPUS)");
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("corpus directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    files.sort();
+    for path in &files {
+        let input = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+        for mode in [Mode::Readme, Mode::Comment] {
+            for sp in [false, true] {
+                let html = github::render(&input, &opts(mode, sp)).html;
+                check(&input, &html);
+                let doc = Document::fragment(html.as_str());
+                for el in doc.select("[style]").nodes() {
+                    let style = el.attr("style").map(|s| s.to_string()).unwrap_or_default();
+                    assert!(
+                        OWN_STYLES.iter().any(|s| style.starts_with(s)),
+                        "foreign style {style:?} in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("corpus_is_sanitized: {} files", files.len());
+}
+
 /// The specific vectors from GH-SEC-1 / GH-SEC-2, pinned so they always run.
 #[test]
 fn known_vectors_are_sanitized() {
