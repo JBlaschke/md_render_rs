@@ -23,7 +23,11 @@ pub struct Manifest {
 
 impl Default for Manifest {
     fn default() -> Self {
-        Manifest { schema: SCHEMA, tool: crate::TOOL.to_owned(), flavors: BTreeMap::new() }
+        Manifest {
+            schema: SCHEMA,
+            tool: crate::TOOL.to_owned(),
+            flavors: BTreeMap::new(),
+        }
     }
 }
 
@@ -162,7 +166,9 @@ impl FlavorManifest {
     /// The stylesheet of `role` for theme id `theme` (e.g. GitHub `theme`/`dark_dimmed`,
     /// GitLab `app`/`dark`).
     pub fn themed_stylesheet(&self, role: &str, theme: &str) -> Option<&Stylesheet> {
-        self.stylesheets.iter().find(|s| s.role == role && s.theme.as_deref() == Some(theme))
+        self.stylesheets
+            .iter()
+            .find(|s| s.role == role && s.theme.as_deref() == Some(theme))
     }
 
     /// Whether theme id `theme` was vendored.
@@ -218,9 +224,12 @@ mod tests {
                     path: "gitlab/lib/katex/katex.min.js".into(),
                     ..Default::default()
                 }],
-                scripts: [(script::KATEX.to_owned(), "gitlab/lib/katex/katex.min.js".to_owned())]
-                    .into_iter()
-                    .collect(),
+                scripts: [(
+                    script::KATEX.to_owned(),
+                    "gitlab/lib/katex/katex.min.js".to_owned(),
+                )]
+                .into_iter()
+                .collect(),
                 themes: vec!["light".into(), "dark".into()],
                 ..Default::default()
             },
@@ -234,12 +243,16 @@ mod tests {
         let gl = &m.flavors[&Flavor::Gitlab];
         assert_eq!(gl.stylesheets_with_role(role::APP).count(), 2);
         assert_eq!(
-            gl.themed_stylesheet(role::APP, "dark").map(|s| s.path.as_str()),
+            gl.themed_stylesheet(role::APP, "dark")
+                .map(|s| s.path.as_str()),
             Some("gitlab/assets/application_dark-2.css")
         );
         assert!(gl.themed_stylesheet(role::APP, "dark_dimmed").is_none());
         assert!(gl.has_theme("light") && !gl.has_theme("sepia"));
-        assert_eq!(gl.script(script::KATEX), Some("gitlab/lib/katex/katex.min.js"));
+        assert_eq!(
+            gl.script(script::KATEX),
+            Some("gitlab/lib/katex/katex.min.js")
+        );
         assert_eq!(m.paths().count(), 5);
     }
 
@@ -256,7 +269,10 @@ mod tests {
         assert!(!gh.fallback && gh.assets.is_empty() && gh.scripts.is_empty());
         assert_eq!(gh.stylesheets[0].media, None);
         let back = serde_json::to_value(&m).expect("serialize");
-        assert_eq!(back["flavors"]["github"]["stylesheets"][0]["theme"], "light");
+        assert_eq!(
+            back["flavors"]["github"]["stylesheets"][0]["theme"],
+            "light"
+        );
         assert_eq!(back["schema"], SCHEMA);
     }
 }

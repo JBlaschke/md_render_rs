@@ -6,7 +6,17 @@ use serde::{Deserialize, Serialize};
 
 /// Which site's rendering and styles to reproduce.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    clap::ValueEnum,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Flavor {
@@ -32,7 +42,9 @@ impl fmt::Display for Flavor {
 }
 
 /// Rendering context: a repository README/file view, or a comment/issue body.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
@@ -50,7 +62,9 @@ impl Mode {
 }
 
 /// Color theme selection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
     /// Follow the OS (prefers-color-scheme).
@@ -81,6 +95,10 @@ pub struct ThemeSel {
 
 impl Default for ThemeSel {
     fn default() -> Self {
-        ThemeSel { theme: Theme::Auto, light: "light".into(), dark: "dark".into() }
+        ThemeSel {
+            theme: Theme::Auto,
+            light: "light".into(),
+            dark: "dark".into(),
+        }
     }
 }
