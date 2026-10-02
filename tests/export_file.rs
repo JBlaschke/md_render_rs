@@ -58,6 +58,7 @@ impl Setup {
             title: None,
             context: Some("owner/repo".into()),
             bundle_path: self.bundle.clone(),
+            extra_css: Vec::new(),
             renderer,
             quiet: true,
         }
@@ -450,5 +451,91 @@ fn relative_document_urls_follow_the_output_directory() {
                 }
             }
         }
+    }
+}
+
+/// CLI-12: `--css` applies to exports. A local file is embedded after the site CSS (with the
+/// files it references as data: URIs, so the export does not depend on the file staying where
+/// it is), in both asset modes; a URL is linked.
+#[test]
+fn extra_css_is_embedded_or_linked() {
+    let s = Setup::new();
+    let md = s.markdown("doc.md", "# Doc\n\nText.\n");
+    std::fs::create_dir_all(s.path("css/img")).unwrap();
+    let css_path = s.path("css/extra.css");
+    std::fs::write(
+        &css_path,
+        "@import \"more.css\";\n.markdown-body{color:rgb(1,2,3)}\n\
+         h1{background:url(img/bg.gif)} h2{background:url(https://example.com/x.png)}\n\
+         h3{background:url(img/missing.png)} a::after{content:\"url(img/bg.gif)\"}",
+    )
+    .unwrap();
+    std::fs::write(s.path("css/more.css"), "p{color:rgb(4,5,6)}").unwrap();
+    std::fs::write(s.path("css/img/bg.gif"), GIF).unwrap();
+    std::fs::create_dir_all(s.path("out")).unwrap();
+    let remote = "https://example.com/theme.css".to_owned();
+    for inline in [true, false] {
+        let out = s.path(&format!("out/doc-{inline}.html"));
+        let mut cfg = s.config(
+            ExportInput::File(md.clone()),
+            ExportOutput::File(out.clone()),
+            Arc::new(OfflineRenderer),
+        );
+        cfg.inline = inline;
+        cfg.extra_css = vec![css_path.to_string_lossy().into_owned(), remote.clone()];
+        export(&cfg).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        let doc = Document::from(html.as_str());
+        let ctx = format!("inline: {inline}");
+
+        let style = doc.select("style[data-mdr-style=extra]");
+        assert_eq!(style.length(), 1, "{ctx}");
+        assert_eq!(
+            style.attr("data-mdr-file").as_deref(),
+            Some("extra.css"),
+            "{ctx}"
+        );
+        let css = style.text().to_string();
+        assert!(css.contains(".markdown-body{color:rgb(1,2,3)}"), "{ctx}");
+        let urls = css_urls(&css);
+        assert_eq!(urls.len(), 3, "{ctx}: {css}");
+        assert!(urls[0].starts_with("data:image/gif;base64,"), "{ctx}");
+        assert_eq!(urls[1], "https://example.com/x.png", "{ctx}");
+        assert_eq!(
+            urls[2], "img/missing.png",
+            "{ctx}: missing files stay as written"
+        );
+        assert!(
+            css.contains("content:\"url(img/bg.gif)\""),
+            "{ctx}: strings are not references"
+        );
+        let import = css
+            .split("@import \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap();
+        assert!(
+            import.starts_with("data:text/css;base64,"),
+            "{ctx}: {import}"
+        );
+        assert!(
+            !html.contains(&*s.path("css").to_string_lossy()),
+            "{ctx}: no local path in the export"
+        );
+
+        let links: Vec<String> = doc
+            .select("link[data-mdr-style=extra]")
+            .nodes()
+            .iter()
+            .filter_map(|n| n.attr("href").map(|h| h.to_string()))
+            .collect();
+        assert_eq!(links, std::slice::from_ref(&remote), "{ctx}");
+        // After the site CSS: the extra stylesheets come last in <head>.
+        let head = doc.select("head").html().to_string();
+        let site = head.rfind("data-mdr-style=\"bundle\"").expect("site CSS");
+        assert!(
+            head.find("data-mdr-style=\"extra\"").unwrap() > site,
+            "{ctx}"
+        );
     }
 }

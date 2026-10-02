@@ -120,7 +120,9 @@ pub struct PageInput<'a> {
     pub live: Option<&'a LiveInfo>,
     /// Messages shown above the content, in this order.
     pub banners: &'a [Banner],
-    /// Extra stylesheet URLs (after the bundle CSS).
+    /// Extra stylesheets after the bundle CSS: URLs, linked. In the export modes an entry
+    /// may also be a local CSS file (as `--css FILE` gives), which is embedded in the page
+    /// together with the files it references.
     pub extra_css: &'a [String],
 }
 
@@ -149,7 +151,8 @@ fn gitlab_icon_sprite(bundle: &Bundle) -> Option<&str> {
 
 /// Build a complete HTML document.
 ///
-/// Fails only on I/O errors while copying files in [`AssetMode::Directory`].
+/// Fails only on I/O errors: copying files in [`AssetMode::Directory`], or reading a local
+/// extra stylesheet in the export modes.
 pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String> {
     let mut assets = Assets::new(input.assets, bundle);
     let manifest = bundle.flavor(input.flavor);
@@ -259,11 +262,8 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     head.push_str(&format!(
         "<style data-mdr-style=\"chrome\">\n{chrome_css}</style>\n"
     ));
-    for url in input.extra_css {
-        head.push_str(&format!(
-            "<link rel=\"stylesheet\" href=\"{}\" data-mdr-style=\"extra\">\n",
-            html::attr(url)
-        ));
+    for entry in input.extra_css {
+        assets.extra_stylesheet(&mut head, entry)?;
     }
 
     // ---- <html>

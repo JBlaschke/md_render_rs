@@ -4,6 +4,9 @@
 //! * `Directory`: files are copied into `dir` (bundle paths preserved, so the relative `url()`s
 //!   inside vendored CSS keep working, DESIGN D10) and linked through `href`;
 //! * `Inline`: CSS is inlined with every `url()` turned into a `data:` URI, scripts are inlined.
+//!
+//! In both export modes a local extra stylesheet (`--css FILE`) is embedded in the page, with
+//! the files it references as `data:` URIs; remote ones are linked.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,7 +15,7 @@ use std::rc::Rc;
 
 use anyhow::{Context as _, bail};
 use base64::Engine as _;
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 
 use super::AssetMode;
 use super::css::{self, BUNDLE_ROUTE, RefKind, Target};
@@ -125,6 +128,63 @@ fn data_uri(mime: &str, bytes: &[u8]) -> String {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
+}
+
+/// An extra stylesheet given as a URL (`http(s)://`, `//`, `data:`; the CLI's `--css` rule)
+/// rather than a local file.
+fn is_remote(entry: &str) -> bool {
+    let lower = entry.trim_start().to_ascii_lowercase();
+    ["http://", "https://", "//", "data:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+/// The local file a relative reference in the local stylesheet in `dir` names (query and
+/// fragment dropped, `%`-escapes decoded), if it is an existing regular file. Absolute and
+/// root-relative URLs, fragments and missing files give `None`.
+fn local_reference(dir: &Path, value: &str) -> Option<PathBuf> {
+    let v = value.trim();
+    if v.is_empty() || v.starts_with(['#', '/', '\\']) {
+        return None;
+    }
+    let v = &v[..v.find(['?', '#']).unwrap_or(v.len())];
+    // A `:` before the first `/` makes it an absolute URL (`https:`, `data:`).
+    if v.is_empty() || v.find(':').is_some_and(|colon| !v[..colon].contains('/')) {
+        return None;
+    }
+    let decoded = percent_decode_str(v).decode_utf8().ok()?;
+    let file = dir.join(decoded.as_ref());
+    file.is_file().then_some(file)
+}
+
+/// The text of the local stylesheet `path` for embedding in an export: every relative
+/// `url()` / `@import` naming an existing file next to it becomes a `data:` URI (imported
+/// stylesheets recursively, up to [`MAX_CSS_DEPTH`]); everything else stays as written.
+fn embed_local_css(path: &Path, text: &str, depth: usize) -> String {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    css::rewrite(text, |kind, value| {
+        let file = local_reference(dir, value)?;
+        let bytes = match fs::read(&file) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(path = %file.display(), error = %e, "cannot read a file referenced by --css; left as is");
+                return None;
+            }
+        };
+        let name = file.to_string_lossy();
+        if kind == RefKind::Import || is_css(&name) {
+            if depth >= MAX_CSS_DEPTH {
+                return None;
+            }
+            let inner = embed_local_css(&file, &String::from_utf8_lossy(&bytes), depth + 1);
+            return Some(data_uri("text/css", inner.as_bytes()));
+        }
+        let uri = data_uri(&mime_of(&name), &bytes);
+        Some(match value.split_once('#') {
+            Some((_, fragment)) => format!("{uri}#{fragment}"),
+            None => uri,
+        })
+    })
 }
 
 fn write_file(dir: &Path, rel: &str, bytes: &[u8]) -> anyhow::Result<()> {
@@ -380,6 +440,38 @@ impl<'a> Assets<'a> {
         }
     }
 
+    /// Emit an extra stylesheet (`--css`) after the site CSS: a `<link>` for URLs (and for
+    /// everything when serving: the server passes its own URLs); in the export modes, an
+    /// existing local file is embedded as `<style>` instead (see [`embed_local_css`]), so the
+    /// export does not depend on a path of the machine it was made on.
+    ///
+    /// # Errors
+    /// A local file that exists but cannot be read.
+    pub(crate) fn extra_stylesheet(&mut self, out: &mut String, entry: &str) -> anyhow::Result<()> {
+        const ATTRS: &str = " data-mdr-style=\"extra\"";
+        let local = Path::new(entry);
+        if matches!(self.mode, AssetMode::Server { .. }) || is_remote(entry) || !local.is_file() {
+            out.push_str(&format!(
+                "<link rel=\"stylesheet\" href=\"{}\"{ATTRS}>\n",
+                html::attr(entry)
+            ));
+            return Ok(());
+        }
+        let bytes =
+            fs::read(local).with_context(|| format!("reading --css {}", local.display()))?;
+        let css = embed_local_css(local, &String::from_utf8_lossy(&bytes), 0);
+        let name = local
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<style{ATTRS} data-mdr-file=\"{}\">\n{}\n</style>\n",
+            html::attr(&name),
+            html::inline_style(&css)
+        ));
+        Ok(())
+    }
+
     /// Emit an embedded stylesheet from `crate::assets` (the fallback CSS when the bundle has
     /// no entry for a flavor at all).
     pub(crate) fn embedded_stylesheet(
@@ -553,6 +645,34 @@ mod tests {
         assert_eq!(woff2_sibling("k/f.woff2"), None);
         assert_eq!(woff2_sibling("k/f.png"), None);
         assert_eq!(woff2_sibling("noext"), None);
+    }
+
+    #[test]
+    fn local_extra_css_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("img")).unwrap();
+        fs::write(tmp.path().join("img/a b.png"), b"x").unwrap();
+        let r = |v: &str| local_reference(tmp.path(), v);
+        assert_eq!(
+            r("img/a%20b.png?v=1#f"),
+            Some(tmp.path().join("img/a b.png"))
+        );
+        assert_eq!(r("./img/a b.png"), Some(tmp.path().join("./img/a b.png")));
+        for none in [
+            "img/missing.png",
+            "img",
+            "",
+            "#f",
+            "/img/a b.png",
+            "//cdn/x.png",
+            "https://e.com/x.png",
+            "data:image/png;base64,AA",
+            "c:x.png",
+        ] {
+            assert_eq!(r(none), None, "{none}");
+        }
+        assert!(is_remote("HTTPS://e.com/x.css") && is_remote("//e.com/x.css"));
+        assert!(is_remote("data:text/css,a{}") && !is_remote("/home/u/x.css"));
     }
 
     #[test]

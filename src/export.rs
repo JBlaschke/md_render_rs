@@ -62,6 +62,10 @@ pub struct ExportConfig {
     pub context: Option<String>,
     /// Style bundle; a missing or broken bundle falls back to the embedded CSS (with a warning).
     pub bundle_path: PathBuf,
+    /// Extra stylesheets after the site CSS (`--css`, in order): URLs (`http(s)://`, `//`,
+    /// `data:`) are linked; local CSS files are embedded in the page, with the files their
+    /// relative `url()`s / `@import`s name as `data:` URIs, in both asset modes.
+    pub extra_css: Vec<String>,
     /// Offline or API renderer.
     pub renderer: Arc<dyn Renderer>,
     /// Suppress the progress message and style warnings on stderr.
@@ -179,7 +183,7 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         assets: &assets,
         live: None,
         banners: &[],
-        extra_css: &[],
+        extra_css: &cfg.extra_css,
     };
     let page = render_page(&input, &bundle)?;
 
