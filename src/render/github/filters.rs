@@ -145,6 +145,17 @@ fn would_camo(url: &str) -> bool {
     })
 }
 
+/// Whether github.com gives a sized `<img>` its loading placeholder (`js-gh-image-fallback`,
+/// aspect ratio, muted background, rounded corners): only images served from another host,
+/// i.e. camo-proxied ones and `*.githubusercontent.com` (GH-IMG-1, `cases2/img_wh.gh.html`).
+/// Relative, root-relative and `github.com` images, and images without a usable `src`, get
+/// the plain size style; a transparent logo would otherwise sit on a grey box.
+fn has_image_fallback(src: &str) -> bool {
+    would_camo(src)
+        || ((src.starts_with("http://") || src.starts_with("https://"))
+            && url_host(src).is_some_and(|h| h.ends_with(".githubusercontent.com")))
+}
+
 /// `https://github.com/O/R/blob/REF/path` image URLs are served from `/raw/` in the README /
 /// file context (GH §2.3; `S/ctx/rhysd_*`, `S/pages/lifeparticle_*`). Comments keep them
 /// (API probe with context, 2026-10-01).
@@ -208,13 +219,21 @@ pub(super) fn images(doc: &Document, ctx: &Ctx) {
         };
         if numeric(&w) && numeric(&h) {
             let (w, h) = (w.unwrap_or_default(), h.unwrap_or_default());
-            img.set_attr(
-                "style",
-                &format!(
-                    "max-width: 100%; height: auto; max-height: {h}px;; aspect-ratio: {w} / {h}; background-color: var(--bgColor-muted); border-radius: 6px"
-                ),
-            );
-            img.add_class("js-gh-image-fallback");
+            let final_src = img.attr("src").map(|s| s.to_string()).unwrap_or_default();
+            if has_image_fallback(&final_src) {
+                img.set_attr(
+                    "style",
+                    &format!(
+                        "max-width: 100%; height: auto; max-height: {h}px;; aspect-ratio: {w} / {h}; background-color: var(--bgColor-muted); border-radius: 6px"
+                    ),
+                );
+                img.add_class("js-gh-image-fallback");
+            } else {
+                img.set_attr(
+                    "style",
+                    &format!("max-width: 100%; height: auto; max-height: {h}px;"),
+                );
+            }
         } else {
             img.set_attr("style", "max-width: 100%;");
         }
@@ -477,6 +496,61 @@ mod tests {
             out,
             r#"<themed-picture data-catalyst-inline="true"><picture><source srcset="a.png"><img src="b.png"></picture></themed-picture>"#
         );
+    }
+
+    /// GH-IMG-1: the sized-image placeholder style is only for images from another host
+    /// (`cases2/img_wh.gh.html`, `gh api /markdown` gfm + context; offline we keep the
+    /// original URL where github.com shows the camo one).
+    #[test]
+    fn image_fallback_only_for_external_hosts() {
+        let plain = |h: u32| format!("max-width: 100%; height: auto; max-height: {h}px;");
+        let fallback = |w: u32, h: u32| {
+            format!(
+                "{}; aspect-ratio: {w} / {h}; background-color: var(--bgColor-muted); border-radius: 6px\" class=\"js-gh-image-fallback",
+                plain(h)
+            )
+        };
+        for (src, external) in [
+            ("x.png", false),
+            ("/abs/x.png", false),
+            ("https://example.com/a.png", true),
+            ("https://github.com/a.png", false),
+            ("https://gist.github.com/a.png", false),
+            ("https://raw.githubusercontent.com/o/r/main/a.png", true),
+            ("https://user-images.githubusercontent.com/1/a.png", true),
+            ("https://github.com/o/r/blob/main/a.png", false),
+            ("javascript:x", false),
+            ("//example.com/a.png", false),
+        ] {
+            for ctx in [Ctx::for_tests(false), Ctx::for_tests(true)] {
+                let out = apply(
+                    &format!(r#"<p><img src="{src}" width="10" height="20"></p>"#),
+                    |d| images(d, &ctx),
+                );
+                let style = if external {
+                    fallback(10, 20)
+                } else {
+                    plain(20)
+                };
+                assert!(out.contains(&format!("style=\"{style}\"")), "{src}: {out}");
+                assert_eq!(
+                    out.contains("js-gh-image-fallback"),
+                    external,
+                    "{src}: {out}"
+                );
+            }
+        }
+        // No `src` at all, and a non-numeric size.
+        let out = apply(r#"<p><img width="10" height="20"></p>"#, readme_images);
+        assert_eq!(
+            out,
+            format!(
+                r#"<p><a target="_blank" rel="noopener noreferrer" href=""><img width="10" height="20" style="{}"></a></p>"#,
+                plain(20)
+            )
+        );
+        let out = apply(r#"<p><img src="x.png" width="10"></p>"#, readme_images);
+        assert!(out.contains(r#"style="max-width: 100%;""#), "{out}");
     }
 
     #[test]
