@@ -400,3 +400,48 @@ fn gitlab_math_time_budget_applies_per_page() {
 };"#,
     );
 }
+
+/// PAGE-2: in a self-contained GitLab export the copy button draws GitLab's own
+/// copy-to-clipboard icon from the symbol the page carries (like a served page does from the
+/// sprite file), not the Octicon fallback; without a vendored sprite the fallback stays.
+#[test]
+fn gitlab_inline_export_copy_button_uses_the_gitlab_icon() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1.css",
+            "app",
+            Some("light"),
+            ".md{}",
+        )
+        .asset(
+            Flavor::Gitlab,
+            "gitlab/assets/icons-0123abcd.svg",
+            page_support::GITLAB_SPRITE,
+        )
+        .open(dir.path());
+    let code = "# T\n\n```rust\nfn main() {}\n```\n";
+    let with_sprite = page(Flavor::Gitlab, code, &bundle, AssetMode::Inline);
+    run_scenario(
+        "gitlab_inline_export_copy_button_uses_the_gitlab_icon",
+        &with_sprite,
+        r##"module.exports = { async run(window, t) {
+  const d = window.document;
+  const button = d.querySelector('copy-code button');
+  t.ok(button, 'a copy button');
+  const html = button ? button.innerHTML : '';
+  t.ok(/<use href="#copy-to-clipboard"/.test(html), 'GitLab icon from the in-page symbol: ' + html);
+  t.ok(d.getElementById('copy-to-clipboard'), 'the symbol is in the page');
+} };"##,
+    );
+    let fallback = page(Flavor::Gitlab, code, &Bundle::fallback(), AssetMode::Inline);
+    run_scenario(
+        "gitlab_inline_export_copy_button_without_sprite",
+        &fallback,
+        r##"module.exports = { async run(window, t) {
+  const html = window.document.querySelector('copy-code button').innerHTML;
+  t.ok(/M0 6\.75C0 5\.784/.test(html) && !/<use/.test(html), 'Octicon fallback: ' + html);
+} };"##,
+    );
+}

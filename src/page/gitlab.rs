@@ -2,12 +2,18 @@
 //! viewer template (GL §12), the approximate note wrapper for `--mode comment` (DESIGN D16),
 //! banners (`.gl-alert`, CQ §3.7) and listing / error fragments.
 
+use std::sync::OnceLock;
+
+use regex::Regex;
+
 use super::octicons::{self, Icon};
 use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, html, human_size, reason};
 use crate::flavor::{Mode, Theme};
 
 /// The `<html>` start tag: `gl-system` / `gl-light` / `gl-dark` plus `ui-neutral` (the
-/// neutral palette tokens are scoped to `:root.ui-neutral`, GL §11.3).
+/// neutral palette tokens are scoped to `:root.ui-neutral`, GL §11.3). `icon_sprite` is the
+/// URL of GitLab's icon sprite for the copy button, `""` when its icon is in the page itself
+/// ([`inline_copy_icon`]).
 pub(crate) fn html_open(theme: Theme, icon_sprite: Option<&str>) -> String {
     let mode = match theme {
         Theme::Auto => "gl-system",
@@ -18,6 +24,69 @@ pub(crate) fn html_open(theme: Theme, icon_sprite: Option<&str>) -> String {
         .map(|s| format!(" data-icon-sprite=\"{}\"", html::attr(s)))
         .unwrap_or_default();
     format!("<html class=\"{mode} ui-neutral\" lang=\"en\"{sprite}>\n")
+}
+
+/// Id of the copy-button icon in GitLab's icon sprite (GL §10.4, `copy_code.js`).
+pub(crate) const COPY_ICON_ID: &str = "copy-to-clipboard";
+
+/// A self-contained page cannot reference the vendored sprite file, so the copy-button icon is
+/// copied into the page: the `copy-to-clipboard` `<symbol>` of `sprite`, rebuilt from its
+/// `viewBox` and the geometry of its `<path>`s only (the sprite is downloaded content), inside
+/// a hidden `<svg>`. With `data-icon-sprite=""` on `<html>`, gitlab.js then draws the button
+/// with `<use href="#copy-to-clipboard">` like a served page. `None` when the sprite has no
+/// such symbol.
+pub(crate) fn inline_copy_icon(sprite: &[u8]) -> Option<String> {
+    static SYMBOL: OnceLock<Regex> = OnceLock::new();
+    static PATH: OnceLock<Regex> = OnceLock::new();
+    static ATTR: OnceLock<Regex> = OnceLock::new();
+    let symbol = SYMBOL.get_or_init(|| {
+        Regex::new(r#"(?s)<symbol\b([^>]*\bid="copy-to-clipboard"[^>]*)>(.*?)</symbol>"#)
+            .expect("valid regex")
+    });
+    let path = PATH.get_or_init(|| Regex::new(r"<path\b([^>]*?)/?>").expect("valid regex"));
+    let attr = ATTR.get_or_init(|| {
+        Regex::new(r#"(?:^|\s)(viewBox|d|fill-rule|clip-rule)="([^"]*)""#).expect("valid regex")
+    });
+    let text = std::str::from_utf8(sprite).ok()?;
+    let caps = symbol.captures(text)?;
+    let geometry = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || " .,-+\t\n\r".contains(c))
+    };
+    let view_box = attr
+        .captures_iter(&caps[1])
+        .find(|a| &a[1] == "viewBox")
+        .map(|a| a[2].to_owned())
+        .filter(|v| geometry(v))
+        .unwrap_or_else(|| "0 0 16 16".to_owned());
+    let mut paths = String::new();
+    for p in path.captures_iter(&caps[2]) {
+        let mut out = String::from("<path");
+        let mut has_d = false;
+        for a in attr.captures_iter(&p[1]) {
+            let ok = match &a[1] {
+                "d" => geometry(&a[2]),
+                "fill-rule" | "clip-rule" => matches!(&a[2], "nonzero" | "evenodd"),
+                _ => false,
+            };
+            if ok {
+                has_d |= &a[1] == "d";
+                out.push_str(&format!(" {}=\"{}\"", &a[1], &a[2]));
+            }
+        }
+        if has_d {
+            out.push_str("/>");
+            paths.push_str(&out);
+        }
+    }
+    (!paths.is_empty()).then(|| {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\" width=\"0\" height=\"0\" \
+             style=\"position:absolute;width:0;height:0;overflow:hidden\">\
+             <symbol id=\"{COPY_ICON_ID}\" viewBox=\"{view_box}\">{paths}</symbol></svg>\n"
+        )
+    })
 }
 
 /// `<head>` elements that must precede the stylesheets: the `color-scheme` meta and, in
@@ -198,6 +267,33 @@ mod tests {
         assert!(html_open(Theme::Auto, None).starts_with("<html class=\"gl-system ui-neutral\""));
         assert!(html_open(Theme::Light, None).contains("gl-light ui-neutral"));
         assert!(html_open(Theme::Dark, Some("/s.svg")).contains("data-icon-sprite=\"/s.svg\""));
+    }
+
+    #[test]
+    fn copy_icon_is_rebuilt_from_the_sprite() {
+        let sprite = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><symbol viewBox="0 0 16 16" id="abuse"><path d="M1 1"/></symbol><symbol viewBox="0 0 16 16" id="copy-to-clipboard" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2z"/></symbol><symbol id="copy-to-clipboard-2"><path d="M2 2"/></symbol></svg>"#;
+        let svg = inline_copy_icon(sprite).unwrap();
+        assert_eq!(
+            svg,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\" width=\"0\" height=\"0\" \
+             style=\"position:absolute;width:0;height:0;overflow:hidden\"><symbol id=\"copy-to-clipboard\" \
+             viewBox=\"0 0 16 16\"><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" \
+             d=\"M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2z\"/></symbol></svg>\n"
+        );
+        // Only geometry survives.
+        let hostile = br#"<svg><symbol id="copy-to-clipboard" viewBox="0 0 16 16" onload="x()"><script>alert(1)</script><path onclick="x()" d="M0 0h1" style="fill:url(javascript:x)"/><path d="M0 0&quot;/><script>"/><foreignObject><path d="M1 1"/></foreignObject></symbol></svg>"#;
+        let svg = inline_copy_icon(hostile).unwrap();
+        assert!(!svg.contains("script") && !svg.contains("onload") && !svg.contains("onclick"));
+        assert!(!svg.contains("style=\"fill") && !svg.contains("&quot;"));
+        assert!(svg.contains("<path d=\"M0 0h1\"/>"), "{svg}");
+        assert_eq!(
+            inline_copy_icon(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            None
+        );
+        assert_eq!(
+            inline_copy_icon(br#"<svg><symbol id="copy-to-clipboard"></symbol></svg>"#),
+            None
+        );
     }
 
     #[test]

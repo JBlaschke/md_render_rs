@@ -436,3 +436,57 @@ fn error_fragment() {
         "outside the served root"
     );
 }
+
+/// PAGE-2: a self-contained GitLab export carries GitLab's own copy-to-clipboard icon (served
+/// and `--no-inline` pages reference the vendored sprite) instead of falling back to the
+/// Octicon; a sprite without that symbol keeps the fallback.
+#[test]
+fn inline_export_carries_the_copy_icon() {
+    let dir = tempfile::tempdir().unwrap();
+    let with_sprite = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1.css",
+            "app",
+            Some("light"),
+            ".md{}",
+        )
+        .asset(
+            Flavor::Gitlab,
+            "gitlab/assets/icons-0123abcd.svg",
+            GITLAB_SPRITE,
+        )
+        .open(dir.path());
+    let mut page = Page::new(Flavor::Gitlab);
+    page.assets = md_render::page::AssetMode::Inline;
+    let html = page.render(&with_sprite);
+    assert_self_contained(&html);
+    let doc = Document::from(html.as_str());
+    assert_eq!(attr(&doc, "html", "data-icon-sprite").as_deref(), Some(""));
+    let symbol = doc.select("body > svg[aria-hidden] > symbol");
+    assert_eq!(symbol.length(), 1, "only the copy icon is carried");
+    assert_eq!(symbol.attr("id").as_deref(), Some("copy-to-clipboard"));
+    assert!(html.contains("<symbol id=\"copy-to-clipboard\" viewBox=\"0 0 16 16\">"));
+    assert!(html.contains(
+        "d=\"M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2V9.5z\""
+    ));
+    assert!(!html.contains("id=\"abuse\""));
+
+    // Served pages reference the sprite and carry no icons.
+    page.assets = server();
+    let html = page.render(&with_sprite);
+    let doc = Document::from(html.as_str());
+    assert_eq!(
+        attr(&doc, "html", "data-icon-sprite").as_deref(),
+        Some("/__/md-render/bundle/gitlab/assets/icons-0123abcd.svg")
+    );
+    assert!(!html.contains("<symbol"));
+
+    // The test bundle's sprite has no such symbol: no attribute, so gitlab.js uses its fallback.
+    let (_dir, full) = bundle();
+    page.assets = md_render::page::AssetMode::Inline;
+    let html = page.render(&full);
+    let doc = Document::from(html.as_str());
+    assert_eq!(attr(&doc, "html", "data-icon-sprite"), None);
+    assert!(!html.contains("<symbol"));
+}

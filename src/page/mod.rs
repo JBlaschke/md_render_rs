@@ -322,12 +322,21 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     }
 
     // ---- <html>
+    // GitLab's copy button draws its icon from the vendored sprite; a self-contained export
+    // carries the one icon it needs instead (PAGE-2).
+    let mut inline_icons = None;
     let html_open = match input.flavor {
         Flavor::Github => github::html_open(input.theme.theme, &light, &dark),
         Flavor::Gitlab => {
             let sprite = match gitlab_icon_sprite(bundle) {
                 Some(path) if !assets.is_inline() => assets.bundle_url(path)?,
-                _ => None,
+                Some(path) => {
+                    inline_icons = bundle
+                        .read(path)
+                        .and_then(|svg| gitlab::inline_copy_icon(&svg));
+                    inline_icons.as_ref().map(|_| String::new())
+                }
+                None => None,
             };
             gitlab::html_open(color_mode, sprite.as_deref())
         }
@@ -386,6 +395,9 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     if input.flavor == Flavor::Github {
         out.push_str(&octicons::clipboard_template());
         out.push('\n');
+    }
+    if let Some(icons) = &inline_icons {
+        out.push_str(icons);
     }
     out.push_str(&format!(
         "<script id=\"mdr-config\" type=\"application/json\">{}</script>\n",

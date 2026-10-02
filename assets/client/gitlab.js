@@ -358,9 +358,11 @@
     '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>';
   var codeSeq = 0;
 
+  // data-icon-sprite: the URL of GitLab's sprite, or "" when the page carries the symbol
+  // itself (self-contained exports); absent without a vendored sprite.
   function iconMarkup() {
     var sprite = document.documentElement.getAttribute('data-icon-sprite');
-    if (!sprite) return COPY_ICON;
+    if (sprite === null || (!sprite && !document.getElementById('copy-to-clipboard'))) return COPY_ICON;
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 's16 gl-icon gl-button-icon');
     svg.setAttribute('aria-hidden', 'true');

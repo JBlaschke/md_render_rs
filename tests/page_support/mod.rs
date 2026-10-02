@@ -137,6 +137,9 @@ pub const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\
 pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png";
 pub const WOFF2: &[u8] = b"wOF2fake-font";
 
+/// GitLab's icon sprite as vendored: many symbols, the copy button's among them.
+pub const GITLAB_SPRITE: &[u8] = br#"<?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><symbol viewBox="0 0 16 16" id="abuse" xmlns="http://www.w3.org/2000/svg"><path d="M1 1h2"/></symbol><symbol viewBox="0 0 16 16" id="copy-to-clipboard" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2V9.5z"/></symbol></svg>"#;
+
 /// GitHub flavor in the shape vendoring produces (GH §4): theme files (deliberately listed out
 /// of cascade order), core files with every kind of `url()`, emoji, MathJax and mermaid.
 pub fn github(b: BundleBuilder) -> BundleBuilder {
