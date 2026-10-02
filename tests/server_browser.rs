@@ -546,3 +546,29 @@ async fn raw_documents_cannot_read_the_served_files() {
         "the page's own script runs",
     );
 }
+
+/// LIVE-9: an open directory listing shows new files, and turns into the README once one
+/// is created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn directory_listings_update_and_turn_into_the_readme() {
+    let Some(mut b) = Browser::launch("directory_listings_update_and_turn_into_the_readme") else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("nolist/x.md", "x");
+    let s = f.start(|_| {}).await;
+    let tab = b.open(&url(&s, "/nolist/"), false);
+    b.expect_connected(&tab);
+    write_atomic(&s.path("nolist/added.md"), "a");
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('added.md')",
+        "the new file is listed",
+    );
+    write_atomic(&s.path("nolist/README.md"), "the readme text");
+    b.expect(
+        &tab,
+        "document.getElementById('md-content')?.textContent.includes('the readme text')",
+        "the listing turns into the README",
+    );
+}

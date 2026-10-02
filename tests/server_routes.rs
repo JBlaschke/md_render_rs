@@ -414,10 +414,17 @@ async fn render_endpoint_reports_state_as_json() {
         "the page keeps the last good render"
     );
 
-    for bad in ["", "?path=", "?path=notes.txt", "?path=docs/"] {
+    for bad in ["", "?path=", "?path=notes.txt", "?path=README.md/"] {
         let r = s.get(&format!("/__/md-render/render{bad}")).await;
         assert_eq!(r.status, 400, "{bad}: {}", r.text());
     }
+    // A directory URL names its (live) listing: here one that does not exist.
+    let (status, v) = s.render_json("docs/").await;
+    assert_eq!(
+        (status, &v["deleted"]),
+        (404, &serde_json::json!(true)),
+        "{v}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -11,6 +11,10 @@
 //! `tokio::sync::watch` channel (page loads wait on it), events go out through a
 //! `tokio::sync::broadcast` channel shared by every subscriber, so all tabs showing the same
 //! document share one render.
+//!
+//! A directory listing is an entry too (key `dir/`, or `/` for the root; LIVE-9): its
+//! "render" is the listing fragment, re-computed when an entry of the directory changes, and
+//! a README appearing (the URL now shows the README instead) sends `reload`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -216,6 +220,8 @@ struct DocWatch {
     /// The canonical path the document will have once its missing directories exist; an
     /// event on any of its ancestors re-checks the document.
     pending: Option<PathBuf>,
+    /// A listed directory (canonical): an event on any of its entries re-checks.
+    children: Option<PathBuf>,
 }
 
 impl DocWatch {
@@ -243,12 +249,34 @@ impl DocWatch {
         w
     }
 
+    /// The watch for the directory listing of `path`: its own entry (as for a document, so
+    /// its deletion is seen) and the directory itself, for its entries.
+    fn of_listing(path: &Path, root: &Path, follow_symlinks: bool) -> DocWatch {
+        let mut w = if path == root {
+            DocWatch::default()
+        } else {
+            DocWatch::of(path, root, follow_symlinks)
+        };
+        if let Ok(canon) = std::fs::canonicalize(path)
+            && canon.is_dir()
+            && paths::check_contained(root, &canon, follow_symlinks).is_ok()
+        {
+            w.dirs.insert(canon.clone());
+            w.children = Some(canon);
+        }
+        w
+    }
+
     fn matches(&self, p: &Path) -> bool {
         // A directory-level event (rescan, a watched directory deleted) re-checks too; the
         // hash makes that cheap.
         self.files.contains(p)
             || self.dirs.contains(p)
             || self.pending.as_ref().is_some_and(|f| f.starts_with(p))
+            || self
+                .children
+                .as_ref()
+                .is_some_and(|d| p.parent() == Some(d.as_path()))
     }
 }
 
@@ -388,6 +416,21 @@ impl DocEntry {
         self.wake.notify_one();
     }
 
+    /// Is this the entry of a directory listing (key `dir/` or `/`)?
+    pub fn is_listing(&self) -> bool {
+        self.key.ends_with('/')
+    }
+
+    /// What to watch for this entry.
+    fn watch(&self, ctx: &RenderCtx) -> DocWatch {
+        let follow = ctx.follows(&self.key);
+        if self.is_listing() {
+            DocWatch::of_listing(&self.path, &ctx.root, follow)
+        } else {
+            DocWatch::of(&self.path, &ctx.root, follow)
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Tracking> {
         self.tracking.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -417,7 +460,7 @@ impl DocEntry {
         let Some(w) = ctx.watcher.as_deref() else {
             return;
         };
-        let want = DocWatch::of(&self.path, &ctx.root, ctx.follows(&self.key));
+        let want = self.watch(ctx);
         t.set_doc_watch(want, w);
         t.sync_dep_dirs(w);
     }
@@ -447,7 +490,7 @@ impl DocEntry {
         if self.subscribers() == 0 {
             return false;
         }
-        let want = DocWatch::of(&self.path, &ctx.root, ctx.follows(&self.key));
+        let want = self.watch(ctx);
         let mut t = self.lock();
         if t.subscribers == 0 || t.doc == want {
             return false;
@@ -883,7 +926,129 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
         if refreshed {
             recheck_after_watch(&entry, &ctx);
         }
-        process(&entry, &ctx).await;
+        if entry.is_listing() {
+            process_listing(&entry, &ctx).await;
+        } else {
+            process(&entry, &ctx).await;
+        }
+    }
+}
+
+/// What a directory URL shows now.
+enum Listed {
+    /// The listing fragment.
+    Listing(String),
+    /// The directory has a README now: its URL shows that instead.
+    Readme,
+    Missing,
+    Failed(String),
+}
+
+/// The listing key of root-relative directory `rel` (`docs/`, or `/` for the root).
+pub fn listing_key(rel: &str) -> String {
+    if rel.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("{rel}/")
+    }
+}
+
+/// One worker iteration of a directory listing: list, dedup by hash, publish; `reload`
+/// when a README appeared (LIVE-9).
+async fn process_listing(entry: &DocEntry, ctx: &RenderCtx) {
+    let t0 = entry.triggers.load(Ordering::SeqCst);
+    let snap = entry.snapshot();
+    let rel = entry.key.trim_end_matches('/').to_owned();
+    let (root, follow, flavor) = (
+        ctx.root.clone(),
+        ctx.follows(&entry.key),
+        ctx.options.flavor,
+    );
+    let listed = tokio::task::spawn_blocking(move || {
+        let abs = match paths::resolve(&root, &rel, follow) {
+            Ok(paths::Resolved::Dir(abs)) => abs,
+            Ok(_) => return Listed::Missing,
+            Err(e) => return Listed::Failed(e.to_string()),
+        };
+        let readme = if rel.is_empty() {
+            paths::find_root_readme(&root, flavor)
+        } else {
+            paths::find_readme(&abs, flavor)
+        };
+        if readme.is_some() {
+            return Listed::Readme;
+        }
+        match paths::list_dir(&root, &abs, &rel, follow) {
+            Ok(entries) => {
+                let shown = if rel.is_empty() {
+                    "/".to_owned()
+                } else {
+                    format!("/{rel}/")
+                };
+                Listed::Listing(crate::page::listing_html(flavor, &shown, &entries))
+            }
+            Err(e) => Listed::Failed(format!("cannot list /{rel}: {e}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Listed::Failed(e.to_string()));
+
+    match listed {
+        Listed::Listing(html) => {
+            let hash = sha256(html.as_bytes());
+            if snap.status == DocStatus::Ready
+                && snap.content.as_ref().is_some_and(|c| c.hash == hash)
+            {
+                entry.publish(t0, |_| {});
+                return;
+            }
+            let v = entry.next_version();
+            let rendered = Rendered {
+                html,
+                ..Default::default()
+            };
+            let content = Arc::new(Content::new(v, hash, Arc::new(rendered)));
+            let ev = content.event.clone();
+            entry.publish(t0, |s| {
+                s.version = v;
+                s.content = Some(content);
+                s.status = DocStatus::Ready;
+            });
+            entry.broadcast(ev);
+        }
+        Listed::Readme => {
+            // Once per appearance: pages showing the listing reload into the README.
+            let shown = snap.content.is_some();
+            entry.publish(t0, |s| {
+                s.content = None;
+                s.status = DocStatus::Pending;
+            });
+            if shown {
+                entry.broadcast(Arc::new(WireEvent::reload()));
+            }
+        }
+        Listed::Missing => {
+            if snap.status == DocStatus::Missing {
+                entry.publish(t0, |_| {});
+            } else {
+                let v = entry.next_version();
+                entry.publish(t0, |s| {
+                    s.version = v;
+                    s.status = DocStatus::Missing;
+                });
+                entry.broadcast(Arc::new(WireEvent::deleted(v, &entry.key)));
+            }
+        }
+        Listed::Failed(message) => {
+            let same =
+                matches!(&snap.status, DocStatus::Failed { message: m, .. } if *m == message);
+            if same {
+                entry.publish(t0, |_| {});
+            } else {
+                let v = entry.next_version();
+                publish_failure(entry, t0, v, ErrorKind::Read, message, None);
+            }
+        }
     }
 }
 

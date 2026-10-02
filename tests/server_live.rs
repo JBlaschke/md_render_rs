@@ -485,3 +485,54 @@ async fn repointing_a_symlinked_document() {
     })
     .await;
 }
+
+/// LIVE-9: directory listings are live: new and removed entries are pushed as content, and
+/// a README appearing (the URL now shows it) reloads the page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_listings_are_live() {
+    let f = Fixture::new();
+    f.file("nolist/x.md", "x");
+    f.file("top.txt", "t");
+    let s = f.start(|_| {}).await;
+    let body = s.get("/nolist/").await.text();
+    assert!(body.contains("x.md"), "{body}");
+    assert!(
+        body.contains("/__/md-render/events?path=nolist/"),
+        "the listing has no live client: {body}"
+    );
+
+    let (mut sse, _) = s.subscribe("nolist/").await;
+    write(&s.path("nolist/new.md"), "n");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("new.md"))
+    })
+    .await;
+    std::fs::remove_file(s.path("nolist/x.md")).unwrap();
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("new.md") && !h.contains("x.md"))
+    })
+    .await;
+    write_atomic(&s.path("nolist/README.md"), "now with a readme");
+    sse.wait_for("reload").await;
+    assert!(s.get("/nolist/").await.text().contains("now with a readme"));
+
+    // The root listing (no README at the root) is live too.
+    let body = s.get("/").await.text();
+    assert!(
+        body.contains("top.txt") && body.contains("events?path=/"),
+        "{body}"
+    );
+    let (mut sse, _) = s.subscribe("/").await;
+    write(&s.path("another.txt"), "a");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("another.txt"))
+    })
+    .await;
+    // A file is not a listing.
+    let r = s.get("/__/md-render/events?path=top.txt/").await;
+    assert_eq!(r.status, 400);
+}

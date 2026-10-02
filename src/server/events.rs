@@ -149,6 +149,12 @@ impl WireEvent {
         )
     }
 
+    /// `reload {}`: the page must be loaded again (a directory listing whose directory got a
+    /// README).
+    pub fn reload() -> WireEvent {
+        WireEvent::new("reload", None, false, json!({}))
+    }
+
     /// `shutdown {}`.
     pub fn shutdown() -> WireEvent {
         WireEvent::new("shutdown", None, false, json!({}))

@@ -333,6 +333,35 @@ impl App {
     }
 
     async fn listing_page(&self, rel: &str, abs: &std::path::Path) -> Response {
+        let shown = if rel.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{rel}/")
+        };
+        let title = self
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Index of {shown}"));
+        if self.live {
+            // A live listing (LIVE-9): the hub keeps it current and pushes changes.
+            let key = super::hub::listing_key(rel);
+            if let Some(snap) = self.hub.current(&key).await
+                && snap.status == DocStatus::Ready
+                && let Some(c) = &snap.content
+            {
+                let live = self.live_info(&key, snap.version);
+                return self
+                    .page(
+                        StatusCode::OK,
+                        c.rendered.clone(),
+                        title,
+                        Some(shown),
+                        Some(live),
+                        Vec::new(),
+                    )
+                    .await;
+            }
+        }
         let (root, dir, follow) = (self.root.clone(), abs.to_path_buf(), self.follow_symlinks);
         let rel_owned = rel.to_owned();
         let listed =
@@ -353,20 +382,11 @@ impl App {
                     .await;
             }
         };
-        let shown = if rel.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("/{rel}/")
-        };
         let html = page::listing_html(self.flavor, &shown, &entries);
         let content = Arc::new(Rendered {
             html,
             ..Default::default()
         });
-        let title = self
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("Index of {shown}"));
         self.page(
             StatusCode::OK,
             content,

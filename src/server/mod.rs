@@ -343,13 +343,15 @@ impl App {
             .unwrap_or_else(|e| Err(paths::ResolveError::Io(e)))
     }
 
-    /// Validate a `?path=` document parameter of the events / render endpoints.
+    /// Validate a `?path=` parameter of the events / render endpoints: a Markdown document,
+    /// or a directory URL (trailing `/`, `/` for the root) whose listing is live (LIVE-9).
+    /// Returns the hub key.
     pub(crate) async fn validate_doc_param(
         &self,
         path: Option<&str>,
     ) -> Result<String, (axum::http::StatusCode, String)> {
         use axum::http::StatusCode;
-        let path = path.ok_or((
+        let path = path.filter(|p| !p.is_empty()).ok_or((
             StatusCode::BAD_REQUEST,
             "missing ?path=<document>".to_owned(),
         ))?;
@@ -360,13 +362,21 @@ impl App {
             )
         })?;
         let rel = rp.rel();
-        if rp.is_root() || rp.trailing_slash || !self.is_document(&rel) {
+        let listing = rp.is_root() || rp.trailing_slash;
+        if !listing && !self.is_document(&rel) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("{path:?} is not a Markdown document path"),
             ));
         }
         match self.resolve(&rel).await {
+            Ok(paths::Resolved::Dir(_) | paths::Resolved::Missing) if listing => {
+                Ok(hub::listing_key(&rel))
+            }
+            Ok(paths::Resolved::File(_)) if listing => Err((
+                StatusCode::BAD_REQUEST,
+                format!("{path:?} is not a directory"),
+            )),
             Ok(paths::Resolved::File(_) | paths::Resolved::Missing) => Ok(rel),
             Ok(paths::Resolved::Dir(_)) => {
                 Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory")))
