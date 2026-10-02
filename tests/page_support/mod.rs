@@ -14,7 +14,7 @@ use md_render::styles::{Asset, Bundle, FlavorManifest, Manifest, Stylesheet};
 use md_render::{Flavor, Mode, Theme, ThemeSel};
 use sha2::{Digest as _, Sha256};
 
-/// Images above the inline limit of the page module (64 KiB).
+/// Images above the export limit of the page module for site CSS images (16 KiB).
 pub const BIG_IMAGE_LEN: usize = 70 * 1024;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -136,6 +136,9 @@ pub const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\
 /// Not a real PNG; the page module only cares about the extension.
 pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png";
 pub const WOFF2: &[u8] = b"wOF2fake-font";
+
+/// GitLab's icon sprite as vendored: many symbols, the copy button's among them.
+pub const GITLAB_SPRITE: &[u8] = br#"<?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><symbol viewBox="0 0 16 16" id="abuse" xmlns="http://www.w3.org/2000/svg"><path d="M1 1h2"/></symbol><symbol viewBox="0 0 16 16" id="copy-to-clipboard" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2V9.5z"/></symbol></svg>"#;
 
 /// GitHub flavor in the shape vendoring produces (GH §4): theme files (deliberately listed out
 /// of cascade order), core files with every kind of `url()`, emoji, MathJax and mermaid.
@@ -397,6 +400,40 @@ impl<'a> Page<'a> {
     }
 }
 
+/// Collects what a `tracing` subscriber writes.
+#[derive(Clone, Default)]
+pub struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'w self) -> LogCapture {
+        self.clone()
+    }
+}
+
+/// Warnings (and errors) logged on this thread while `f` runs.
+pub fn warnings_during<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    let value = tracing::subscriber::with_default(subscriber, f);
+    let text = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
+    (value, text)
+}
+
 /// `href`s of the stylesheet `<link>`s, in document order.
 pub fn stylesheet_hrefs(doc: &Document) -> Vec<String> {
     doc.select("link[rel=stylesheet]")
@@ -428,17 +465,19 @@ pub fn attr(doc: &Document, selector: &str, name: &str) -> Option<String> {
     doc.select(selector).attr(name).map(|s| s.to_string())
 }
 
-/// Every `url(...)` argument in `css`, unquoted.
+/// Every `url(...)` argument in `css`, unquoted (raw, escapes kept). Comments and strings
+/// outside `url()` are skipped, as a CSS parser does.
 pub fn css_urls(css: &str) -> Vec<String> {
-    let re = regex::Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)"#)
-        .expect("regex");
+    let re = regex::Regex::new(
+        r#"(?i)/\*[\s\S]*?\*/|url\(\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|((?:\\.|[^)"'\s\\])*))\s*\)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#,
+    )
+    .expect("regex");
     re.captures_iter(css)
-        .map(|c| {
+        .filter_map(|c| {
             c.get(1)
                 .or(c.get(2))
                 .or(c.get(3))
-                .map_or("", |m| m.as_str())
-                .to_owned()
+                .map(|m| m.as_str().to_owned())
         })
         .collect()
 }

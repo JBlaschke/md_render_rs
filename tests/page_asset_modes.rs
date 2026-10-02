@@ -97,12 +97,10 @@ fn github_inline_is_self_contained() {
         ["data:,"],
         "large site images are not inlined"
     );
-    // @import is followed and inlined as CSS, with its own references resolved.
+    // @import is followed and inlined as CSS, with its own references resolved; only the
+    // value changes (the import keeps its string form).
     let repo = inlined_css(&doc, "github/assets/repository-0005.css");
-    let import = repo
-        .split("@import url(\"")
-        .nth(1)
-        .expect("@import rewritten");
+    let import = repo.split("@import \"").nth(1).expect("@import rewritten");
     let import = &import[..import.find('"').unwrap()];
     assert!(import.starts_with("data:text/css;base64,"));
     let imported = String::from_utf8(decode_data_uri(import)).unwrap();
@@ -124,11 +122,15 @@ fn github_inline_is_self_contained() {
         Some("docs/x.md")
     );
 
-    // Client JS inlined; no live client; libraries as inert holders referenced from mdr-config.
-    assert_eq!(
-        doc.select("script[data-mdr-static=\"github.js\"]").length(),
-        1
-    );
+    // Client JS inlined (the shared helpers first); no live client; libraries as inert
+    // holders referenced from mdr-config.
+    let statics: Vec<String> = doc
+        .select("script[data-mdr-static]")
+        .nodes()
+        .iter()
+        .filter_map(|n| n.attr("data-mdr-static").map(|s| s.to_string()))
+        .collect();
+    assert_eq!(statics, ["common.js", "github.js"]);
     assert!(!html.contains("data-mdr-static=\"live.js\""));
     let cfg = config(&doc);
     assert!(cfg["live"].is_null());
@@ -294,7 +296,10 @@ fn directory_mode_copies_and_links_relatively() {
     assert_eq!(hrefs[0], "my%20doc_files/github/assets/light-1167.css");
     assert_eq!(
         script_srcs(&doc),
-        ["my%20doc_files/static/github.js"],
+        [
+            "my%20doc_files/static/common.js",
+            "my%20doc_files/static/github.js"
+        ],
         "libraries load lazily; the live client is never exported"
     );
     let linked = assert_relative_refs_exist(&html, out.path(), "my%20doc_files/");
@@ -307,7 +312,6 @@ fn directory_mode_copies_and_links_relatively() {
     // (including @import chains) are copied as well.
     for rel in [
         "github/images/spinners/octocat-spinner-16px.gif",
-        "github/images/modules/promo.png",
         "github/assets/repo-extra.css",
         "github/images/x.svg",
         "github/emoji/octocat.png",
@@ -318,6 +322,10 @@ fn directory_mode_copies_and_links_relatively() {
     ] {
         assert!(files.join(rel).is_file(), "{rel} copied");
     }
+    assert!(
+        !files.join("github/images/modules/promo.png").exists(),
+        "large site images are not copied"
+    );
     let global = std::fs::read_to_string(files.join("github/assets/global-0003.css")).unwrap();
     assert!(
         global.contains("url(../images/spinners/octocat-spinner-16px.gif)"),
@@ -351,10 +359,11 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
         math: true,
         mermaid: false,
     };
-    // Content rendered with `bundle_url = href` (what export does) points into the directory.
-    page.content
-        .html
-        .push_str("<p><img src=\"x_files/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>");
+    // Content rendered with the default bundle route (what export does) points into the
+    // directory once exported.
+    page.content.html.push_str(
+        "<p><img src=\"/__/md-render/bundle/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>",
+    );
     let html = page.render(&bundle);
     let doc = Document::from(html.as_str());
     assert_relative_refs_exist(&html, out.path(), "x_files/");
@@ -370,6 +379,10 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
     );
     assert!(files.join("gitlab/assets/icon_anchor-abc.svg").is_file());
     assert_eq!(
+        attr(&doc, "#md-content img[alt=a]", "src").as_deref(),
+        Some("x_files/gitlab/assets/icon_anchor-abc.svg")
+    );
+    assert_eq!(
         attr(&doc, "link[data-mdr-lib=katex-css]", "href").as_deref(),
         Some("x_files/gitlab/lib/katex/katex.min.css")
     );
@@ -380,6 +393,70 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
     assert!(
         files
             .join("gitlab/assets/icons-0123456789abcdef.svg")
+            .is_file()
+    );
+}
+
+/// EXP-4: `--no-inline` exports do not warn about url() targets that are missing from the
+/// bundle on purpose (KaTeX's legacy fonts, site 404s recorded by vendoring), and document
+/// URLs that merely start with the assets directory's name (nbconvert's `<stem>_files/`
+/// images) are the document's own: neither looked up in the bundle nor rewritten.
+#[test]
+fn directory_mode_is_quiet_about_expected_gaps_and_leaves_document_urls_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1.css",
+            "app",
+            Some("light"),
+            ".a{background:url(./icons/alert-fill-12.svg)}.b{background:url(./icons/alert-fill-12.svg)}",
+        )
+        .asset(Flavor::Gitlab, "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2", WOFF2)
+        .script(Flavor::Gitlab, "katex", "gitlab/lib/katex/katex.min.js", b"window.katex = {};")
+        .script(
+            Flavor::Gitlab,
+            "katex-css",
+            "gitlab/lib/katex/katex.min.css",
+            b"@font-face{font-family:KaTeX_Main;src:url(fonts/KaTeX_Main-Regular.woff2) format(\"woff2\"),\
+              url(fonts/KaTeX_Main-Regular.woff) format(\"woff\"),url(fonts/KaTeX_Main-Regular.ttf) format(\"truetype\")}",
+        )
+        .open(dir.path());
+    let out = tempfile::tempdir().unwrap();
+    let files = out.path().join("notebook_files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("notebook_3_0.png"), b"user image").unwrap();
+
+    let mut page = Page::new(Flavor::Gitlab);
+    page.assets = AssetMode::Directory {
+        href: "notebook_files".into(),
+        dir: files.clone(),
+    };
+    page.content.features = Features {
+        math: true,
+        mermaid: false,
+    };
+    page.content.html =
+        "<p><img src=\"notebook_files/notebook_3_0.png\" alt=\"png\"> <a href=\"notebook_files/notebook_3_0.png\">x</a></p>"
+            .to_owned();
+    let (html, warnings) = warnings_during(|| page.render(&bundle));
+    assert_eq!(warnings, "", "no warnings for expected gaps");
+    let doc = Document::from(html.as_str());
+    assert_eq!(
+        attr(&doc, "#md-content img", "src").as_deref(),
+        Some("notebook_files/notebook_3_0.png")
+    );
+    assert_eq!(
+        attr(&doc, "#md-content a", "href").as_deref(),
+        Some("notebook_files/notebook_3_0.png")
+    );
+    assert_eq!(
+        std::fs::read(files.join("notebook_3_0.png")).unwrap(),
+        b"user image"
+    );
+    assert!(
+        files
+            .join("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2")
             .is_file()
     );
 }
@@ -411,4 +488,125 @@ fn directory_mode_reports_io_errors() {
     };
     let err = md_render::page::render_page(&input, &bundle).expect_err("cannot write below a file");
     assert!(format!("{err:#}").contains("blocked_files"), "{err:#}");
+}
+
+/// EXP-2: raster images referenced from site CSS above 16 KiB (GitHub's dashboard promos and
+/// banners, GitLab's blooms: UI chrome that markdown never shows) stay out of exports, however
+/// often they are referenced; small ones (spinners, icons) and document images are kept.
+#[test]
+fn large_site_images_stay_out_of_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let promo = vec![7u8; 60 * 1024];
+    let icon = vec![9u8; 4 * 1024];
+    let emoji = vec![5u8; 40 * 1024]; // like :fishsticks: (41 KB)
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Github,
+            "github/assets/github-1.css",
+            "github",
+            None,
+            ".a{background:url(../images/promo.png)}.b{background:url(\"../images/promo.png\")}\
+             .c{background-image:url('../images/promo.png')}.d{background:url(../images/icon.png)}",
+        )
+        .asset(Flavor::Github, "github/images/promo.png", &promo)
+        .asset(Flavor::Github, "github/images/icon.png", &icon)
+        .asset(Flavor::Github, "github/emoji/octocat.png", &emoji)
+        .open(dir.path());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    let mut page = Page::new(Flavor::Github);
+    page.assets = AssetMode::Inline;
+    let html = page.render(&bundle);
+    assert_self_contained(&html);
+    assert!(
+        !html.contains(&b64(&promo)[..64]),
+        "the promo is not inlined"
+    );
+    let doc = Document::from(html.as_str());
+    let css = inlined_css(&doc, "github/assets/github-1.css");
+    let urls = css_urls(&css);
+    assert_eq!(urls[..3], ["data:,", "data:,", "data:,"], "{css}");
+    assert_eq!(decode_data_uri(&urls[3]), icon, "small images are inlined");
+    let emoji_src = attr(&doc, "img.emoji", "src").unwrap();
+    assert_eq!(
+        decode_data_uri(&emoji_src),
+        emoji,
+        "document images are never capped"
+    );
+    assert!(html.len() < 100 * 1024, "{} bytes", html.len());
+
+    let out = tempfile::tempdir().unwrap();
+    page.assets = AssetMode::Directory {
+        href: "x_files".into(),
+        dir: out.path().join("x_files"),
+    };
+    page.render(&bundle);
+    let files = out.path().join("x_files/github");
+    assert!(
+        !files.join("images/promo.png").exists(),
+        "the promo is not copied"
+    );
+    assert!(files.join("images/icon.png").is_file());
+    assert!(files.join("emoji/octocat.png").is_file());
+}
+
+/// EXP-3 / Q-DUP-CSS: exports find references with the vendoring tokenizer, so `url(…)` text
+/// inside strings and comments is left alone (rewriting it closed the string early and broke
+/// the rule) and escaped characters stay part of the URL, in both export modes.
+#[test]
+fn css_strings_comments_and_escapes_survive_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let css = r#"a::after{content:"url(x.png)"}/* old: url(y.png) */b{background:url(a\)b.png)}c{background:url("q\"r.gif")}"#;
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Github,
+            "github/assets/github-1.css",
+            "github",
+            None,
+            css,
+        )
+        .asset(Flavor::Github, "github/assets/x.png", GIF)
+        .asset(Flavor::Github, "github/assets/y.png", GIF)
+        .asset(Flavor::Github, "github/assets/a)b.png", PNG)
+        .asset(Flavor::Github, "github/assets/q\"r.gif", GIF)
+        .open(dir.path());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    let mut page = Page::new(Flavor::Github);
+    page.assets = AssetMode::Inline;
+    let html = page.render(&bundle);
+    assert_self_contained(&html);
+    let doc = Document::from(html.as_str());
+    let inlined = inlined_css(&doc, "github/assets/github-1.css");
+    let expected = css
+        .replace(
+            r"url(a\)b.png)",
+            &format!("url(data:image/png;base64,{})", b64(PNG)),
+        )
+        .replace(
+            r#"url("q\"r.gif")"#,
+            &format!("url(\"data:image/gif;base64,{}\")", b64(GIF)),
+        );
+    assert_eq!(
+        inlined.trim(),
+        expected,
+        "only the two real references change"
+    );
+
+    let out = tempfile::tempdir().unwrap();
+    page.assets = AssetMode::Directory {
+        href: "x_files".into(),
+        dir: out.path().join("x_files"),
+    };
+    page.render(&bundle);
+    let files = out.path().join("x_files/github/assets");
+    assert!(files.join("a)b.png").is_file(), "escaped URL resolved");
+    assert!(files.join("q\"r.gif").is_file());
+    assert!(!files.join("x.png").exists(), "strings are not references");
+    assert!(!files.join("y.png").exists(), "comments are not references");
+    assert_eq!(
+        std::fs::read_to_string(files.join("github-1.css")).unwrap(),
+        css,
+        "copied stylesheets are verbatim"
+    );
 }

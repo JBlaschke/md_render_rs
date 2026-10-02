@@ -5,23 +5,25 @@
 //! rendered content (`#md-content`), the vendored stylesheets in cascade order (computed from
 //! the bundle manifest roles, never from hashed file names), a JSON configuration block for the
 //! client scripts (`<script id="mdr-config" type="application/json">`), the flavor client
-//! script (`github.js` / `gitlab.js`) and, when live, `live.js`.
+//! script (`github.js` / `gitlab.js`, after the helpers they share, `common.js`) and, when
+//! live, `live.js`.
 //!
 //! Asset references depend on [`AssetMode`]: server URLs, a copied assets directory, or a fully
 //! self-contained document (CSS inlined with `data:` URIs, libraries inlined when needed).
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use regex::Regex;
 
-use crate::flavor::{Flavor, Mode, ThemeSel};
+use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
 use crate::render::Rendered;
 use crate::styles::Bundle;
 
 mod assets;
-mod content;
+pub(crate) mod content;
 mod css;
 mod github;
 mod gitlab;
@@ -120,7 +122,9 @@ pub struct PageInput<'a> {
     pub live: Option<&'a LiveInfo>,
     /// Messages shown above the content, in this order.
     pub banners: &'a [Banner],
-    /// Extra stylesheet URLs (after the bundle CSS).
+    /// Extra stylesheets after the bundle CSS: URLs, linked. In the export modes an entry
+    /// may also be a local CSS file (as `--css FILE` gives), which is embedded in the page
+    /// together with the files it references.
     pub extra_css: &'a [String],
 }
 
@@ -147,9 +151,58 @@ fn gitlab_icon_sprite(bundle: &Bundle) -> Option<&str> {
         .find(|p| re.is_match(p))
 }
 
+/// A warning when the colour mode of `theme` needs GitHub theme ids that the bundle does not
+/// have: the page then uses `light` / `dark` instead (sheets::resolve_theme), which looks like
+/// an ordinary light/dark page unless the user is told. `None` when every needed id is
+/// vendored, for GitLab (only `light`/`dark`), and for bundles without theme files at all.
+pub(crate) fn theme_fallback_warning(
+    flavor: Flavor,
+    theme: &ThemeSel,
+    bundle: &Bundle,
+) -> Option<String> {
+    if flavor != Flavor::Github {
+        return None;
+    }
+    let selection = sheets::github(bundle.flavor(flavor)?, theme);
+    let slots = [
+        (&theme.light, &selection.light, theme.theme != Theme::Dark),
+        (&theme.dark, &selection.dark, theme.theme != Theme::Light),
+    ];
+    let (mut missing, mut used): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    for (requested, got, needed) in slots {
+        if needed && requested != got && !missing.contains(&requested.as_str()) {
+            missing.push(requested);
+            used.push(got);
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let s = if missing.len() > 1 { "s" } else { "" };
+    Some(format!(
+        "the style bundle has no GitHub theme{s} {}; using {} instead (run `md-render vendor \
+         --flavor github --themes all` to vendor every theme)",
+        missing.join(", "),
+        used.join(", ")
+    ))
+}
+
+/// Log `warning` once per process (pages are rendered on every request when serving).
+fn warn_once(warning: String) {
+    static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let first = SEEN
+        .lock()
+        .map(|mut seen| seen.insert(warning.clone()))
+        .unwrap_or(true);
+    if first {
+        tracing::warn!("{warning}");
+    }
+}
+
 /// Build a complete HTML document.
 ///
-/// Fails only on I/O errors while copying files in [`AssetMode::Directory`].
+/// Fails only on I/O errors: copying files in [`AssetMode::Directory`], or reading a local
+/// extra stylesheet in the export modes.
 pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String> {
     let mut assets = Assets::new(input.assets, bundle);
     let manifest = bundle.flavor(input.flavor);
@@ -157,9 +210,21 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         Flavor::Github => sheets::github(m, input.theme),
         Flavor::Gitlab => sheets::gitlab(m, input.theme),
     });
+    // Serving: say once that a requested theme is missing (export reports it on stderr).
+    if matches!(input.assets, AssetMode::Server { .. })
+        && let Some(w) = theme_fallback_warning(input.flavor, input.theme, bundle)
+    {
+        warn_once(w);
+    }
     let (light, dark) = match &selection {
         Some(s) => (s.light.clone(), s.dark.clone()),
         None => (input.theme.light.clone(), input.theme.dark.clone()),
+    };
+    // The colour mode the page is built for: a GitLab bundle without dark application CSS
+    // renders light only (sheets::Selection::has_dark_app), never light CSS under gl-dark.
+    let color_mode = match &selection {
+        Some(s) if !s.has_dark_app => Theme::Light,
+        _ => input.theme.theme,
     };
     let live = match input.assets {
         AssetMode::Server { .. } => input.live,
@@ -169,9 +234,8 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     // Content: exports drop data-sourcepos and point bundle references into the export.
     let content_html = match input.assets {
         AssetMode::Server { .. } => input.content.html.clone(),
-        AssetMode::Inline => content::for_export(&input.content.html, &mut assets, None)?,
-        AssetMode::Directory { href, .. } => {
-            content::for_export(&input.content.html, &mut assets, Some(href))?
+        AssetMode::Inline | AssetMode::Directory { .. } => {
+            content::for_export(&input.content.html, &mut assets)?
         }
     };
 
@@ -197,7 +261,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     let mut head = String::with_capacity(4096);
     head.push_str("<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     if input.flavor == Flavor::Gitlab {
-        head.push_str(&gitlab::head_pre(input.theme.theme));
+        head.push_str(&gitlab::head_pre(color_mode));
     }
     head.push_str(&format!("<title>{}</title>\n", html::text(input.title)));
     assets.favicon(&mut head)?;
@@ -254,22 +318,28 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     head.push_str(&format!(
         "<style data-mdr-style=\"chrome\">\n{chrome_css}</style>\n"
     ));
-    for url in input.extra_css {
-        head.push_str(&format!(
-            "<link rel=\"stylesheet\" href=\"{}\" data-mdr-style=\"extra\">\n",
-            html::attr(url)
-        ));
+    for entry in input.extra_css {
+        assets.extra_stylesheet(&mut head, entry)?;
     }
 
     // ---- <html>
+    // GitLab's copy button draws its icon from the vendored sprite; a self-contained export
+    // carries the one icon it needs instead (PAGE-2).
+    let mut inline_icons = None;
     let html_open = match input.flavor {
         Flavor::Github => github::html_open(input.theme.theme, &light, &dark),
         Flavor::Gitlab => {
             let sprite = match gitlab_icon_sprite(bundle) {
                 Some(path) if !assets.is_inline() => assets.bundle_url(path)?,
-                _ => None,
+                Some(path) => {
+                    inline_icons = bundle
+                        .read(path)
+                        .and_then(|svg| gitlab::inline_copy_icon(&svg));
+                    inline_icons.as_ref().map(|_| String::new())
+                }
+                None => None,
             };
-            gitlab::html_open(input.theme.theme, sprite.as_deref())
+            gitlab::html_open(color_mode, sprite.as_deref())
         }
     };
 
@@ -300,7 +370,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         "flavor": input.flavor.as_str(),
         "mode": input.mode.as_str(),
         "layout": input.layout.as_str(),
-        "theme": input.theme.theme.as_str(),
+        "theme": color_mode.as_str(),
         "themes": { "light": light, "dark": dark },
         "scripts": scripts,
         "live": live.map(|l| serde_json::json!({
@@ -327,6 +397,9 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         out.push_str(&octicons::clipboard_template());
         out.push('\n');
     }
+    if let Some(icons) = &inline_icons {
+        out.push_str(icons);
+    }
     out.push_str(&format!(
         "<script id=\"mdr-config\" type=\"application/json\">{}</script>\n",
         html::json_for_script(&config)
@@ -337,6 +410,8 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     if live.is_some() {
         assets.static_script(&mut out, "live.js")?;
     }
+    // The helpers both flavor scripts share, then the flavor's own behaviours.
+    assets.static_script(&mut out, "common.js")?;
     assets.static_script(&mut out, &format!("{}.js", input.flavor))?;
     out.push_str("</body>\n</html>\n");
     Ok(out)

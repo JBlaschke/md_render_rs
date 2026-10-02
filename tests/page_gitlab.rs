@@ -106,7 +106,13 @@ fn system_mode_skeleton() {
     );
     assert!(content.select("copy-code").exists());
 
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/gitlab.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/gitlab.js"
+        ]
+    );
     assert!(
         !html.contains("snippet-clipboard-copy-button"),
         "no GitHub template on GitLab pages"
@@ -272,6 +278,7 @@ fn libraries_follow_features() {
         script_srcs(&doc),
         [
             "/__/md-render/static/live.js",
+            "/__/md-render/static/common.js",
             "/__/md-render/static/gitlab.js"
         ]
     );
@@ -325,6 +332,66 @@ fn fallback_styles() {
     );
 }
 
+/// PAGE-3: a bundle whose GitLab flavor has no dark application/highlight CSS (vendoring treats
+/// both as optional) links the light sheets in every colour mode, without the light media
+/// query, and renders as `gl-light`: no gl-dark bootstrap, so light CSS never meets dark tokens.
+#[test]
+fn bundle_without_dark_css_renders_light() {
+    let dir = tempfile::tempdir().unwrap();
+    let light_only = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1111.css",
+            "app",
+            Some("light"),
+            ".md{color:#333}",
+        )
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/tailwind-3333.css",
+            "tailwind",
+            None,
+            ".gl-sr-only{position:absolute}",
+        )
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/highlight/themes/white-6666.css",
+            "highlight",
+            Some("light"),
+            ".code.white{color:#3a383d}",
+        )
+        .open(dir.path());
+    for mode in [Theme::Auto, Theme::Dark, Theme::Light] {
+        let mut page = Page::new(Flavor::Gitlab);
+        page.theme = theme(mode, "light", "dark");
+        let html = page.render(&light_only);
+        let doc = Document::from(html.as_str());
+        assert_eq!(
+            sheets(&doc),
+            [
+                (format!("{B}gitlab/assets/application-1111.css"), None),
+                (
+                    format!("{B}gitlab/assets/tailwind-3333.css"),
+                    Some("all".into())
+                ),
+                (
+                    format!("{B}gitlab/assets/highlight/themes/white-6666.css"),
+                    None
+                ),
+            ],
+            "{mode:?}"
+        );
+        assert_eq!(
+            attr(&doc, "html", "class").as_deref(),
+            Some("gl-light ui-neutral"),
+            "{mode:?}"
+        );
+        assert!(!html.contains("gl-dark"), "{mode:?}: no gl-dark anywhere");
+        assert_eq!(doc.select("meta[name=color-scheme]").length(), 0);
+        assert_eq!(config(&doc)["theme"], "light");
+    }
+}
+
 #[test]
 fn listing_fragment() {
     let entries = vec![
@@ -375,4 +442,58 @@ fn error_fragment() {
         alert.select(".gl-alert-body").text().as_ref(),
         "outside the served root"
     );
+}
+
+/// PAGE-2: a self-contained GitLab export carries GitLab's own copy-to-clipboard icon (served
+/// and `--no-inline` pages reference the vendored sprite) instead of falling back to the
+/// Octicon; a sprite without that symbol keeps the fallback.
+#[test]
+fn inline_export_carries_the_copy_icon() {
+    let dir = tempfile::tempdir().unwrap();
+    let with_sprite = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1.css",
+            "app",
+            Some("light"),
+            ".md{}",
+        )
+        .asset(
+            Flavor::Gitlab,
+            "gitlab/assets/icons-0123abcd.svg",
+            GITLAB_SPRITE,
+        )
+        .open(dir.path());
+    let mut page = Page::new(Flavor::Gitlab);
+    page.assets = md_render::page::AssetMode::Inline;
+    let html = page.render(&with_sprite);
+    assert_self_contained(&html);
+    let doc = Document::from(html.as_str());
+    assert_eq!(attr(&doc, "html", "data-icon-sprite").as_deref(), Some(""));
+    let symbol = doc.select("body > svg[aria-hidden] > symbol");
+    assert_eq!(symbol.length(), 1, "only the copy icon is carried");
+    assert_eq!(symbol.attr("id").as_deref(), Some("copy-to-clipboard"));
+    assert!(html.contains("<symbol id=\"copy-to-clipboard\" viewBox=\"0 0 16 16\">"));
+    assert!(html.contains(
+        "d=\"M4 9.5H2.5v-7h7V4H11V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2V9.5z\""
+    ));
+    assert!(!html.contains("id=\"abuse\""));
+
+    // Served pages reference the sprite and carry no icons.
+    page.assets = server();
+    let html = page.render(&with_sprite);
+    let doc = Document::from(html.as_str());
+    assert_eq!(
+        attr(&doc, "html", "data-icon-sprite").as_deref(),
+        Some("/__/md-render/bundle/gitlab/assets/icons-0123abcd.svg")
+    );
+    assert!(!html.contains("<symbol"));
+
+    // The test bundle's sprite has no such symbol: no attribute, so gitlab.js uses its fallback.
+    let (_dir, full) = bundle();
+    page.assets = md_render::page::AssetMode::Inline;
+    let html = page.render(&full);
+    let doc = Document::from(html.as_str());
+    assert_eq!(attr(&doc, "html", "data-icon-sprite"), None);
+    assert!(!html.contains("<symbol"));
 }

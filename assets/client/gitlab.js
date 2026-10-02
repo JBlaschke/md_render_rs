@@ -8,93 +8,28 @@
 //   * hash navigation: getElementById(h) || getElementById('user-content-' + h) (GL §10.5),
 //   * gl-system auto dark mode: keep html.gl-dark in sync with prefers-color-scheme (GL §11.3).
 // Runs on DOMContentLoaded and on every `mdr:content-updated` event ({detail: {root, added}}),
-// processing only the given nodes; rendered elements are never rendered twice.
+// processing only the given nodes; rendered elements are never rendered twice. The helpers
+// shared with github.js live in common.js, which the page loads first.
 (function () {
   'use strict';
 
   if (window.mdRenderGitLab) return;
 
-  var CONFIG = readConfig();
-  var DONE = 'data-mdr-rendered';
-
-  function readConfig() {
-    var el = document.getElementById('mdr-config');
-    if (!el) return {};
-    try {
-      return JSON.parse(el.textContent || '{}') || {};
-    } catch (e) {
-      console.warn('md-render: invalid mdr-config', e);
-      return {};
-    }
+  // Shared helpers (assets/client/common.js, loaded first).
+  var common = window.mdRenderCommon;
+  if (!common) {
+    console.warn('md-render: common.js did not load; GitLab page behaviours are off');
+    return;
   }
+  var CONFIG = common.config;
+  var DONE = common.DONE;
+  var collect = common.collect;
+  var claim = common.claim;
+  var libRef = common.libRef;
+  var loadLibrary = common.loadLibrary;
 
   // ------------------------------------------------------------------------------------------
   // Utilities
-
-  function collect(nodes, selector) {
-    var out = [];
-    var seen = new Set();
-    (nodes || []).forEach(function (node) {
-      if (!node || node.nodeType !== 1) return;
-      if (node.matches(selector) && !seen.has(node)) {
-        seen.add(node);
-        out.push(node);
-      }
-      node.querySelectorAll(selector).forEach(function (el) {
-        if (!seen.has(el)) {
-          seen.add(el);
-          out.push(el);
-        }
-      });
-    });
-    return out;
-  }
-
-  function claim(el) {
-    if (el.hasAttribute(DONE)) return false;
-    el.setAttribute(DONE, '');
-    return true;
-  }
-
-  function libRef(name) {
-    var scripts = CONFIG.scripts || {};
-    return typeof scripts[name] === 'string' && scripts[name] ? scripts[name] : null;
-  }
-
-  function runInline(ref) {
-    var holder = document.getElementById(ref.slice(1));
-    if (!holder) throw new Error('md-render: missing inline library ' + ref);
-    var script = document.createElement('script');
-    script.textContent = holder.textContent;
-    document.head.appendChild(script);
-  }
-
-  var libraries = new Map();
-
-  function loadLibrary(name) {
-    if (libraries.has(name)) return libraries.get(name);
-    var ref = libRef(name);
-    var promise;
-    if (!ref) {
-      promise = Promise.reject(new Error(name + ' is not vendored (run `md-render vendor --flavor gitlab`)'));
-    } else if (ref.charAt(0) === '#') {
-      promise = new Promise(function (resolve) {
-        runInline(ref);
-        resolve();
-      });
-    } else {
-      promise = new Promise(function (resolve, reject) {
-        var script = document.createElement('script');
-        script.src = ref;
-        script.async = true;
-        script.onload = function () { resolve(); };
-        script.onerror = function () { reject(new Error('failed to load ' + ref)); };
-        document.head.appendChild(script);
-      });
-    }
-    libraries.set(name, promise);
-    return promise;
-  }
 
   // A stylesheet library (KaTeX CSS): already present as <link>/<style data-mdr-lib>, or added.
   function ensureStylesheet(name) {
@@ -148,11 +83,23 @@
 
   // ------------------------------------------------------------------------------------------
   // Math (GL §10.2): each .js-render-math is replaced by <div data-math-style> holding KaTeX
-  // output; GitLab's limits apply (1000 characters per block, 2000 ms total render time).
+  // output; GitLab's limits apply (1000 characters per block, 2000 ms total render time for the
+  // math on the page).
 
   var MAX_MATH_CHARS = 1000;
   var MAX_RENDER_TIME_MS = 2000;
-  var mathTotalMs = 0;
+  // KaTeX time per placeholder. GitLab's budget is per page load; a live page keeps loading
+  // new content, so only math still on the page counts (like github.js's brace budget).
+  var mathTime = new Map();
+
+  function totalMathMs() {
+    var total = 0;
+    mathTime.forEach(function (ms, placeholder) {
+      if (placeholder.isConnected) total += ms;
+      else mathTime.delete(placeholder); // removed by a live update
+    });
+    return total;
+  }
 
   function katexOptions(style) {
     return {
@@ -180,30 +127,38 @@
         : 'There was an error rendering this math block. ' + message;
       placeholder.className = 'katex-error';
     }
-    mathTotalMs += Date.now() - start;
+    mathTime.set(placeholder, (mathTime.get(placeholder) || 0) + (Date.now() - start));
+  }
+
+  // render_math.js's placeholder for one .js-render-math element: <div data-math-style> with the
+  // TeX as text and GitLab's layout class (.math-content-inline is display:inline-flex, so
+  // inline math stays inside its line).
+  function mathPlaceholder(el) {
+    var style = el.getAttribute('data-math-style') || (el.tagName === 'PRE' ? 'display' : 'inline');
+    var placeholder = document.createElement('div');
+    placeholder.setAttribute('data-math-style', style);
+    placeholder.className = style === 'inline' ? 'math-content-inline' : 'math-content-display';
+    if (el.hasAttribute('data-mdr-key')) placeholder.setAttribute('data-mdr-key', el.getAttribute('data-mdr-key'));
+    placeholder.setAttribute(DONE, '');
+    placeholder.textContent = el.textContent;
+    el.parentNode.replaceChild(placeholder, el);
+    return placeholder;
   }
 
   function renderMath(nodes) {
+    // Claiming marks the elements, so nothing is rendered twice. The source markup is only
+    // replaced once KaTeX has loaded: without it (not vendored, failed download) the TeX keeps
+    // its <span>/<code>/<pre> styling and line breaks, as in the GitHub flavor.
     var elements = collect(nodes, '.js-render-math').filter(claim);
     if (!elements.length) return;
-    // Replace the markup first so nothing is rendered twice (render_math.js does the same).
-    var placeholders = elements.map(function (el) {
-      var placeholder = document.createElement('div');
-      var style = el.getAttribute('data-math-style') || (el.tagName === 'PRE' ? 'display' : 'inline');
-      placeholder.setAttribute('data-math-style', style);
-      if (el.hasAttribute('data-mdr-key')) placeholder.setAttribute('data-mdr-key', el.getAttribute('data-mdr-key'));
-      placeholder.setAttribute(DONE, '');
-      placeholder.textContent = el.textContent;
-      el.parentNode.replaceChild(placeholder, el);
-      return placeholder;
-    });
     ensureStylesheet('katex-css');
     loadLibrary('katex').then(function () {
       if (!window.katex) throw new Error('KaTeX did not initialize');
-      placeholders.forEach(function (placeholder) {
-        if (!placeholder.isConnected) return;
+      elements.forEach(function (el) {
+        if (!el.isConnected || !el.parentNode) return;
+        var placeholder = mathPlaceholder(el);
         var text = placeholder.textContent;
-        if (text.length > MAX_MATH_CHARS || mathTotalMs >= MAX_RENDER_TIME_MS) {
+        if (text.length > MAX_MATH_CHARS || totalMathMs() >= MAX_RENDER_TIME_MS) {
           var message = text.length > MAX_MATH_CHARS
             ? 'This math block exceeds ' + MAX_MATH_CHARS + ' characters, and may cause performance issues on this page.'
             : 'Displaying this math block may cause performance issues on this page.';
@@ -233,8 +188,16 @@
   var MAX_MERMAID_BLOCKS = 50;
   var diagrams = new Set();
   var mermaidSeq = 0;
-  var mermaidCount = 0;
   var mermaidQueue = Promise.resolve();
+
+  // Diagrams on the page (started ones, including those still queued). GitLab's limit is per
+  // page load; on a live page replaced diagrams must not count.
+  function liveDiagramCount() {
+    diagrams.forEach(function (item) {
+      if (!item.wrapper.isConnected) diagrams.delete(item);
+    });
+    return diagrams.size;
+  }
 
   function isDark() {
     return document.documentElement.classList.contains('gl-dark');
@@ -279,7 +242,6 @@
   }
 
   function startDiagram(item) {
-    mermaidCount += 1;
     diagrams.add(item);
     drawDiagram(item);
   }
@@ -303,7 +265,7 @@
           item.wrapper.parentNode.insertBefore(alertBox(
             'Warning: Displaying this diagram might cause performance issues on this page.', 'Display',
             function () { startDiagram(item); }), item.wrapper);
-        } else if (mermaidCount >= MAX_MERMAID_BLOCKS) {
+        } else if (liveDiagramCount() >= MAX_MERMAID_BLOCKS) {
           item.wrapper.parentNode.insertBefore(alertBox(
             'Warning: Displaying this diagram might cause performance issues on this page.', 'Display',
             function () { startDiagram(item); }), item.wrapper);
@@ -331,9 +293,11 @@
     '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>';
   var codeSeq = 0;
 
+  // data-icon-sprite: the URL of GitLab's sprite, or "" when the page carries the symbol
+  // itself (self-contained exports); absent without a vendored sprite.
   function iconMarkup() {
     var sprite = document.documentElement.getAttribute('data-icon-sprite');
-    if (!sprite) return COPY_ICON;
+    if (sprite === null || (!sprite && !document.getElementById('copy-to-clipboard'))) return COPY_ICON;
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 's16 gl-icon gl-button-icon');
     svg.setAttribute('aria-hidden', 'true');
@@ -341,27 +305,6 @@
     use.setAttribute('href', sprite + '#copy-to-clipboard');
     svg.appendChild(use);
     return svg.outerHTML;
-  }
-
-  function writeClipboard(text) {
-    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-    return new Promise(function (resolve, reject) {
-      var area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', '');
-      area.style.position = 'fixed';
-      area.style.opacity = '0';
-      document.body.appendChild(area);
-      area.select();
-      var ok = false;
-      try {
-        ok = document.execCommand('copy');
-      } catch (e) {
-        ok = false;
-      }
-      area.remove();
-      if (ok) resolve(); else reject(new Error('copy failed'));
-    });
   }
 
   function defineCopyCode() {
@@ -387,7 +330,7 @@
         button.addEventListener('click', function () {
           var pre = self.parentNode && self.parentNode.querySelector('pre');
           var text = pre ? pre.textContent : source;
-          writeClipboard(text).then(function () {
+          common.writeClipboard(text).then(function () {
             button.setAttribute('title', 'Copied');
             button.setAttribute('aria-label', 'Copied');
             clearTimeout(button.mdrTimer);
@@ -407,43 +350,12 @@
   // ------------------------------------------------------------------------------------------
   // Hash navigation (GL §10.5)
 
-  var userScrolled = false;
-  ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (type) {
-    window.addEventListener(type, function () { userScrolled = true; }, { passive: true, once: true });
-  });
-
-  function decodeHash(hash) {
-    var raw = (hash || '').replace(/^#/, '');
-    try {
-      return decodeURIComponent(raw);
-    } catch (e) {
-      return raw;
-    }
-  }
-
   function hashTarget(id) {
     if (!id) return null;
     return document.getElementById(id) || document.getElementById('user-content-' + id);
   }
 
-  function scrollToHash() {
-    var el = hashTarget(decodeHash(location.hash));
-    if (el) el.scrollIntoView(true);
-  }
-
-  window.addEventListener('hashchange', scrollToHash);
-  document.addEventListener('click', function (event) {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    var link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
-    if (!link) return;
-    var id = decodeHash(link.getAttribute('href'));
-    if (!id || document.getElementById(id)) return;
-    var el = hashTarget(id);
-    if (!el) return;
-    event.preventDefault();
-    if (location.hash !== link.getAttribute('href')) history.pushState(null, '', link.getAttribute('href'));
-    el.scrollIntoView(true);
-  });
+  var hashNav = common.hashNavigation(hashTarget);
 
   // ------------------------------------------------------------------------------------------
   // Colour mode (GL §11.3): in system mode html.gl-dark follows prefers-color-scheme.
@@ -477,19 +389,13 @@
     defineCopyCode();
     var root = document.getElementById('md-content') || document.body;
     renderGFM([root]);
-    scrollToHash();
+    hashNav.scrollToHash();
   }
 
   document.addEventListener('mdr:content-updated', function (event) {
-    var detail = (event && event.detail) || {};
-    var nodes = Array.isArray(detail.added) ? detail.added : [detail.root || document.getElementById('md-content')];
+    var nodes = common.updatedNodes(event);
     renderGFM(nodes);
-    if (location.hash && !userScrolled) {
-      var target = hashTarget(decodeHash(location.hash));
-      if (target && nodes.some(function (n) { return n && n.nodeType === 1 && (n === target || n.contains(target)); })) {
-        target.scrollIntoView(true);
-      }
-    }
+    hashNav.follow(nodes);
   });
 
   window.mdRenderGitLab = {

@@ -38,6 +38,7 @@ fn child_export_to_stdout() {
         context: None,
         // Missing on purpose: the fallback warning must go to stderr, not into the page.
         bundle_path: dir.join("missing-styles.tar.gz"),
+        extra_css: Vec::new(),
         renderer: Arc::new(FixedRenderer::new(content(
             Flavor::Github,
             Features::default(),

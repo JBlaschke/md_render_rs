@@ -4,6 +4,9 @@
 //! * `Directory`: files are copied into `dir` (bundle paths preserved, so the relative `url()`s
 //!   inside vendored CSS keep working, DESIGN D10) and linked through `href`;
 //! * `Inline`: CSS is inlined with every `url()` turned into a `data:` URI, scripts are inlined.
+//!
+//! In both export modes a local extra stylesheet (`--css FILE`) is embedded in the page, with
+//! the files it references as `data:` URIs; remote ones are linked.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -33,11 +36,17 @@ const PATH_SET: &AsciiSet = &CONTROLS
     .add(b'%')
     .add(b'\'');
 
-/// Images referenced from site CSS that are larger than this are not inlined. On both sites
-/// these are UI-chrome banners and illustrations that markdown never uses (GH §4.3: dashboard
-/// promos 53-303 KB; GL §11.2: blooms, icon sheets), and inlining them would triple the size of
-/// an export. Fonts are always inlined.
-pub(crate) const MAX_INLINE_IMAGE_BYTES: usize = 64 * 1024;
+/// Raster images referenced from site CSS that are larger than this are neither inlined nor
+/// copied into an export. On both sites these are UI-chrome banners and illustrations that
+/// markdown never uses (GH §4.3: dashboard promos and banners of 53-303 KB; GL §11.2: blooms of
+/// 103-322 KB), while the images markdown-related rules use (spinners, icons) are at most
+/// 11.5 KB; inlining the promos doubled the size of every GitHub export. Fonts are always
+/// inlined, and images the document itself references (custom emoji) are never capped.
+pub(crate) const MAX_INLINE_IMAGE_BYTES: usize = 16 * 1024;
+
+/// The same for SVG images referenced from site CSS (GitLab's 247 KB `icons-stacked` sprite
+/// for the blame/diff UI).
+pub(crate) const MAX_INLINE_SVG_BYTES: usize = 64 * 1024;
 
 /// Maximum `@import` nesting followed when inlining or copying CSS.
 const MAX_CSS_DEPTH: usize = 4;
@@ -51,6 +60,8 @@ pub(crate) struct Assets<'a> {
     bundle: &'a Bundle,
     /// Directory mode: destination-relative paths already written.
     written: HashSet<String>,
+    /// Directory mode: bundle paths found missing (looked up and logged once).
+    missing: HashSet<String>,
     /// Inline mode: data URIs by bundle path (`None`: not inlinable).
     data_uris: HashMap<String, Option<Rc<str>>>,
 }
@@ -119,6 +130,63 @@ fn data_uri(mime: &str, bytes: &[u8]) -> String {
     )
 }
 
+/// An extra stylesheet given as a URL (`http(s)://`, `//`, `data:`; the CLI's `--css` rule)
+/// rather than a local file.
+fn is_remote(entry: &str) -> bool {
+    let lower = entry.trim_start().to_ascii_lowercase();
+    ["http://", "https://", "//", "data:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+/// The local file a relative reference in the local stylesheet in `dir` names (query and
+/// fragment dropped, `%`-escapes decoded), if it is an existing regular file. Absolute and
+/// root-relative URLs, fragments and missing files give `None`.
+fn local_reference(dir: &Path, value: &str) -> Option<PathBuf> {
+    let v = value.trim();
+    if v.is_empty() || v.starts_with(['#', '/', '\\']) {
+        return None;
+    }
+    let v = &v[..v.find(['?', '#']).unwrap_or(v.len())];
+    // A `:` before the first `/` makes it an absolute URL (`https:`, `data:`).
+    if v.is_empty() || v.find(':').is_some_and(|colon| !v[..colon].contains('/')) {
+        return None;
+    }
+    let decoded = percent_decode_str(v).decode_utf8().ok()?;
+    let file = dir.join(decoded.as_ref());
+    file.is_file().then_some(file)
+}
+
+/// The text of the local stylesheet `path` for embedding in an export: every relative
+/// `url()` / `@import` naming an existing file next to it becomes a `data:` URI (imported
+/// stylesheets recursively, up to [`MAX_CSS_DEPTH`]); everything else stays as written.
+fn embed_local_css(path: &Path, text: &str, depth: usize) -> String {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    css::rewrite(text, |kind, value| {
+        let file = local_reference(dir, value)?;
+        let bytes = match fs::read(&file) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(path = %file.display(), error = %e, "cannot read a file referenced by --css; left as is");
+                return None;
+            }
+        };
+        let name = file.to_string_lossy();
+        if kind == RefKind::Import || is_css(&name) {
+            if depth >= MAX_CSS_DEPTH {
+                return None;
+            }
+            let inner = embed_local_css(&file, &String::from_utf8_lossy(&bytes), depth + 1);
+            return Some(data_uri("text/css", inner.as_bytes()));
+        }
+        let uri = data_uri(&mime_of(&name), &bytes);
+        Some(match value.split_once('#') {
+            Some((_, fragment)) => format!("{uri}#{fragment}"),
+            None => uri,
+        })
+    })
+}
+
 fn write_file(dir: &Path, rel: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let Some(relpath) = safe_relative(rel) else {
         bail!("refusing to write unsafe asset path {rel:?}");
@@ -137,6 +205,7 @@ impl<'a> Assets<'a> {
             mode,
             bundle,
             written: HashSet::new(),
+            missing: HashSet::new(),
             data_uris: HashMap::new(),
         }
     }
@@ -204,8 +273,16 @@ impl<'a> Assets<'a> {
         if self.written.contains(path) {
             return Ok(true);
         }
+        if self.missing.contains(path) {
+            return Ok(false);
+        }
         let Some(bytes) = self.bundle.read(path) else {
-            tracing::warn!(path, "bundle file missing; not copied");
+            // Expected for url() targets that vendoring leaves out on purpose (KaTeX's legacy
+            // .woff/.ttf fonts) or could not download (the site's own 404s, recorded in the
+            // manifest's failures), as in Inline mode; a missing stylesheet is reported by
+            // `stylesheet`.
+            tracing::debug!(path, "bundle file missing; not copied");
+            self.missing.insert(path.to_owned());
             return Ok(false);
         };
         write_file(dir, path, &bytes)?;
@@ -213,7 +290,9 @@ impl<'a> Assets<'a> {
         if is_css(path) && depth < MAX_CSS_DEPTH {
             let text = String::from_utf8_lossy(&bytes);
             for (_, reference) in css::references(&text) {
-                if let Target::Bundle { path: dep, .. } = css::resolve(path, &reference) {
+                if let Target::Bundle { path: dep, .. } = css::resolve(path, &reference)
+                    && !self.oversize_site_image(&dep)
+                {
                     self.copy_bundle_file(&dep, depth + 1)?;
                 }
             }
@@ -221,8 +300,27 @@ impl<'a> Assets<'a> {
         Ok(true)
     }
 
-    /// Inline mode: `data:` URI of a bundle file. CSS files are inlined recursively, images
-    /// above [`MAX_INLINE_IMAGE_BYTES`] and missing files give `None`.
+    /// Is `path` an image above [`MAX_INLINE_IMAGE_BYTES`] (raster) or
+    /// [`MAX_INLINE_SVG_BYTES`] (SVG)? Such images referenced from site CSS stay out of exports.
+    fn oversize_site_image(&self, path: &str) -> bool {
+        let mime = mime_of(path);
+        if !mime.starts_with("image/") || is_font(&mime, path) {
+            return false;
+        }
+        let cap = if mime == "image/svg+xml" {
+            MAX_INLINE_SVG_BYTES
+        } else {
+            MAX_INLINE_IMAGE_BYTES
+        };
+        let oversize = self.bundle.read(path).is_some_and(|b| b.len() > cap);
+        if oversize {
+            tracing::debug!(path, "large site CSS image left out of the export");
+        }
+        oversize
+    }
+
+    /// Inline mode: `data:` URI of a bundle file. CSS files are inlined recursively; missing
+    /// files give `None`.
     pub(crate) fn data_uri(&mut self, path: &str) -> Option<Rc<str>> {
         self.data_uri_at(path, 0)
     }
@@ -249,15 +347,7 @@ impl<'a> Assets<'a> {
             let inlined = self.inline_css_at(path, &text, depth + 1);
             return Some(data_uri("text/css", inlined.as_bytes()));
         }
-        let mime = mime_of(path);
-        if mime.starts_with("image/")
-            && bytes.len() > MAX_INLINE_IMAGE_BYTES
-            && !is_font(&mime, path)
-        {
-            tracing::debug!(path, size = bytes.len(), "large CSS image not inlined");
-            return None;
-        }
-        Some(data_uri(&mime, &bytes))
+        Some(data_uri(&mime_of(path), &bytes))
     }
 
     /// Inline mode: `css` (the text of bundle file `path`) with every reference replaced by a
@@ -292,21 +382,23 @@ impl<'a> Assets<'a> {
                     {
                         return Some(EMPTY_DATA_URI.to_owned());
                     }
+                    if self.oversize_site_image(&dep) {
+                        return Some(EMPTY_DATA_URI.to_owned());
+                    }
                     let uri = self.data_uri_at(&dep, depth);
                     Some(match (uri, fragment) {
                         (Some(uri), Some(f)) if kind == RefKind::Url => format!("{uri}#{f}"),
                         (Some(uri), _) => uri.to_string(),
-                        (None, _) if kind == RefKind::ImportString => "data:text/css,".to_owned(),
+                        (None, _) if kind == RefKind::Import => "data:text/css,".to_owned(),
                         (None, _) => EMPTY_DATA_URI.to_owned(),
                     })
                 }
                 Target::Unresolved => Some(match kind {
-                    RefKind::ImportString => "data:text/css,".to_owned(),
+                    RefKind::Import => "data:text/css,".to_owned(),
                     RefKind::Url => EMPTY_DATA_URI.to_owned(),
                 }),
             }
         })
-        .into_owned()
     }
 
     /// Emit a bundle stylesheet: `<link>` (Server / Directory) or `<style>` (Inline).
@@ -346,6 +438,38 @@ impl<'a> Assets<'a> {
             tracing::warn!(path, "stylesheet missing from bundle; skipped");
             Ok(false)
         }
+    }
+
+    /// Emit an extra stylesheet (`--css`) after the site CSS: a `<link>` for URLs (and for
+    /// everything when serving: the server passes its own URLs); in the export modes, an
+    /// existing local file is embedded as `<style>` instead (see [`embed_local_css`]), so the
+    /// export does not depend on a path of the machine it was made on.
+    ///
+    /// # Errors
+    /// A local file that exists but cannot be read.
+    pub(crate) fn extra_stylesheet(&mut self, out: &mut String, entry: &str) -> anyhow::Result<()> {
+        const ATTRS: &str = " data-mdr-style=\"extra\"";
+        let local = Path::new(entry);
+        if matches!(self.mode, AssetMode::Server { .. }) || is_remote(entry) || !local.is_file() {
+            out.push_str(&format!(
+                "<link rel=\"stylesheet\" href=\"{}\"{ATTRS}>\n",
+                html::attr(entry)
+            ));
+            return Ok(());
+        }
+        let bytes =
+            fs::read(local).with_context(|| format!("reading --css {}", local.display()))?;
+        let css = embed_local_css(local, &String::from_utf8_lossy(&bytes), 0);
+        let name = local
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<style{ATTRS} data-mdr-file=\"{}\">\n{}\n</style>\n",
+            html::attr(&name),
+            html::inline_style(&css)
+        ));
+        Ok(())
     }
 
     /// Emit an embedded stylesheet from `crate::assets` (the fallback CSS when the bundle has
@@ -464,50 +588,26 @@ impl<'a> Assets<'a> {
         Ok(url)
     }
 
-    /// Export modes: map a URL found in the rendered content. Bundle references
-    /// (`/__/md-render/bundle/…`, or `<href>/…` in Directory mode) become data URIs (Inline;
-    /// empty string when not inlinable) or copied files (Directory). `None`: keep as is.
+    /// Export modes: map a URL found in the rendered content. Bundle references (under
+    /// `/__/md-render/bundle/`, the route content is rendered with) become data URIs (Inline;
+    /// empty string when not inlinable) or copied files (Directory). `None`: keep as is; every
+    /// other URL belongs to the document, even one that starts with the assets directory's
+    /// name (nbconvert writes a notebook's images to `<stem>_files/` too).
     pub(crate) fn content_url(&mut self, url: &str) -> anyhow::Result<Option<String>> {
-        let bundle_rel = url
-            .strip_prefix(BUNDLE_ROUTE)
-            .and_then(|r| r.strip_prefix('/'));
-        match self.mode {
-            AssetMode::Server { .. } => Ok(None),
-            AssetMode::Inline => {
-                let Some(rel) = bundle_rel else {
-                    return Ok(None);
-                };
-                let path = percent_decode_str(rel.split(['?', '#']).next().unwrap_or(""))
-                    .decode_utf8_lossy()
-                    .into_owned();
-                Ok(Some(
-                    css::normalize(&path)
-                        .and_then(|p| self.data_uri(&p))
-                        .map(|u| u.to_string())
-                        .unwrap_or_default(),
-                ))
-            }
-            AssetMode::Directory { href, .. } => {
-                let href = href.trim_end_matches('/');
-                let own_rel = if href.is_empty() {
-                    None
-                } else {
-                    url.strip_prefix(href).and_then(|r| r.strip_prefix('/'))
-                };
-                let Some(rel) = bundle_rel.or(own_rel) else {
-                    return Ok(None);
-                };
-                let path = percent_decode_str(rel.split(['?', '#']).next().unwrap_or(""))
-                    .decode_utf8_lossy()
-                    .into_owned();
-                let Some(path) = css::normalize(&path) else {
-                    return Ok(None);
-                };
-                match self.bundle_url(&path)? {
-                    Some(new) => Ok(Some(new)),
-                    None => Ok(None),
-                }
-            }
+        if matches!(self.mode, AssetMode::Server { .. }) || !url.starts_with(BUNDLE_ROUTE) {
+            return Ok(None);
+        }
+        let path = css::bundle_route_path(url);
+        if self.is_inline() {
+            return Ok(Some(
+                path.and_then(|p| self.data_uri(&p))
+                    .map(|u| u.to_string())
+                    .unwrap_or_default(),
+            ));
+        }
+        match path {
+            Some(path) => self.bundle_url(&path),
+            None => Ok(None),
         }
     }
 }
@@ -545,6 +645,34 @@ mod tests {
         assert_eq!(woff2_sibling("k/f.woff2"), None);
         assert_eq!(woff2_sibling("k/f.png"), None);
         assert_eq!(woff2_sibling("noext"), None);
+    }
+
+    #[test]
+    fn local_extra_css_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("img")).unwrap();
+        fs::write(tmp.path().join("img/a b.png"), b"x").unwrap();
+        let r = |v: &str| local_reference(tmp.path(), v);
+        assert_eq!(
+            r("img/a%20b.png?v=1#f"),
+            Some(tmp.path().join("img/a b.png"))
+        );
+        assert_eq!(r("./img/a b.png"), Some(tmp.path().join("./img/a b.png")));
+        for none in [
+            "img/missing.png",
+            "img",
+            "",
+            "#f",
+            "/img/a b.png",
+            "//cdn/x.png",
+            "https://e.com/x.png",
+            "data:image/png;base64,AA",
+            "c:x.png",
+        ] {
+            assert_eq!(r(none), None, "{none}");
+        }
+        assert!(is_remote("HTTPS://e.com/x.css") && is_remote("//e.com/x.css"));
+        assert!(is_remote("data:text/css,a{}") && !is_remote("/home/u/x.css"));
     }
 
     #[test]

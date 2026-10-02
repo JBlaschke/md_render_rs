@@ -21,6 +21,10 @@ pub(crate) struct Selection<'a> {
     pub light: String,
     /// Dark-slot theme id (GitHub `data-dark-theme`).
     pub dark: String,
+    /// GitLab: the bundle has a dark application stylesheet (`app` role, dark slot). Without
+    /// one the page must render as `gl-light`: GitLab's light CSS under `gl-dark` tokens mixes
+    /// light Bootstrap colours with dark text tokens. Always true for GitHub and fallbacks.
+    pub has_dark_app: bool,
 }
 
 /// GitHub core roles after the theme files, in cascade order (GH §4.5).
@@ -71,6 +75,7 @@ fn fallback_selection<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<
             .collect(),
         light: theme.light.clone(),
         dark: theme.dark.clone(),
+        has_dark_app: true,
     }
 }
 
@@ -130,61 +135,77 @@ pub(crate) fn github<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
         sheets,
         light,
         dark,
+        has_dark_app: true,
     }
 }
 
 /// GitLab: `app` light/dark, `tailwind`, `fonts`, `highlight` light/dark, then unknown roles.
 /// Theme-specific files get `media` queries in auto mode and are filtered in light/dark mode,
-/// exactly as gitlab.com's `_head.html.haml` does (GL §11.3).
+/// exactly as gitlab.com's `_head.html.haml` does (GL §11.3). A themed role vendored for one
+/// slot only (vendoring treats the dark sheets as optional, e.g. for a `--gitlab-source` that
+/// links only `application.css`) is linked in every mode without `media` (the scraped
+/// `(prefers-color-scheme: light)` would hide it on a dark OS), so the page never loses its
+/// application or highlight CSS.
 pub(crate) fn gitlab<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'a> {
     if is_fallback(m) {
         return fallback_selection(m, theme);
     }
     let themed = |s: &&Stylesheet| s.role == "app" || s.role == "highlight";
-    let available: Vec<&str> = m
-        .stylesheets
-        .iter()
-        .filter(themed)
-        .map(|s| s.theme.as_deref().unwrap_or("light"))
-        .collect();
+    let slot_id = |s: &Stylesheet| s.theme.as_deref().unwrap_or("light").to_owned();
+    let available: Vec<String> = m.stylesheets.iter().filter(themed).map(slot_id).collect();
+    let available: Vec<&str> = available.iter().map(String::as_str).collect();
     let light = resolve_theme(&available, &theme.light, "light");
     let dark = resolve_theme(&available, &theme.dark, "dark");
-
-    // For a themed sheet: Some(media) when it is emitted, None when this theme mode skips it.
-    let themed_media = |s: &Stylesheet| -> Option<Option<String>> {
-        let id = s.theme.as_deref().unwrap_or("light");
-        let is_light = id == light;
-        let is_dark = id == dark;
-        match theme.theme {
-            Theme::Light => is_light.then_some(None),
-            Theme::Dark => is_dark.then_some(None),
-            Theme::Auto if is_light => Some(Some(MEDIA_LIGHT.to_owned())),
-            Theme::Auto if is_dark => Some(Some(MEDIA_DARK.to_owned())),
-            Theme::Auto => None,
-        }
-    };
-    let slot_order = |s: &Stylesheet| -> u8 {
-        if s.theme.as_deref().unwrap_or("light") == light {
-            0
-        } else {
-            1
-        }
-    };
+    // (`--dark-theme light` puts the light file into the dark slot: no dark CSS either.)
+    let has_dark_app = dark != "light"
+        && m.stylesheets
+            .iter()
+            .any(|s| s.role == "app" && slot_id(s) == dark);
 
     let mut sheets = Vec::new();
     for role in ["app", "tailwind", "fonts", "highlight"] {
-        let mut of_role: Vec<&Stylesheet> =
+        let of_role: Vec<&'a Stylesheet> =
             m.stylesheets.iter().filter(|s| s.role == role).collect();
-        if role == "app" || role == "highlight" {
-            // Light before dark regardless of manifest order (GL §12); stable otherwise.
-            of_role.sort_by_key(|s| slot_order(s));
-            sheets.extend(
-                of_role
-                    .into_iter()
-                    .filter_map(|s| themed_media(s).map(|media| sheet(s, media))),
-            );
-        } else {
+        if role != "app" && role != "highlight" {
             sheets.extend(of_role.into_iter().map(|s| sheet(s, s.media.clone())));
+            continue;
+        }
+        let in_slot = |id: &str| -> Vec<&'a Stylesheet> {
+            of_role
+                .iter()
+                .copied()
+                .filter(|s| slot_id(s) == id)
+                .collect()
+        };
+        let (light_sheets, dark_sheets) = (in_slot(&light), in_slot(&dark));
+        // Light before dark regardless of manifest order (GL §12); stable otherwise.
+        match (theme.theme, light_sheets.is_empty(), dark_sheets.is_empty()) {
+            // Both slots use the same file (`--light-theme dark`): it applies in both modes.
+            (Theme::Auto, false, false) if light == dark => {
+                sheets.extend(light_sheets.iter().map(|s| sheet(s, None)));
+            }
+            (Theme::Auto, false, false) => {
+                sheets.extend(
+                    light_sheets
+                        .iter()
+                        .map(|s| sheet(s, Some(MEDIA_LIGHT.to_owned()))),
+                );
+                sheets.extend(
+                    dark_sheets
+                        .iter()
+                        .map(|s| sheet(s, Some(MEDIA_DARK.to_owned()))),
+                );
+            }
+            (Theme::Light, false, _) => sheets.extend(light_sheets.iter().map(|s| sheet(s, None))),
+            (Theme::Dark, _, false) => sheets.extend(dark_sheets.iter().map(|s| sheet(s, None))),
+            // Only one slot is vendored for this role: link it whatever the colour mode.
+            (Theme::Auto | Theme::Light, true, false) => {
+                sheets.extend(dark_sheets.iter().map(|s| sheet(s, None)));
+            }
+            (Theme::Auto | Theme::Dark, false, true) => {
+                sheets.extend(light_sheets.iter().map(|s| sheet(s, None)));
+            }
+            (_, true, true) => {}
         }
     }
     sheets.extend(
@@ -199,6 +220,7 @@ pub(crate) fn gitlab<'a>(m: &'a FlavorManifest, theme: &ThemeSel) -> Selection<'
         sheets,
         light,
         dark,
+        has_dark_app,
     }
 }
 
@@ -380,5 +402,116 @@ mod tests {
             ["l/app-dark.css", "l/tw.css", "l/fonts.css", "l/hl-dark.css"]
         );
         assert_eq!(s.dark, "dark");
+        assert!(s.has_dark_app);
+    }
+
+    fn media<'a>(s: &'a Selection<'a>) -> Vec<(&'a str, Option<&'a str>)> {
+        s.sheets
+            .iter()
+            .map(|s| (s.path, s.media.as_deref()))
+            .collect()
+    }
+
+    /// A light sheet as vendoring records it from gitlab.com (with the light media query).
+    fn scraped_light(path: &str, role: &str) -> Stylesheet {
+        Stylesheet {
+            media: Some(MEDIA_LIGHT.into()),
+            ..ss(path, role, Some("light"))
+        }
+    }
+
+    /// PAGE-3: a bundle without dark application/highlight CSS (both optional when vendoring)
+    /// still links the light sheets on a dark OS (no colour-scheme query) and in dark mode.
+    #[test]
+    fn gitlab_light_only_bundle_links_the_light_sheets_in_every_mode() {
+        let m = FlavorManifest {
+            stylesheets: vec![
+                scraped_light("l/app.css", "app"),
+                ss("l/tw.css", "tailwind", None),
+                ss("l/fonts.css", "fonts", None),
+                scraped_light("l/hl-white.css", "highlight"),
+            ],
+            ..Default::default()
+        };
+        for mode in [Theme::Auto, Theme::Dark, Theme::Light] {
+            let s = gitlab(&m, &sel(mode, "light", "dark"));
+            assert_eq!(
+                media(&s),
+                [
+                    ("l/app.css", None),
+                    ("l/tw.css", Some("all")),
+                    ("l/fonts.css", Some("all")),
+                    ("l/hl-white.css", None),
+                ],
+                "{mode:?}"
+            );
+            assert!(!s.has_dark_app, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn gitlab_highlight_without_dark_theme_is_linked_unconditionally() {
+        let m = FlavorManifest {
+            stylesheets: vec![
+                ss("l/app-dark.css", "app", Some("dark")),
+                ss("l/app.css", "app", Some("light")),
+                scraped_light("l/hl-white.css", "highlight"),
+            ],
+            ..Default::default()
+        };
+        let s = gitlab(&m, &ThemeSel::default());
+        assert_eq!(
+            media(&s),
+            [
+                ("l/app.css", Some(MEDIA_LIGHT)),
+                ("l/app-dark.css", Some(MEDIA_DARK)),
+                ("l/hl-white.css", None),
+            ]
+        );
+        assert!(s.has_dark_app);
+        let s = gitlab(&m, &sel(Theme::Dark, "light", "dark"));
+        assert_eq!(
+            media(&s),
+            [("l/app-dark.css", None), ("l/hl-white.css", None)]
+        );
+    }
+
+    #[test]
+    fn gitlab_dark_only_role_is_used_in_light_mode() {
+        let m = FlavorManifest {
+            stylesheets: vec![
+                ss("l/app.css", "app", Some("light")),
+                ss("l/hl-dark.css", "highlight", Some("dark")),
+            ],
+            ..Default::default()
+        };
+        let s = gitlab(&m, &sel(Theme::Light, "light", "dark"));
+        assert_eq!(paths(&s), ["l/app.css", "l/hl-dark.css"]);
+        assert!(!s.has_dark_app);
+    }
+
+    #[test]
+    fn gitlab_same_theme_in_both_slots_applies_in_both_modes() {
+        let m = gitlab_manifest();
+        let s = gitlab(&m, &sel(Theme::Auto, "dark", "dark"));
+        assert_eq!(
+            media(&s),
+            [
+                ("l/app-dark.css", None),
+                ("l/tw.css", Some("all")),
+                ("l/fonts.css", Some("all")),
+                ("l/hl-dark.css", None),
+            ]
+        );
+        assert!(s.has_dark_app);
+        let s = gitlab(&m, &sel(Theme::Auto, "light", "light"));
+        assert_eq!(
+            paths(&s),
+            ["l/app.css", "l/tw.css", "l/fonts.css", "l/hl-white.css"]
+        );
+        assert!(
+            !s.has_dark_app,
+            "light CSS in the dark slot is not dark CSS"
+        );
     }
 }

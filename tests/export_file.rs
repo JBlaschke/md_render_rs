@@ -58,6 +58,7 @@ impl Setup {
             title: None,
             context: Some("owner/repo".into()),
             bundle_path: self.bundle.clone(),
+            extra_css: Vec::new(),
             renderer,
             quiet: true,
         }
@@ -118,10 +119,12 @@ fn inline_export_of_a_file() {
     let html = std::fs::read_to_string(&out).unwrap();
     assert_self_contained(&html);
     let doc = Document::from(html.as_str());
+    // CLI-9: the default title is the file name, as when serving (and as `--help` and grip
+    // have it), not the document's first h1.
     assert_eq!(
         doc.select("title").text().as_ref(),
-        "Title",
-        "first h1 is the default title"
+        "README.md",
+        "the file name is the default title"
     );
     assert_eq!(doc.select(".mdr-box-title").text().trim(), "README.md");
     assert!(!html.contains("data-sourcepos"));
@@ -158,6 +161,8 @@ fn explicit_title_replaces_existing_output() {
     let html = std::fs::read_to_string(&out).unwrap();
     let doc = Document::from(html.as_str());
     assert_eq!(doc.select("title").text().as_ref(), "My <Title>");
+    // CLI-24: like grip's --title, it replaces the file name in the box header too.
+    assert_eq!(doc.select(".mdr-box-title").text().trim(), "My <Title>");
     assert_eq!(
         attr(&doc, "html", "data-color-mode").as_deref(),
         Some("dark")
@@ -226,8 +231,8 @@ fn directory_export() {
 
     let (_, opts) = seen(&renderer).remove(0);
     assert_eq!(
-        opts.bundle_url, "My%20Doc_files",
-        "bundle references point into the assets directory"
+        opts.bundle_url, "/__/md-render/bundle",
+        "the page maps bundle references into the assets directory"
     );
     let files = s.path("site/My Doc_files");
     assert_eq!(
@@ -376,5 +381,204 @@ fn offline_renderer_end_to_end() {
                 .contains("Some text with code."),
             "{flavor}"
         );
+    }
+}
+
+/// EXP-1: an export written to another directory than its source rebases the document's
+/// relative image and link URLs onto the source directory; absolute URLs, fragments and
+/// exports next to the source keep them as written. (Stdout exports never rebase; see the
+/// unit tests in src/export.rs.)
+#[test]
+fn relative_document_urls_follow_the_output_directory() {
+    let s = Setup::new();
+    let md = s.markdown(
+        "docs/e.md",
+        "# E\n\n![local](img/pic.png) ![remote](https://example.com/r.png)\n\n\
+         [sibling](other.md#part) [top](#e) [mail](mailto:a@example.com)\n\n\
+         <picture><source srcset=\"img/b.png 1x, img/b@2x.png 2x\"><img src=\"img/b.png\" alt=\"b\"></picture>\n",
+    );
+    std::fs::create_dir_all(s.path("docs/img")).unwrap();
+    std::fs::write(s.path("docs/img/pic.png"), PNG).unwrap();
+    std::fs::create_dir_all(s.path("out")).unwrap();
+    for flavor in [Flavor::Github, Flavor::Gitlab] {
+        for (out, prefix) in [
+            (s.path(&format!("out/{flavor}.html")), "../docs/"),
+            (s.path(&format!("docs/{flavor}.html")), ""),
+        ] {
+            for inline in [true, false] {
+                let mut cfg = s.config(
+                    ExportInput::File(md.clone()),
+                    ExportOutput::File(out.clone()),
+                    Arc::new(OfflineRenderer),
+                );
+                cfg.flavor = flavor;
+                cfg.inline = inline;
+                export(&cfg).unwrap();
+                let html = std::fs::read_to_string(&out).unwrap();
+                let doc = Document::from(html.as_str());
+                let ctx = format!("{flavor} -> {} (inline: {inline})", out.display());
+                let local = attr(&doc, "#md-content img[alt=local]", "src");
+                assert_eq!(local, Some(format!("{prefix}img/pic.png")), "{ctx}");
+                assert!(
+                    out.parent().unwrap().join(local.unwrap()).is_file(),
+                    "{ctx}: the image resolves"
+                );
+                assert_eq!(
+                    attr(&doc, "#md-content img[alt=remote]", "src").as_deref(),
+                    Some("https://example.com/r.png"),
+                    "{ctx}"
+                );
+                let hrefs: Vec<String> = doc
+                    .select("#md-content a")
+                    .nodes()
+                    .iter()
+                    .filter_map(|n| n.attr("href").map(|h| h.to_string()))
+                    .collect();
+                assert!(
+                    hrefs.contains(&format!("{prefix}other.md#part")),
+                    "{ctx}: {hrefs:?}"
+                );
+                assert!(hrefs.iter().any(|h| h == "mailto:a@example.com"), "{ctx}");
+                assert!(hrefs.iter().any(|h| h == "#e"), "{ctx}: {hrefs:?}");
+                assert_eq!(
+                    attr(&doc, "#md-content img[alt=b]", "src"),
+                    Some(format!("{prefix}img/b.png")),
+                    "{ctx}"
+                );
+                // (GitLab's sanitizer drops <source srcset>.)
+                if flavor == Flavor::Github {
+                    assert_eq!(
+                        attr(&doc, "#md-content source", "srcset"),
+                        Some(format!("{prefix}img/b.png 1x, {prefix}img/b@2x.png 2x")),
+                        "{ctx}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// CLI-12: `--css` applies to exports. A local file is embedded after the site CSS (with the
+/// files it references as data: URIs, so the export does not depend on the file staying where
+/// it is), in both asset modes; a URL is linked.
+#[test]
+fn extra_css_is_embedded_or_linked() {
+    let s = Setup::new();
+    let md = s.markdown("doc.md", "# Doc\n\nText.\n");
+    std::fs::create_dir_all(s.path("css/img")).unwrap();
+    let css_path = s.path("css/extra.css");
+    std::fs::write(
+        &css_path,
+        "@import \"more.css\";\n.markdown-body{color:rgb(1,2,3)}\n\
+         h1{background:url(img/bg.gif)} h2{background:url(https://example.com/x.png)}\n\
+         h3{background:url(img/missing.png)} a::after{content:\"url(img/bg.gif)\"}",
+    )
+    .unwrap();
+    std::fs::write(s.path("css/more.css"), "p{color:rgb(4,5,6)}").unwrap();
+    std::fs::write(s.path("css/img/bg.gif"), GIF).unwrap();
+    std::fs::create_dir_all(s.path("out")).unwrap();
+    let remote = "https://example.com/theme.css".to_owned();
+    for inline in [true, false] {
+        let out = s.path(&format!("out/doc-{inline}.html"));
+        let mut cfg = s.config(
+            ExportInput::File(md.clone()),
+            ExportOutput::File(out.clone()),
+            Arc::new(OfflineRenderer),
+        );
+        cfg.inline = inline;
+        cfg.extra_css = vec![css_path.to_string_lossy().into_owned(), remote.clone()];
+        export(&cfg).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        let doc = Document::from(html.as_str());
+        let ctx = format!("inline: {inline}");
+
+        let style = doc.select("style[data-mdr-style=extra]");
+        assert_eq!(style.length(), 1, "{ctx}");
+        assert_eq!(
+            style.attr("data-mdr-file").as_deref(),
+            Some("extra.css"),
+            "{ctx}"
+        );
+        let css = style.text().to_string();
+        assert!(css.contains(".markdown-body{color:rgb(1,2,3)}"), "{ctx}");
+        let urls = css_urls(&css);
+        assert_eq!(urls.len(), 3, "{ctx}: {css}");
+        assert!(urls[0].starts_with("data:image/gif;base64,"), "{ctx}");
+        assert_eq!(urls[1], "https://example.com/x.png", "{ctx}");
+        assert_eq!(
+            urls[2], "img/missing.png",
+            "{ctx}: missing files stay as written"
+        );
+        assert!(
+            css.contains("content:\"url(img/bg.gif)\""),
+            "{ctx}: strings are not references"
+        );
+        let import = css
+            .split("@import \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap();
+        assert!(
+            import.starts_with("data:text/css;base64,"),
+            "{ctx}: {import}"
+        );
+        assert!(
+            !html.contains(&*s.path("css").to_string_lossy()),
+            "{ctx}: no local path in the export"
+        );
+
+        let links: Vec<String> = doc
+            .select("link[data-mdr-style=extra]")
+            .nodes()
+            .iter()
+            .filter_map(|n| n.attr("href").map(|h| h.to_string()))
+            .collect();
+        assert_eq!(links, std::slice::from_ref(&remote), "{ctx}");
+        // After the site CSS: the extra stylesheets come last in <head>.
+        let head = doc.select("head").html().to_string();
+        let site = head.rfind("data-mdr-style=\"bundle\"").expect("site CSS");
+        assert!(
+            head.find("data-mdr-style=\"extra\"").unwrap() > site,
+            "{ctx}"
+        );
+    }
+}
+
+/// PAGE-1: an export whose GitHub theme is not vendored says so on stderr (with the vendor
+/// command) instead of silently looking like the default dark theme; `-q` silences it.
+#[test]
+fn missing_theme_is_reported_on_stderr() {
+    let s = Setup::new();
+    let md = s.markdown("doc.md", "# Doc\n");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_md-render"))
+            .arg("export")
+            .arg("--styles")
+            .arg(&s.bundle)
+            .args(args)
+            .arg(&md)
+            .arg(s.path("doc.html"))
+            .output()
+            .expect("md-render runs");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let stderr = run(&["--theme", "dark_high_contrast"]);
+    assert!(
+        stderr.contains(
+            "warning: the style bundle has no GitHub theme dark_high_contrast; using dark instead"
+        ) && stderr.contains("md-render vendor --flavor github --themes all"),
+        "{stderr}"
+    );
+    let html = std::fs::read_to_string(s.path("doc.html")).unwrap();
+    assert!(html.contains("data-dark-theme=\"dark\""));
+    // Vendored (the test bundle has dark_dimmed), not needed by the mode, or quiet: silent.
+    for args in [
+        &["--theme", "dark_dimmed"][..],
+        &["--theme", "light", "--dark-theme", "dark_high_contrast"],
+        &["-q", "--theme", "dark_high_contrast"],
+    ] {
+        let stderr = run(args);
+        assert!(!stderr.contains("GitHub theme"), "{args:?}: {stderr}");
     }
 }

@@ -299,6 +299,7 @@ impl ExportPlan {
             title: r.title,
             context: r.context,
             bundle_path: r.bundle_path,
+            extra_css: r.extra_css,
             renderer,
             quiet: r.quiet,
         }

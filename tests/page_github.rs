@@ -105,7 +105,13 @@ fn readme_auto_skeleton() {
     let template_src = &template_src[..template_src.find("</template>").unwrap()];
     assert!(template_src.contains("js-clipboard-copy-icon"));
     assert!(template_src.contains("js-clipboard-check-icon color-fg-success d-none"));
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/github.js"
+        ]
+    );
     assert_eq!(
         attr(&doc, "link[rel=icon]", "href").as_deref(),
         Some("/__/md-render/static/favicon.svg")
@@ -177,6 +183,50 @@ fn single_themes_and_variants() {
         attr(&doc, "html", "data-dark-theme").as_deref(),
         Some("dark")
     );
+}
+
+/// PAGE-1: a served page whose theme ids are not vendored says so (once per process, since
+/// pages are rendered per request) and names the vendor command; vendored ids and slots the
+/// colour mode does not use are silent.
+#[test]
+fn missing_theme_ids_are_reported_once_when_serving() {
+    let (_dir, bundle) = bundle();
+    let mut page = Page::new(Flavor::Github);
+    // (Ids no other test uses: the warning is logged once per process.)
+    page.theme = theme(Theme::Auto, "light_colorblind", "dark_tritanopia");
+    let (html, log) = warnings_during(|| page.render(&bundle));
+    assert!(
+        log.contains(
+            "the style bundle has no GitHub themes light_colorblind, dark_tritanopia; using light, dark instead"
+        ),
+        "{log}"
+    );
+    assert!(
+        log.contains("md-render vendor --flavor github --themes all"),
+        "{log}"
+    );
+    assert_eq!(
+        attr(&Document::from(html.as_str()), "html", "data-dark-theme").as_deref(),
+        Some("dark")
+    );
+    assert_eq!(warnings_during(|| page.render(&bundle)).1, "", "only once");
+
+    for (mode, light, dark) in [
+        (Theme::Dark, "light_colorblind_high_contrast", "dark_dimmed"),
+        (Theme::Light, "light", "dark_colorblind_high_contrast"),
+        (Theme::Auto, "light", "dark"),
+    ] {
+        page.theme = theme(mode, light, dark);
+        assert_eq!(
+            warnings_during(|| page.render(&bundle)).1,
+            "",
+            "{mode:?} {light} {dark}"
+        );
+    }
+    // Exports report it on stderr instead of logging.
+    page.theme = theme(Theme::Light, "light_high_contrast", "dark");
+    page.assets = md_render::page::AssetMode::Inline;
+    assert_eq!(warnings_during(|| page.render(&bundle)).1, "");
 }
 
 #[test]
@@ -265,7 +315,13 @@ fn libraries_follow_features() {
         mermaid: true,
     };
     let doc = Document::from(page.render(&bundle).as_str());
-    assert_eq!(script_srcs(&doc), ["/__/md-render/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        [
+            "/__/md-render/static/common.js",
+            "/__/md-render/static/github.js"
+        ]
+    );
 }
 
 #[test]
@@ -280,6 +336,7 @@ fn live_page() {
         script_srcs(&doc),
         [
             "/__/md-render/static/live.js",
+            "/__/md-render/static/common.js",
             "/__/md-render/static/github.js"
         ]
     );
@@ -443,7 +500,10 @@ fn custom_prefix() {
     };
     let doc = Document::from(page.render(&bundle).as_str());
     assert!(stylesheet_hrefs(&doc)[0].starts_with("/mdr/bundle/github/assets/"));
-    assert_eq!(script_srcs(&doc), ["/mdr/static/github.js"]);
+    assert_eq!(
+        script_srcs(&doc),
+        ["/mdr/static/common.js", "/mdr/static/github.js"]
+    );
 }
 
 #[test]
