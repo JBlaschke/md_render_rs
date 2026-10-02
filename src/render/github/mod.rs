@@ -15,6 +15,7 @@
 mod alerts;
 mod ast;
 mod autolink;
+mod budget;
 mod code;
 mod dom;
 mod emoji;
@@ -158,6 +159,11 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         mermaid: state.mermaid,
     };
 
+    // Runaway nesting would make the DOM stage quadratic (GH-PERF-1).
+    if budget::nesting_cost(&html) > budget::MAX_NESTING_COST {
+        return too_deep(&src, warnings);
+    }
+
     // 4.–5. DOM stage.
     let doc = Document::fragment(html);
     let raw = sanitize::run(&doc, &ctx);
@@ -209,6 +215,25 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         html: out,
         title,
         features,
+        warnings,
+    }
+}
+
+/// The output for a document whose nesting is over the tree-building budget
+/// ([`budget::MAX_NESTING_COST`]): its source as plain text, with a warning.
+fn too_deep(src: &str, mut warnings: Vec<String>) -> Rendered {
+    let mut html = String::from(r#"<pre class="notranslate"><code class="notranslate">"#);
+    util::push_text(&mut html, src);
+    html.push_str("</code></pre>");
+    warnings.push(
+        "The document nests HTML elements or block quotes too deeply to render in reasonable \
+         time; showing its source as plain text."
+            .to_owned(),
+    );
+    Rendered {
+        html,
+        title: None,
+        features: Features::default(),
         warnings,
     }
 }
@@ -614,6 +639,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// GH-PERF-1: runaway nesting (quadratic in html5ever) is shown as plain text instead of
+    /// stalling the render; moderately deep documents still render normally.
+    #[test]
+    fn runaway_nesting_falls_back_to_text() {
+        let n = 20_000;
+        for md in [
+            format!("{}x{}\n", "<div>".repeat(n), "</div>".repeat(n)),
+            format!("{} x\n", ">".repeat(n)),
+            format!("{}x <script>\n", "<blockquote>".repeat(n)),
+        ] {
+            for mode in [Mode::Readme, Mode::Comment] {
+                let r = render(&md, &opts(mode));
+                assert!(
+                    r.html
+                        .starts_with(r#"<pre class="notranslate"><code class="notranslate">"#),
+                    "{}",
+                    &r.html[..200.min(r.html.len())]
+                );
+                assert!(!r.html.contains("<div") && !r.html.contains("<blockquote"));
+                assert!(!r.html.contains("<script"));
+                let mut escaped = String::new();
+                util::push_text(&mut escaped, &md);
+                assert!(r.html.contains(&escaped), "the source, escaped");
+                assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+                assert!(r.warnings[0].contains("too deeply"));
+                assert_eq!(r.title, None);
+            }
+        }
+        // A few hundred levels are far below the budget.
+        let r = render(&format!("{} deep\n", ">".repeat(300)), &opts(Mode::Comment));
+        assert_eq!(r.html.matches("<blockquote>").count(), 300);
+        assert!(r.warnings.is_empty());
     }
 
     #[test]
