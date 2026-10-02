@@ -91,7 +91,7 @@ pub fn is_secret_bearing(target: &str, level: tracing::Level) -> bool {
 
 /// The subscriber md-render logs through: filter `rust_log` (a `RUST_LOG` value) if given and
 /// valid, else [`log_filter`]; never events for which [`is_secret_bearing`] holds; md-render's
-/// own `md-render: warning: …` lines by default ([`PlainFormat`]), tracing's format with time
+/// own `md-render: warning: …` lines by default (`PlainFormat`), tracing's format with time
 /// and target from `-v` on.
 pub fn log_subscriber<W>(
     rust_log: Option<&str>,

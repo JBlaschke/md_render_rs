@@ -2,15 +2,15 @@
 //! .dev/research/gitlab.md (GL) §2-§6.
 //!
 //! Pipeline (GL §2), all pure and deterministic:
-//! 1. Stage A, text (GL §3, [`preprocess`]): strip the BOM, rewrite front matter into a
+//! 1. Stage A, text (GL §3, `preprocess`): strip the BOM, rewrite front matter into a
 //!    ```` ```lang:frontmatter ```` fence, expand `::include{file=...}` (readme mode only, confined
 //!    to the served root), delete `\r`.
 //! 2. Stage B (GL §4): comrak 0.55.0 with GitLab's exact option set and the ported
-//!    gitlab-glfm-markdown formatter ([`glfm`], [`formatter`]); output `rstrip`ped.
-//! 3. Stage C (GL §5, [`filters`]): the Banzai filters in GitLab's order on a `dom_query`
-//!    fragment ([`parse`]: GitLab's nesting limit), sanitizer included ([`sanitize`]), syntax
-//!    highlighting last ([`highlight`]).
-//! 4. The post-JavaScript DOM (GL §0.3, [`postjs`]): no lazy-image placeholders,
+//!    gitlab-glfm-markdown formatter (`glfm`, `formatter`); output `rstrip`ped.
+//! 3. Stage C (GL §5, `filters`): the Banzai filters in GitLab's order on a `dom_query`
+//!    fragment (`parse`: GitLab's nesting limit), sanitizer included (`sanitize`), syntax
+//!    highlighting last (`highlight`).
+//! 4. The post-JavaScript DOM (GL §0.3, `postjs`): no lazy-image placeholders,
 //!    `code-syntax-highlight-theme`, GitLab's table wrapper; plus `data-mdr-key` and optional
 //!    removal of `data-sourcepos`.
 //!

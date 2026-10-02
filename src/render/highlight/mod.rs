@@ -2,15 +2,15 @@
 //! §3.3.
 //!
 //! * Engine (D5, CR §2): syntect 5.3 (`parsing` + `regex-fancy`, pure Rust) over the two-face
-//!   0.5.2 syntax set, loaded once and shared by all threads ([`engine`]).
+//!   0.5.2 syntax set, loaded once and shared by all threads (`engine`).
 //! * GitHub ([`github`], GH §7): Linguist language lookup, `tm_scope` → syntect grammar,
-//!   PrettyLights `pl-*` classes as nested spans ([`pl`]).
+//!   PrettyLights `pl-*` classes as nested spans (`pl`).
 //! * GitLab ([`gitlab`], GL §8): Rouge registry lookup, scope → Rouge short classes, one HTML
-//!   fragment per line ([`rouge`]).
+//!   fragment per line (`rouge`).
 //!
 //! Both entry points are pure, deterministic and never panic: tokenizer failures, pathological
-//! input and oversized blocks ([`engine::Limits`]) degrade to escaped text without token spans.
-//! Results are memoized per `(code, lang)` ([`memo`]), so unchanged blocks cost nothing when the
+//! input and oversized blocks (`engine::Limits`) degrade to escaped text without token spans.
+//! Results are memoized per `(code, lang)` (`memo`), so unchanged blocks cost nothing when the
 //! live server re-renders a document.
 
 mod engine;
