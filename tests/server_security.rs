@@ -228,3 +228,49 @@ async fn host_header_allowlist_on_loopback() {
         }
     }
 }
+
+/// SEC-6: raw HTML, SVG and XML files are active documents. Served from the preview origin
+/// they could read every file of the root (a README image opens its SVG in a new tab), so
+/// they get a sandbox CSP without `allow-same-origin`: an opaque origin, scripts still run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_active_documents_are_sandboxed() {
+    let f = Fixture::new();
+    f.file("README.md", "![logo](logo.svg)");
+    f.file("logo.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+    f.file("report.html", "<!doctype html><script>1</script>");
+    f.file(
+        "page.xhtml",
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"/>",
+    );
+    f.file("feed.xml", "<feed/>");
+    f.file("pic.png", b"\x89PNG\r\n\x1a\n");
+    f.file("notes.txt", "text");
+    f.file("data.json", "{}");
+    let s = f.start(|_| {}).await;
+    for path in ["/logo.svg", "/report.html", "/page.xhtml", "/feed.xml"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}");
+        let csp = r
+            .header("content-security-policy")
+            .unwrap_or_else(|| panic!("{path} has no Content-Security-Policy"));
+        let tokens: Vec<&str> = csp.split([' ', ';']).collect();
+        assert!(
+            tokens.contains(&"sandbox") && tokens.contains(&"allow-scripts"),
+            "{path}: {csp}"
+        );
+        assert!(!csp.contains("allow-same-origin"), "{path}: {csp}");
+    }
+    for path in [
+        "/",
+        "/README.md",
+        "/README.md?raw=1",
+        "/pic.png",
+        "/notes.txt",
+        "/data.json",
+        "/__/md-render/static/live.js",
+    ] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.header("content-security-policy"), None, "{path}");
+    }
+}

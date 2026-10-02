@@ -493,3 +493,56 @@ async fn gitlab_wrapped_blocks_keep_the_scroll_anchor() {
         );
     }
 }
+
+/// SEC-6: a raw SVG or HTML file opened from the preview (a README image is a link to its
+/// file) runs in an opaque origin, so its script cannot read the served files; embedding
+/// the same SVG as an image still works, and the HTML page's own script still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_documents_cannot_read_the_served_files() {
+    let Some(mut b) = Browser::launch("raw_documents_cannot_read_the_served_files") else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("README.md", "![logo](logo.svg)\n");
+    f.file(".env", "SECRET=1");
+    let probe = "fetch('/.env').then((r) => r.text()).then((t) => { window.leaked = t; }, \
+                 (e) => { window.leaked = 'blocked: ' + e.name; });";
+    f.file(
+        "logo.svg",
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"40\">\
+             <rect width=\"120\" height=\"40\"/><script>{probe}</script></svg>"
+        ),
+    );
+    f.file(
+        "report.html",
+        format!("<!doctype html><title>t</title><script>document.title = 'ran'; {probe}</script>"),
+    );
+    let s = f
+        .start(|cfg| cfg.renderer = Arc::new(md_render::render::OfflineRenderer))
+        .await;
+    let readme = b.open(&url(&s, "/"), false);
+    assert_eq!(
+        b.expect(&readme, IMG_WIDTH, "the SVG image is shown"),
+        json!(120)
+    );
+    for path in ["/logo.svg", "/report.html"] {
+        let tab = b.open(&url(&s, path), false);
+        let leaked = b.expect(&tab, "window.leaked", "the probe finished");
+        assert!(
+            leaked.as_str().is_some_and(|t| t.starts_with("blocked")),
+            "{path} read /.env: {leaked}"
+        );
+        assert_eq!(
+            b.eval(&tab, "self.origin").unwrap(),
+            json!("null"),
+            "{path}"
+        );
+    }
+    let tab = b.open(&url(&s, "/report.html"), false);
+    b.expect(
+        &tab,
+        "document.title === 'ran'",
+        "the page's own script runs",
+    );
+}
