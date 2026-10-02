@@ -973,7 +973,7 @@ mod tests {
         }
         let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = other.local_addr().unwrap().port();
-        let err = bind("localhost", port).await.err().expect("bind must fail");
+        let err = bind("localhost", port).await.expect_err("bind must fail");
         assert!(
             format!("{err:#}").contains(&format!("port {port} is already in use on 127.0.0.1")),
             "{err:#}"
