@@ -216,6 +216,112 @@ fn stdin_export_to_stdout_is_planned_before_running() {
     }
 }
 
+/// A minimal HTTP/1.1 server on 127.0.0.1 answering GETs from `files` (404 otherwise), one
+/// connection at a time, for as long as the test process runs. Returns `host:port`.
+fn mock_site(files: Vec<(&'static str, &'static str)>) -> String {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            // Skip the headers.
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                line.clear();
+            }
+            let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+            let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                Some((_, body)) => ("200 OK", *body),
+                None => ("404 Not Found", "not found"),
+            };
+            let kind = if path.ends_with(".css") {
+                "text/css"
+            } else {
+                "text/html"
+            };
+            let mut stream = reader.into_inner();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    addr
+}
+
+/// CLI-15: a successful `vendor` prints its summary once (the vendor module's
+/// "wrote … (N files, … uncompressed, … on disk)"), not a second "Wrote N files (… KiB)" line in
+/// other units.
+#[test]
+fn vendor_prints_one_summary() {
+    let e = env();
+    let page = "<!DOCTYPE html><html><head>\
+        <link rel=\"stylesheet\" href=\"/assets/light-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/dark-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/primer-primitives-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/primer-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/global-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/github-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/repository-0123456789abcdef.css\">\
+        <link rel=\"stylesheet\" href=\"/assets/code-0123456789abcdef.css\">\
+        </head><body>hi</body></html>";
+    let css = ".markdown-body{color:#1f2328}\n";
+    let addr = mock_site(vec![
+        ("/page.html", page),
+        ("/assets/light-0123456789abcdef.css", css),
+        ("/assets/dark-0123456789abcdef.css", css),
+        ("/assets/primer-primitives-0123456789abcdef.css", css),
+        ("/assets/primer-0123456789abcdef.css", css),
+        ("/assets/global-0123456789abcdef.css", css),
+        ("/assets/github-0123456789abcdef.css", css),
+        ("/assets/repository-0123456789abcdef.css", css),
+        ("/assets/code-0123456789abcdef.css", css),
+    ]);
+    let source = format!("http://{addr}/page.html");
+    let mut cmd = command(
+        &e.cwd,
+        &e.home,
+        &[
+            "vendor",
+            "--flavor",
+            "github",
+            "--no-libs",
+            "--github-source",
+            &source,
+            "-o",
+            "bundle.tar.gz",
+        ],
+    );
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(var);
+    }
+    let out = cmd.stdin(Stdio::null()).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(e.cwd.join("bundle.tar.gz").is_file(), "{stderr}");
+    let summaries: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.trim_start().to_ascii_lowercase().starts_with("wrote "))
+        .collect();
+    assert_eq!(summaries.len(), 1, "{stderr}");
+    assert!(summaries[0].contains("bundle.tar.gz"), "{stderr}");
+    assert!(!stderr.contains("KiB"), "{stderr}");
+}
+
 /// Needs `md_render::export::export` (owner: page); enable once it is implemented.
 #[test]
 #[ignore = "needs the export implementation (owner: page)"]

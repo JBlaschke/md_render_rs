@@ -148,7 +148,7 @@ pub fn execute(inv: Invocation) -> anyhow::Result<()> {
             let renderer = plan.render.renderer()?;
             crate::export::export(&plan.into_config(renderer))
         }
-        Plan::Vendor(plan) => vendor(&plan, quiet),
+        Plan::Vendor(plan) => vendor(&plan),
         Plan::CacheClear(plan) => {
             let message = cache_clear(&plan)?;
             if !quiet {
@@ -163,7 +163,7 @@ pub fn execute(inv: Invocation) -> anyhow::Result<()> {
     }
 }
 
-fn vendor(plan: &VendorPlan, quiet: bool) -> anyhow::Result<()> {
+fn vendor(plan: &VendorPlan) -> anyhow::Result<()> {
     let output = &plan.options.output;
     if plan.create_parent {
         if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -171,47 +171,10 @@ fn vendor(plan: &VendorPlan, quiet: bool) -> anyhow::Result<()> {
                 .with_context(|| format!("creating the cache directory {}", parent.display()))?;
         }
     }
-    let report = crate::styles::vendor::vendor(&plan.options)?;
-    for f in &report.failures {
-        let status = f.status.map(|s| format!("HTTP {s}: ")).unwrap_or_default();
-        let by = f
-            .referenced_by
-            .as_deref()
-            .map(|r| format!(" (referenced by {r})"))
-            .unwrap_or_default();
-        tracing::warn!("could not download {}{by}: {status}{}", f.url, f.error);
-    }
-    if !quiet {
-        eprintln!(
-            "Wrote {} files ({}) to {}{}",
-            report.files,
-            human_bytes(report.bytes),
-            report.output.display(),
-            match report.failures.len() {
-                0 => String::new(),
-                1 => " (1 asset could not be downloaded, see above)".to_owned(),
-                n => format!(" ({n} assets could not be downloaded, see above)"),
-            }
-        );
-    }
+    // The vendor module reports progress, every failed download and the final summary itself
+    // (unless quiet); repeating the summary here printed it twice, in other units (CLI-15).
+    crate::styles::vendor::vendor(&plan.options)?;
     Ok(())
-}
-
-/// `1234567` → `1.2 MiB`.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    // Precision loss is irrelevant for a one-decimal display value.
-    #[allow(clippy::cast_precision_loss)]
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
 }
 
 /// `md-render cache clear` / grip's `--clear` (GRIP §10 C30): delete md-render's own cache
@@ -339,14 +302,6 @@ mod tests {
             anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied)).context("writing");
         assert!(!is_broken_pipe(&other));
         assert!(!is_broken_pipe(&anyhow::anyhow!("plain")));
-    }
-
-    #[test]
-    fn byte_sizes() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(1023), "1023 B");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
     }
 
     #[test]
