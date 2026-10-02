@@ -400,3 +400,96 @@ async fn banners_and_error_titles_from_page_load_are_cleared_by_fresh_content() 
     let state = b.eval(&tab, BANNERS).unwrap();
     assert_eq!(state, json!({"server": 0, "live": 0, "title": "latin1.md"}));
 }
+
+/// A long document: a heading, `before` paragraphs, a 200-line Python block, a table and
+/// 30 more paragraphs; `extra` paragraphs are inserted before the last 2 of `before`.
+fn long_doc(before: usize, extra: usize) -> String {
+    let mut md = String::from("# Long\n\n");
+    for i in 0..before {
+        if i + 2 == before {
+            for j in 0..extra {
+                md.push_str(&format!("inserted paragraph {j}\n\n"));
+            }
+        }
+        md.push_str(&format!(
+            "para {i} with some words to make it wrap a little bit\n\n"
+        ));
+    }
+    md.push_str("```python\n");
+    for i in 1..=200 {
+        md.push_str(&format!("line_{i} = {i}\n"));
+    }
+    md.push_str("```\n\n| a | b |\n|---|---|\n");
+    for i in 0..40 {
+        md.push_str(&format!("| {i} | {i} |\n"));
+    }
+    md.push('\n');
+    for i in 0..30 {
+        md.push_str(&format!("tail {i}\n\n"));
+    }
+    md
+}
+
+/// Top of an element relative to the viewport (null when it does not exist).
+fn top_of(selector: &str) -> String {
+    format!(
+        "(() => {{ const e = document.querySelector({selector:?}); \
+         return e ? e.getBoundingClientRect().top : null; }})()"
+    )
+}
+
+/// LIVE-12: GitLab wraps code blocks, tables, mermaid and raw HTML in top-level elements
+/// without `data-sourcepos`. When such a block is at the top of the viewport, an edit above
+/// it must not move what the reader is looking at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gitlab_wrapped_blocks_keep_the_scroll_anchor() {
+    let Some(mut b) = Browser::launch("gitlab_wrapped_blocks_keep_the_scroll_anchor") else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("doc.md", long_doc(30, 0));
+    let s = f
+        .start(|cfg| {
+            cfg.flavor = md_render::flavor::Flavor::Gitlab;
+            cfg.renderer = Arc::new(md_render::render::OfflineRenderer);
+        })
+        .await;
+    let tab = b.open(&url(&s, "/doc.md"), false);
+    b.expect_connected(&tab);
+    let cases = [
+        ("#LC100", "a line in the middle of a code block"),
+        (
+            "#md-content tbody tr:nth-child(20)",
+            "a row in the middle of a table",
+        ),
+    ];
+    let mut extra = 0;
+    for (target, what) in cases {
+        b.eval(
+            &tab,
+            &format!(
+                "document.querySelector({target:?}).scrollIntoView({{block: 'start'}}); \
+                 window.scrollBy(0, -3); true"
+            ),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let before = b.eval(&tab, &top_of(target)).unwrap();
+        assert!(before.as_f64().is_some(), "{target} is not in the page");
+        extra += 10;
+        let marker = format!("inserted paragraph {}", extra - 1);
+        write_atomic(&s.path("doc.md"), long_doc(30, extra));
+        b.expect(
+            &tab,
+            &format!("document.getElementById('md-content').textContent.includes({marker:?})"),
+            "the inserted paragraphs are shown",
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let after = b.eval(&tab, &top_of(target)).unwrap();
+        let moved = after.as_f64().unwrap() - before.as_f64().unwrap();
+        assert!(
+            moved.abs() <= 1.0,
+            "{what} moved by {moved} px (from {before} to {after})"
+        );
+    }
+}

@@ -449,6 +449,16 @@
     return m ? Number(m[1]) : null;
   }
 
+  // Source start line of a top-level block: its own `data-sourcepos`, else that of the
+  // first element inside it. GitLab wraps code blocks, tables, mermaid and raw HTML in
+  // elements without one; the position is on the inner `pre` / `table` (LIVE-12).
+  function blockLine(el) {
+    const own = startLine(el);
+    if (own !== null) return own;
+    const inner = el.querySelector('[data-sourcepos]');
+    return inner ? startLine(inner) : null;
+  }
+
   function maxScroll() {
     const se = document.scrollingElement || document.documentElement;
     return se.scrollHeight - window.innerHeight;
@@ -462,16 +472,20 @@
     // The first top-level block reaching below the top of the viewport. Reconciliation
     // usually keeps that very node (or at least its predecessor), which is the most precise
     // anchor; its source line is the fallback (and what survives a page reload).
+    let block = null;
     const blocks = container.children;
     for (let i = 0; i < blocks.length; i++) {
       const r = blocks[i].getBoundingClientRect();
       if (r.bottom > 0) {
-        const line = startLine(blocks[i]);
-        if (line !== null) return { el: blocks[i], prev: blocks[i].previousElementSibling, line, offset: r.top };
-        break;
+        block = { el: blocks[i], prev: blocks[i].previousElementSibling, offset: r.top };
+        const line = blockLine(blocks[i]);
+        if (line === null) break;
+        block.line = line;
+        return block;
       }
     }
-    // No source positions (e.g. --api output): the last heading above the viewport top.
+    // No source positions (e.g. --api output): the last heading above the viewport top,
+    // used when the block itself is not kept.
     const hs = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
     let heading = null;
     for (let i = 0; i < hs.length; i++) {
@@ -479,8 +493,8 @@
       if (top > 0) break;
       heading = { text: hs[i].textContent, index: i, offset: top };
     }
-    if (heading) return { heading };
-    return { ratio: max > 0 ? y / max : 0 };
+    const fallback = heading ? { heading } : { ratio: max > 0 ? y / max : 0 };
+    return block ? Object.assign(block, fallback) : fallback;
   }
 
   function restoreAnchor(container, a) {
@@ -502,7 +516,7 @@
       let best = -1;
       const blocks = container.children;
       for (let i = 0; i < blocks.length; i++) {
-        const l = startLine(blocks[i]);
+        const l = blockLine(blocks[i]);
         if (l !== null && l <= a.line && l > best) {
           best = l;
           target = blocks[i];
