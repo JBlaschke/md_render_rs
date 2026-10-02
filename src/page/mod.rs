@@ -175,9 +175,8 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     // Content: exports drop data-sourcepos and point bundle references into the export.
     let content_html = match input.assets {
         AssetMode::Server { .. } => input.content.html.clone(),
-        AssetMode::Inline => content::for_export(&input.content.html, &mut assets, None)?,
-        AssetMode::Directory { href, .. } => {
-            content::for_export(&input.content.html, &mut assets, Some(href))?
+        AssetMode::Inline | AssetMode::Directory { .. } => {
+            content::for_export(&input.content.html, &mut assets)?
         }
     };
 

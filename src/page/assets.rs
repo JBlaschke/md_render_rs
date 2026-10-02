@@ -17,7 +17,7 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use super::AssetMode;
 use super::css::{self, BUNDLE_ROUTE, RefKind, Target};
 use super::html;
-use crate::styles::{Bundle, resolve_bundle_ref};
+use crate::styles::Bundle;
 
 /// Characters escaped when a bundle path is turned into a URL path (`/` is kept).
 const PATH_SET: &AsciiSet = &CONTROLS
@@ -57,6 +57,8 @@ pub(crate) struct Assets<'a> {
     bundle: &'a Bundle,
     /// Directory mode: destination-relative paths already written.
     written: HashSet<String>,
+    /// Directory mode: bundle paths found missing (looked up and logged once).
+    missing: HashSet<String>,
     /// Inline mode: data URIs by bundle path (`None`: not inlinable).
     data_uris: HashMap<String, Option<Rc<str>>>,
 }
@@ -143,6 +145,7 @@ impl<'a> Assets<'a> {
             mode,
             bundle,
             written: HashSet::new(),
+            missing: HashSet::new(),
             data_uris: HashMap::new(),
         }
     }
@@ -210,8 +213,16 @@ impl<'a> Assets<'a> {
         if self.written.contains(path) {
             return Ok(true);
         }
+        if self.missing.contains(path) {
+            return Ok(false);
+        }
         let Some(bytes) = self.bundle.read(path) else {
-            tracing::warn!(path, "bundle file missing; not copied");
+            // Expected for url() targets that vendoring leaves out on purpose (KaTeX's legacy
+            // .woff/.ttf fonts) or could not download (the site's own 404s, recorded in the
+            // manifest's failures), as in Inline mode; a missing stylesheet is reported by
+            // `stylesheet`.
+            tracing::debug!(path, "bundle file missing; not copied");
+            self.missing.insert(path.to_owned());
             return Ok(false);
         };
         write_file(dir, path, &bytes)?;
@@ -485,34 +496,26 @@ impl<'a> Assets<'a> {
         Ok(url)
     }
 
-    /// Export modes: map a URL found in the rendered content. Bundle references
-    /// (`/__/md-render/bundle/…`, or `<href>/…` in Directory mode) become data URIs (Inline;
-    /// empty string when not inlinable) or copied files (Directory). `None`: keep as is.
+    /// Export modes: map a URL found in the rendered content. Bundle references (under
+    /// `/__/md-render/bundle/`, the route content is rendered with) become data URIs (Inline;
+    /// empty string when not inlinable) or copied files (Directory). `None`: keep as is; every
+    /// other URL belongs to the document, even one that starts with the assets directory's
+    /// name (nbconvert writes a notebook's images to `<stem>_files/` too).
     pub(crate) fn content_url(&mut self, url: &str) -> anyhow::Result<Option<String>> {
-        match self.mode {
-            AssetMode::Server { .. } => Ok(None),
-            AssetMode::Inline => {
-                if !url.starts_with(BUNDLE_ROUTE) {
-                    return Ok(None);
-                }
-                Ok(Some(
-                    css::bundle_route_path(url)
-                        .and_then(|p| self.data_uri(&p))
-                        .map(|u| u.to_string())
-                        .unwrap_or_default(),
-                ))
-            }
-            AssetMode::Directory { href, .. } => {
-                let href = href.trim_end_matches('/');
-                let path = css::bundle_route_path(url).or_else(|| {
-                    let rel = url.strip_prefix(href)?.strip_prefix('/')?;
-                    (!href.is_empty()).then(|| resolve_bundle_ref("", rel))?
-                });
-                match path {
-                    Some(path) => self.bundle_url(&path),
-                    None => Ok(None),
-                }
-            }
+        if matches!(self.mode, AssetMode::Server { .. }) || !url.starts_with(BUNDLE_ROUTE) {
+            return Ok(None);
+        }
+        let path = css::bundle_route_path(url);
+        if self.is_inline() {
+            return Ok(Some(
+                path.and_then(|p| self.data_uri(&p))
+                    .map(|u| u.to_string())
+                    .unwrap_or_default(),
+            ));
+        }
+        match path {
+            Some(path) => self.bundle_url(&path),
+            None => Ok(None),
         }
     }
 }

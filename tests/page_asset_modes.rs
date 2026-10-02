@@ -352,10 +352,11 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
         math: true,
         mermaid: false,
     };
-    // Content rendered with `bundle_url = href` (what export does) points into the directory.
-    page.content
-        .html
-        .push_str("<p><img src=\"x_files/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>");
+    // Content rendered with the default bundle route (what export does) points into the
+    // directory once exported.
+    page.content.html.push_str(
+        "<p><img src=\"/__/md-render/bundle/gitlab/assets/icon_anchor-abc.svg\" alt=\"a\"></p>",
+    );
     let html = page.render(&bundle);
     let doc = Document::from(html.as_str());
     assert_relative_refs_exist(&html, out.path(), "x_files/");
@@ -371,6 +372,10 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
     );
     assert!(files.join("gitlab/assets/icon_anchor-abc.svg").is_file());
     assert_eq!(
+        attr(&doc, "#md-content img[alt=a]", "src").as_deref(),
+        Some("x_files/gitlab/assets/icon_anchor-abc.svg")
+    );
+    assert_eq!(
         attr(&doc, "link[data-mdr-lib=katex-css]", "href").as_deref(),
         Some("x_files/gitlab/lib/katex/katex.min.css")
     );
@@ -381,6 +386,104 @@ fn directory_mode_gitlab_and_rendered_with_export_bundle_url() {
     assert!(
         files
             .join("gitlab/assets/icons-0123456789abcdef.svg")
+            .is_file()
+    );
+}
+
+/// Collects what a `tracing` subscriber writes.
+#[derive(Clone, Default)]
+struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'w self) -> LogCapture {
+        self.clone()
+    }
+}
+
+/// Warnings (and errors) logged on this thread while `f` runs.
+fn warnings_during<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    let value = tracing::subscriber::with_default(subscriber, f);
+    let text = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
+    (value, text)
+}
+
+/// EXP-4: `--no-inline` exports do not warn about url() targets that are missing from the
+/// bundle on purpose (KaTeX's legacy fonts, site 404s recorded by vendoring), and document
+/// URLs that merely start with the assets directory's name (nbconvert's `<stem>_files/`
+/// images) are the document's own: neither looked up in the bundle nor rewritten.
+#[test]
+fn directory_mode_is_quiet_about_expected_gaps_and_leaves_document_urls_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Gitlab,
+            "gitlab/assets/application-1.css",
+            "app",
+            Some("light"),
+            ".a{background:url(./icons/alert-fill-12.svg)}.b{background:url(./icons/alert-fill-12.svg)}",
+        )
+        .asset(Flavor::Gitlab, "gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2", WOFF2)
+        .script(Flavor::Gitlab, "katex", "gitlab/lib/katex/katex.min.js", b"window.katex = {};")
+        .script(
+            Flavor::Gitlab,
+            "katex-css",
+            "gitlab/lib/katex/katex.min.css",
+            b"@font-face{font-family:KaTeX_Main;src:url(fonts/KaTeX_Main-Regular.woff2) format(\"woff2\"),\
+              url(fonts/KaTeX_Main-Regular.woff) format(\"woff\"),url(fonts/KaTeX_Main-Regular.ttf) format(\"truetype\")}",
+        )
+        .open(dir.path());
+    let out = tempfile::tempdir().unwrap();
+    let files = out.path().join("notebook_files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("notebook_3_0.png"), b"user image").unwrap();
+
+    let mut page = Page::new(Flavor::Gitlab);
+    page.assets = AssetMode::Directory {
+        href: "notebook_files".into(),
+        dir: files.clone(),
+    };
+    page.content.features = Features {
+        math: true,
+        mermaid: false,
+    };
+    page.content.html =
+        "<p><img src=\"notebook_files/notebook_3_0.png\" alt=\"png\"> <a href=\"notebook_files/notebook_3_0.png\">x</a></p>"
+            .to_owned();
+    let (html, warnings) = warnings_during(|| page.render(&bundle));
+    assert_eq!(warnings, "", "no warnings for expected gaps");
+    let doc = Document::from(html.as_str());
+    assert_eq!(
+        attr(&doc, "#md-content img", "src").as_deref(),
+        Some("notebook_files/notebook_3_0.png")
+    );
+    assert_eq!(
+        attr(&doc, "#md-content a", "href").as_deref(),
+        Some("notebook_files/notebook_3_0.png")
+    );
+    assert_eq!(
+        std::fs::read(files.join("notebook_3_0.png")).unwrap(),
+        b"user image"
+    );
+    assert!(
+        files
+            .join("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2")
             .is_file()
     );
 }
