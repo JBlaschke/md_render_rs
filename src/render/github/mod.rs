@@ -170,7 +170,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     }
     let mut enrichments = state.enrichments;
     let mut feats = (false, false);
-    code::raw_pre(&doc, &ctx, &mut enrichments, &mut feats);
+    code::raw_pre(&doc, &ctx, &raw, &mut enrichments, &mut feats);
     features.math |= feats.0;
     features.mermaid |= feats.1;
     filters::emoji(&doc, &ctx);
@@ -579,6 +579,41 @@ mod tests {
             &opts(Mode::Comment),
         );
         assert!(!r.html.contains("<a "), "{}", r.html);
+    }
+
+    /// GH-MATH-1: empty math edge cases (`cases2/math_blocks2.gh.html`,
+    /// `cases2/math_display_variants.gh.html`, `gh api /markdown` gfm + context).
+    #[test]
+    fn empty_math_edge_cases() {
+        for mode in [Mode::Comment, Mode::Readme] {
+            let r = render("```math\n```\n", &opts(mode));
+            assert_eq!(
+                r.html.trim_end(),
+                r#"<pre lang="math" class="notranslate">$$$$</pre>"#,
+                "{mode:?}"
+            );
+            assert!(!r.features.math);
+            // The generated `<pre lang="math">` is not taken for a raw one and re-wrapped.
+            let r = render("```math\n```\n\n```math\nx\n```\n", &opts(mode));
+            assert_eq!(r.html.matches("<math-renderer").count(), 1, "{}", r.html);
+            assert!(r.html.contains(">$$$$</pre>"), "{}", r.html);
+
+            let r = render("$$\n$$\n", &opts(mode));
+            let html = r.html.trim_end();
+            assert!(
+                html.starts_with(r#"<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id=""#)
+                    && html.ends_with(">$$\n$$</math-renderer></p>"),
+                "{mode:?}: {html}"
+            );
+            assert!(r.features.math);
+            // Blank spans on one line stay text.
+            for md in ["$$ $$\n", "$$$$\n"] {
+                assert!(
+                    !render(md, &opts(mode)).html.contains("<math-renderer"),
+                    "{md:?}"
+                );
+            }
+        }
     }
 
     #[test]

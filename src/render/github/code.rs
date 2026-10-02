@@ -1,7 +1,9 @@
 //! Code blocks: highlight / clipboard wrappers (GH §7.1, §5.3), ```` ```math ```` (GH §8.6)
 //! and enrichment sections for mermaid/geojson/topojson/stl (GH §8.7).
 
-use dom_query::Document;
+use std::collections::HashSet;
+
+use dom_query::{Document, NodeId};
 
 use super::Ctx;
 use super::dom;
@@ -31,6 +33,19 @@ pub(super) struct Block {
 pub(super) fn block_html(ctx: &Ctx, lang: &str, literal: &str, sp: &str, index: usize) -> Block {
     // RAW / TOKENS drop exactly one final newline (GH §7.1).
     let raw = literal.strip_suffix('\n').unwrap_or(literal);
+    if lang == "math" && raw.is_empty() {
+        // github.com keeps an empty ```` ```math ```` fence as a `<pre>` holding just the
+        // delimiters, no `<math-renderer>` (GH-MATH-1, `cases2/math_blocks2.gh.html`).
+        let mut html = String::from("<pre");
+        html.push_str(&ctx.mark);
+        html.push_str(r#" lang="math" class="notranslate""#);
+        html.push_str(sp);
+        html.push_str(">$$$$</pre>");
+        return Block {
+            html,
+            ..Block::default()
+        };
+    }
     if lang == "math" {
         // github.com doubles a backslash that ends a line inside ```` ```math ```` (`\\` at
         // the end of a matrix row becomes `\\\`; `S/ctx/aaddrick_*`, `S/ctx/joseph_*`).
@@ -176,20 +191,24 @@ fn enrichment_html(ctx: &Ctx, kind: &str, code: &str, sp: &str, index: usize) ->
 
 /// Raw HTML `<pre>` elements (after sanitizing): `<pre lang>` is highlighted / turned into
 /// math or enrichment like a fence, `<pre><code>` gets the plain clipboard wrapper; a bare
-/// `<pre>` stays as is (GH §7.1; `S/ctx/rhysd_*`, `S/pages/lifeparticle_*`).
+/// `<pre>` stays as is (GH §7.1; `S/ctx/rhysd_*`, `S/pages/lifeparticle_*`). `raw` holds
+/// the raw elements the sanitizer kept; generated `<pre>`s (code blocks, enrichments, an
+/// empty ```` ```math ```` fence) are left alone.
 pub(super) fn raw_pre(
     doc: &Document,
     ctx: &Ctx,
+    raw: &HashSet<NodeId>,
     enrichments: &mut usize,
     feats: &mut (bool, bool),
 ) {
     let plain_ctx = ctx.without_marks();
     for pre in dom::elements_named(doc, "pre") {
-        let generated = pre.parent().is_some_and(|p| {
-            p.has_class("highlight")
-                || p.has_class("snippet-clipboard-content")
-                || p.has_class("render-plaintext-hidden")
-        });
+        let generated = !raw.contains(&pre.id)
+            || pre.parent().is_some_and(|p| {
+                p.has_class("highlight")
+                    || p.has_class("snippet-clipboard-content")
+                    || p.has_class("render-plaintext-hidden")
+            });
         if generated {
             continue;
         }
@@ -286,5 +305,23 @@ mod tests {
         ));
         let other = block_html(&ctx(false), "mermaid", "graph TD\n  A --> B\n", "", 1);
         assert_ne!(b.html, other.html, "distinct data-identity per occurrence");
+    }
+
+    /// GH-MATH-1: an empty ```` ```math ```` fence stays a `<pre>` holding the delimiters
+    /// (`cases2/math_blocks2.gh.html`), and needs no math library.
+    #[test]
+    fn empty_math_fence() {
+        for comment in [false, true] {
+            for literal in ["", "\n"] {
+                let b = block_html(&ctx(comment), "math", literal, "", 0);
+                assert!(!b.math);
+                assert_eq!(b.html, r#"<pre lang="math" class="notranslate">$$$$</pre>"#);
+            }
+        }
+        let b = block_html(&ctx(false), "math", "", r#" data-sourcepos="1:1-2:3""#, 0);
+        assert_eq!(
+            b.html,
+            r#"<pre lang="math" class="notranslate" data-sourcepos="1:1-2:3">$$$$</pre>"#
+        );
     }
 }

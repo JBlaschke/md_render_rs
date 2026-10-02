@@ -131,7 +131,9 @@ fn eligible(n: &NodeRef<'_>) -> bool {
 }
 
 /// Splits `text` into `$$…$$` spans separated only by whitespace; `None` if anything else
-/// occurs.
+/// occurs. A blank span counts only when its delimiters are on separate lines (`$$\n$$` is
+/// display math on github.com, GH-MATH-1 / `cases2/math_display_variants.gh.html`; `$$ $$`
+/// and `$$$$` are not).
 pub(super) fn display_spans(text: &str) -> Option<Vec<(usize, usize)>> {
     let mut spans = Vec::new();
     let mut pos = 0;
@@ -144,7 +146,8 @@ pub(super) fn display_spans(text: &str) -> Option<Vec<(usize, usize)>> {
             return None;
         }
         let close = pos + 2 + text[pos + 2..].find("$$")?;
-        if text[pos + 2..close].trim().is_empty() {
+        let content = &text[pos + 2..close];
+        if content.trim().is_empty() && !content.contains('\n') {
             return None;
         }
         spans.push((pos, close + 2));
@@ -362,6 +365,10 @@ mod tests {
         assert_eq!(display_spans("$$a$$ text"), None);
         assert_eq!(display_spans("$$ $$"), None);
         assert_eq!(display_spans("$$a"), None);
+        // GH-MATH-1: a blank span counts when the delimiters are on separate lines.
+        assert_eq!(display_spans("$$\n$$"), Some(vec![(0, 5)]));
+        assert_eq!(display_spans("$$  \n $$"), Some(vec![(0, 8)]));
+        assert_eq!(display_spans("$$$$"), None);
     }
 
     /// API probes with context (2026-10-01).
