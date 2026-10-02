@@ -97,12 +97,10 @@ fn github_inline_is_self_contained() {
         ["data:,"],
         "large site images are not inlined"
     );
-    // @import is followed and inlined as CSS, with its own references resolved.
+    // @import is followed and inlined as CSS, with its own references resolved; only the
+    // value changes (the import keeps its string form).
     let repo = inlined_css(&doc, "github/assets/repository-0005.css");
-    let import = repo
-        .split("@import url(\"")
-        .nth(1)
-        .expect("@import rewritten");
+    let import = repo.split("@import \"").nth(1).expect("@import rewritten");
     let import = &import[..import.find('"').unwrap()];
     assert!(import.starts_with("data:text/css;base64,"));
     let imported = String::from_utf8(decode_data_uri(import)).unwrap();
@@ -474,4 +472,65 @@ fn large_site_images_stay_out_of_exports() {
     );
     assert!(files.join("images/icon.png").is_file());
     assert!(files.join("emoji/octocat.png").is_file());
+}
+
+/// EXP-3 / Q-DUP-CSS: exports find references with the vendoring tokenizer, so `url(…)` text
+/// inside strings and comments is left alone (rewriting it closed the string early and broke
+/// the rule) and escaped characters stay part of the URL, in both export modes.
+#[test]
+fn css_strings_comments_and_escapes_survive_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let css = r#"a::after{content:"url(x.png)"}/* old: url(y.png) */b{background:url(a\)b.png)}c{background:url("q\"r.gif")}"#;
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Github,
+            "github/assets/github-1.css",
+            "github",
+            None,
+            css,
+        )
+        .asset(Flavor::Github, "github/assets/x.png", GIF)
+        .asset(Flavor::Github, "github/assets/y.png", GIF)
+        .asset(Flavor::Github, "github/assets/a)b.png", PNG)
+        .asset(Flavor::Github, "github/assets/q\"r.gif", GIF)
+        .open(dir.path());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    let mut page = Page::new(Flavor::Github);
+    page.assets = AssetMode::Inline;
+    let html = page.render(&bundle);
+    assert_self_contained(&html);
+    let doc = Document::from(html.as_str());
+    let inlined = inlined_css(&doc, "github/assets/github-1.css");
+    let expected = css
+        .replace(
+            r"url(a\)b.png)",
+            &format!("url(data:image/png;base64,{})", b64(PNG)),
+        )
+        .replace(
+            r#"url("q\"r.gif")"#,
+            &format!("url(\"data:image/gif;base64,{}\")", b64(GIF)),
+        );
+    assert_eq!(
+        inlined.trim(),
+        expected,
+        "only the two real references change"
+    );
+
+    let out = tempfile::tempdir().unwrap();
+    page.assets = AssetMode::Directory {
+        href: "x_files".into(),
+        dir: out.path().join("x_files"),
+    };
+    page.render(&bundle);
+    let files = out.path().join("x_files/github/assets");
+    assert!(files.join("a)b.png").is_file(), "escaped URL resolved");
+    assert!(files.join("q\"r.gif").is_file());
+    assert!(!files.join("x.png").exists(), "strings are not references");
+    assert!(!files.join("y.png").exists(), "comments are not references");
+    assert_eq!(
+        std::fs::read_to_string(files.join("github-1.css")).unwrap(),
+        css,
+        "copied stylesheets are verbatim"
+    );
 }

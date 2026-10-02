@@ -12,12 +12,12 @@ use std::rc::Rc;
 
 use anyhow::{Context as _, bail};
 use base64::Engine as _;
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 use super::AssetMode;
 use super::css::{self, BUNDLE_ROUTE, RefKind, Target};
 use super::html;
-use crate::styles::Bundle;
+use crate::styles::{Bundle, resolve_bundle_ref};
 
 /// Characters escaped when a bundle path is turned into a URL path (`/` is kept).
 const PATH_SET: &AsciiSet = &CONTROLS
@@ -318,17 +318,16 @@ impl<'a> Assets<'a> {
                     Some(match (uri, fragment) {
                         (Some(uri), Some(f)) if kind == RefKind::Url => format!("{uri}#{f}"),
                         (Some(uri), _) => uri.to_string(),
-                        (None, _) if kind == RefKind::ImportString => "data:text/css,".to_owned(),
+                        (None, _) if kind == RefKind::Import => "data:text/css,".to_owned(),
                         (None, _) => EMPTY_DATA_URI.to_owned(),
                     })
                 }
                 Target::Unresolved => Some(match kind {
-                    RefKind::ImportString => "data:text/css,".to_owned(),
+                    RefKind::Import => "data:text/css,".to_owned(),
                     RefKind::Url => EMPTY_DATA_URI.to_owned(),
                 }),
             }
         })
-        .into_owned()
     }
 
     /// Emit a bundle stylesheet: `<link>` (Server / Directory) or `<style>` (Inline).
@@ -490,20 +489,14 @@ impl<'a> Assets<'a> {
     /// (`/__/md-render/bundle/…`, or `<href>/…` in Directory mode) become data URIs (Inline;
     /// empty string when not inlinable) or copied files (Directory). `None`: keep as is.
     pub(crate) fn content_url(&mut self, url: &str) -> anyhow::Result<Option<String>> {
-        let bundle_rel = url
-            .strip_prefix(BUNDLE_ROUTE)
-            .and_then(|r| r.strip_prefix('/'));
         match self.mode {
             AssetMode::Server { .. } => Ok(None),
             AssetMode::Inline => {
-                let Some(rel) = bundle_rel else {
+                if !url.starts_with(BUNDLE_ROUTE) {
                     return Ok(None);
-                };
-                let path = percent_decode_str(rel.split(['?', '#']).next().unwrap_or(""))
-                    .decode_utf8_lossy()
-                    .into_owned();
+                }
                 Ok(Some(
-                    css::normalize(&path)
+                    css::bundle_route_path(url)
                         .and_then(|p| self.data_uri(&p))
                         .map(|u| u.to_string())
                         .unwrap_or_default(),
@@ -511,22 +504,12 @@ impl<'a> Assets<'a> {
             }
             AssetMode::Directory { href, .. } => {
                 let href = href.trim_end_matches('/');
-                let own_rel = if href.is_empty() {
-                    None
-                } else {
-                    url.strip_prefix(href).and_then(|r| r.strip_prefix('/'))
-                };
-                let Some(rel) = bundle_rel.or(own_rel) else {
-                    return Ok(None);
-                };
-                let path = percent_decode_str(rel.split(['?', '#']).next().unwrap_or(""))
-                    .decode_utf8_lossy()
-                    .into_owned();
-                let Some(path) = css::normalize(&path) else {
-                    return Ok(None);
-                };
-                match self.bundle_url(&path)? {
-                    Some(new) => Ok(Some(new)),
+                let path = css::bundle_route_path(url).or_else(|| {
+                    let rel = url.strip_prefix(href)?.strip_prefix('/')?;
+                    (!href.is_empty()).then(|| resolve_bundle_ref("", rel))?
+                });
+                match path {
+                    Some(path) => self.bundle_url(&path),
                     None => Ok(None),
                 }
             }

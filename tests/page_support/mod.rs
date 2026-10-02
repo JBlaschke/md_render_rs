@@ -428,17 +428,19 @@ pub fn attr(doc: &Document, selector: &str, name: &str) -> Option<String> {
     doc.select(selector).attr(name).map(|s| s.to_string())
 }
 
-/// Every `url(...)` argument in `css`, unquoted.
+/// Every `url(...)` argument in `css`, unquoted (raw, escapes kept). Comments and strings
+/// outside `url()` are skipped, as a CSS parser does.
 pub fn css_urls(css: &str) -> Vec<String> {
-    let re = regex::Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)"#)
-        .expect("regex");
+    let re = regex::Regex::new(
+        r#"(?i)/\*[\s\S]*?\*/|url\(\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|((?:\\.|[^)"'\s\\])*))\s*\)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#,
+    )
+    .expect("regex");
     re.captures_iter(css)
-        .map(|c| {
+        .filter_map(|c| {
             c.get(1)
                 .or(c.get(2))
                 .or(c.get(3))
-                .map_or("", |m| m.as_str())
-                .to_owned()
+                .map(|m| m.as_str().to_owned())
         })
         .collect()
 }
