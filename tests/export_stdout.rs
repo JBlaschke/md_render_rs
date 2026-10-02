@@ -23,6 +23,9 @@ fn child_export_to_stdout() {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
+    // Diagnostics are `tracing` events (Q-LOG-1): log them to stderr like the CLI does.
+    let subscriber = md_render::cli::run::log_subscriber(None, false, 0, std::io::stderr, false);
+    tracing::subscriber::set_global_default(subscriber).expect("first subscriber");
     let cfg = ExportConfig {
         input: ExportInput::Stdin {
             name: "stdin.md".into(),

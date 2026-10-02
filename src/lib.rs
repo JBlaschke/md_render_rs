@@ -22,6 +22,12 @@ pub const TOOL: &str = concat!("md-render ", env!("CARGO_PKG_VERSION"));
 /// URL prefix of all internal routes.
 pub const PREFIX: &str = "/__/md-render";
 
+/// `tracing` target of the status lines meant to be read as they are: the server's grip-style
+/// ` * Running on …` lines and `md-render vendor`'s progress. The CLI prints their message
+/// without its `md-render: ` prefix. Diagnostics use the default targets (`warn!`, `info!`), which
+/// the CLI prints as `md-render: warning: …` / `md-render: …`.
+pub(crate) const STATUS: &str = "md_render::status";
+
 /// A byte count for people, in IEC units with one decimal: `512 B`, `85.3 KiB`, `3.4 MiB`
 /// (directory listings, `md-render vendor` progress and summary).
 pub(crate) fn human_bytes(n: u64) -> String {

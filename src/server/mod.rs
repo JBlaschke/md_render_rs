@@ -397,7 +397,7 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
     let quiet = cfg.quiet;
     let log = move |msg: &str| {
         if !quiet {
-            eprintln!(" * {msg}");
+            tracing::info!(target: crate::STATUS, " * {msg}");
         }
     };
 
@@ -405,7 +405,7 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         styles::load_initial(&cfg.bundle_path, cfg.flavor, cfg.auto_vendor, cfg.quiet).await;
     let (css, css_warnings) = ExtraCss::from_config(&cfg.extra_css);
     for w in css_warnings {
-        eprintln!("md-render: warning: {w}");
+        tracing::warn!("{w}");
     }
 
     let listeners = bind(&cfg.host, cfg.port).await?;
@@ -425,12 +425,12 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         match FsWatcher::new(cfg.poll, path_tx) {
             Ok((w, warning)) => {
                 if let Some(w) = warning {
-                    eprintln!("md-render: warning: {w}");
+                    tracing::warn!("{w}");
                 }
                 Some(Arc::new(w))
             }
             Err(e) => {
-                eprintln!("md-render: warning: live updates are disabled: {e:#}");
+                tracing::warn!("live updates are disabled: {e:#}");
                 None
             }
         }
@@ -554,7 +554,7 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
     if cfg.open_browser
         && let Err(e) = open::that_detached(&url)
     {
-        eprintln!("md-render: warning: could not open a browser for {url}: {e}");
+        tracing::warn!("could not open a browser for {url}: {e}");
     }
     Ok(RunningServer {
         addr,
@@ -572,13 +572,14 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     tokio::spawn(async move {
         wait_for_signal().await;
         if !quiet {
-            eprintln!(" * Shutting down...");
+            tracing::info!(target: crate::STATUS, " * Shutting down...");
         }
         handle.shutdown();
         // The handler stays installed while connections drain (up to SHUTDOWN_GRACE): a
         // second Ctrl-C must not be swallowed (LIVE-11).
         wait_for_signal().await;
-        eprintln!(" * Forced exit");
+        // Shown even with --quiet: the process ends without draining connections.
+        tracing::error!(target: crate::STATUS, " * Forced exit");
         std::process::exit(130);
     });
     server.wait().await
@@ -650,7 +651,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 
 /// A content fragment showing an error (stdin render failures).
 fn error_content(flavor: Flavor, message: &str) -> Rendered {
-    eprintln!("md-render: {message}");
+    tracing::error!("{message}");
     Rendered {
         html: crate::page::error_html(flavor, 500, message),
         ..Default::default()

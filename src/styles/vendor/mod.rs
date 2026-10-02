@@ -394,8 +394,8 @@ fn check_roles(
         );
     }
     for o in optional.iter().filter(|(r, t)| !c.has(r, *t)) {
-        progress.say(format_args!(
-            "  warning: {page} has no {} stylesheet; continuing without it",
+        progress.warn(format_args!(
+            "{page} has no {} stylesheet; continuing without it",
             describe(o)
         ));
     }
@@ -512,20 +512,14 @@ impl FlavorRun<'_> {
         if job.policy == Policy::Fatal {
             bail!("downloading stylesheet {} failed: {error}", job.url);
         }
-        self.progress.say(format_args!(
-            "  warning: {} failed: {error}{}",
-            job.url,
-            job.referenced_by
-                .as_deref()
-                .map(|r| format!(" (referenced by {r})"))
-                .unwrap_or_default()
-        ));
-        self.failures.push(Failure {
+        let failure = Failure {
             url: job.url.to_string(),
             status,
             error,
             referenced_by: job.referenced_by.clone(),
-        });
+        };
+        self.progress.warn(failure_message(&failure));
+        self.failures.push(failure);
         Ok(())
     }
 
@@ -540,6 +534,7 @@ impl FlavorRun<'_> {
         let mapper = &mut self.mapper;
         let queued = &mut self.queued;
         let failures = &mut self.failures;
+        let progress = &self.progress;
         css::rewrite(text, &refs, |r| {
             let value = r.value.trim();
             // data: URIs and same-document fragments (`url(#filter)`) stay as they are.
@@ -582,12 +577,19 @@ impl FlavorRun<'_> {
                         referenced_by: Some(job.path.clone()),
                         script: None,
                     }),
-                    None => failures.push(Failure {
-                        url: target.to_string(),
-                        status: None,
-                        error: format!("@import nested more than {MAX_IMPORT_DEPTH} levels deep"),
-                        referenced_by: Some(job.path.clone()),
-                    }),
+                    None => {
+                        // CLI-15: printed like every other failure, not only counted.
+                        let failure = Failure {
+                            url: target.to_string(),
+                            status: None,
+                            error: format!(
+                                "@import nested more than {MAX_IMPORT_DEPTH} levels deep"
+                            ),
+                            referenced_by: Some(job.path.clone()),
+                        };
+                        progress.warn(failure_message(&failure));
+                        failures.push(failure);
+                    }
                 }
             }
             Some(rel)
@@ -742,8 +744,8 @@ fn existing_source<'p>(output: &'p Path, progress: &Progress) -> anyhow::Result<
             output.display()
         ),
         Err(e) if output == crate::styles::default_bundle_path() => {
-            progress.say(format_args!(
-                "  warning: the existing bundle {} is unreadable ({e}); replacing it",
+            progress.warn(format_args!(
+                "the existing bundle {} is unreadable ({e}); replacing it",
                 output.display()
             ));
             Ok(None)
@@ -778,8 +780,8 @@ fn existing_manifest(
                 Ok(m) => format!("old bundle schema {}", m.schema),
                 Err(e) => format!("unreadable {MANIFEST_PATH}: {e}"),
             };
-            progress.say(format_args!(
-                "  warning: {} has an {why}; starting a fresh bundle",
+            progress.warn(format_args!(
+                "{} has an {why}; starting a fresh bundle",
                 output.display()
             ));
             let all: Vec<String> = fs.paths().map(str::to_owned).collect();
@@ -831,10 +833,10 @@ fn write_bundle(
                 crate::styles::validate_flavor(flavor, fm, |p| fs.contains(p)).is_ok()
             });
             if !ok {
-                progress.say(format_args!(
-                    "  warning: dropping the incomplete {flavor} styles from {} (run `md-render \
-                     vendor --flavor {flavor}` to restore them)",
-                    output.display()
+                progress.warn(format_args!(
+                    "dropping the incomplete {flavor} styles from {} (run `{}` to restore them)",
+                    output.display(),
+                    crate::styles::vendor_command(Some(flavor), output)
                 ));
                 manifest.flavors.remove(&flavor);
                 fs.delete_prefix(flavor.as_str());
@@ -854,7 +856,7 @@ fn write_bundle(
 // ------------------------------------------------------------------------------------------------
 // Small helpers
 
-/// Progress lines on stderr unless quiet.
+/// Progress lines ([`crate::STATUS`] events, printed as they are) and warnings, unless quiet.
 struct Progress {
     quiet: bool,
 }
@@ -862,9 +864,25 @@ struct Progress {
 impl Progress {
     fn say(&self, msg: impl Display) {
         if !self.quiet {
-            eprintln!("{msg}");
+            tracing::info!(target: crate::STATUS, "{msg}");
         }
     }
+
+    fn warn(&self, msg: impl Display) {
+        if !self.quiet {
+            tracing::warn!("{msg}");
+        }
+    }
+}
+
+/// What a non-fatal download failure prints: `<url> failed: <error> (referenced by <path>)`.
+fn failure_message(f: &Failure) -> String {
+    let by = f
+        .referenced_by
+        .as_deref()
+        .map(|r| format!(" (referenced by {r})"))
+        .unwrap_or_default();
+    format!("{} failed: {}{by}", f.url, f.error)
 }
 
 /// `1234567` → `1.2 MB`.

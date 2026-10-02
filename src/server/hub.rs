@@ -92,7 +92,7 @@ impl RenderCtx {
 
     fn log(&self, msg: &str) {
         if !self.quiet {
-            eprintln!(" * {msg}");
+            tracing::info!(target: crate::STATUS, " * {msg}");
         }
     }
 }

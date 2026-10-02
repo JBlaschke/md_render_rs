@@ -96,7 +96,8 @@ const SEGMENT_SET: &AsciiSet = &HREF_SET.add(b'\\');
 /// which the page resolves inside the export (data URIs, or the `<stem>_files/` directory with
 /// `inline: false`). Document-relative URLs (`img/a.png`) are rebased onto the source
 /// directory when the output file is written elsewhere. Styles come from
-/// [`crate::styles::load_or_fallback`]; falling back is reported on stderr unless `quiet`.
+/// [`crate::styles::load_or_fallback`]; falling back is reported (as `tracing` events) unless
+/// `quiet`.
 /// A file is written atomically (temporary file + rename); with [`ExportOutput::Stdout`] the
 /// page is the only output on stdout.
 ///
@@ -145,23 +146,23 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
     if !cfg.quiet {
         let fallback = bundle.flavor(cfg.flavor).is_none_or(|m| m.fallback);
         match &warning {
-            Some(w) => eprintln!("md-render: warning: {w}"),
-            None if fallback => eprintln!(
-                "md-render: warning: {} has no vendored {} styles; using minimal fallback styles",
+            Some(w) => tracing::warn!("{w}"),
+            None if fallback => tracing::warn!(
+                "{} has no vendored {} styles; using minimal fallback styles",
                 cfg.bundle_path.display(),
                 cfg.flavor
             ),
             None => {}
         }
         if fallback {
-            // DESIGN D11: always name the exact command.
-            eprintln!(
-                "md-render: hint: run `md-render vendor --flavor {}` to export with the site's own styles",
-                cfg.flavor
+            // DESIGN D11: always name the exact command (with `-o` for a --styles bundle, STY-1).
+            tracing::info!(
+                "hint: run `{}` to export with the site's own styles",
+                crate::styles::vendor_command(Some(cfg.flavor), &cfg.bundle_path)
             );
         }
         if let Some(w) = crate::page::theme_fallback_warning(cfg.flavor, &cfg.theme, &bundle) {
-            eprintln!("md-render: warning: {w}");
+            tracing::warn!("{w}");
         }
     }
 
@@ -195,7 +196,7 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
     match &cfg.output {
         ExportOutput::File(path) => {
             if !cfg.quiet {
-                eprintln!("Exporting to {}", path.display());
+                tracing::info!(target: crate::STATUS, "Exporting to {}", path.display());
             }
             write_atomic(path, page.as_bytes())
         }

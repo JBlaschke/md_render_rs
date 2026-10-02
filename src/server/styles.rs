@@ -115,20 +115,7 @@ impl Initial {
 
 /// The exact command that vendors `flavor` into `path` (D11).
 pub fn vendor_hint(flavor: Flavor, path: &Path) -> String {
-    let mut cmd = format!("md-render vendor --flavor {flavor}");
-    if path != crate::styles::default_bundle_path() {
-        let p = path.display().to_string();
-        let quoted = if p
-            .chars()
-            .any(|c| c.is_whitespace() || "'\"$`\\".contains(c))
-        {
-            format!("'{}'", p.replace('\'', r"'\''"))
-        } else {
-            p
-        };
-        cmd.push_str(&format!(" -o {quoted}"));
-    }
-    cmd
+    crate::styles::vendor_command(Some(flavor), path)
 }
 
 /// Load the bundle for a new server: vendor first when asked and needed, print the D11 hint
@@ -137,7 +124,8 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
     let mut state = Initial::open(path, flavor);
     if auto_vendor && !state.has_flavor() {
         if !quiet {
-            eprintln!(
+            tracing::info!(
+                target: crate::STATUS,
                 " * Vendoring {flavor} styles into {} (--auto-vendor) ...",
                 path.display()
             );
@@ -154,7 +142,8 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
         match tokio::task::spawn_blocking(move || crate::styles::vendor::vendor(&opts)).await {
             Ok(Ok(report)) => {
                 if !quiet {
-                    eprintln!(
+                    tracing::info!(
+                        target: crate::STATUS,
                         " * Vendored {} files ({} bytes) into {}",
                         report.files,
                         report.bytes,
@@ -163,10 +152,8 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
                 }
                 state = Initial::open(path, flavor);
             }
-            Ok(Err(e)) => eprintln!("md-render: warning: {}", auto_vendor_failure(&e)),
-            Err(e) => eprintln!(
-                "md-render: warning: --auto-vendor: vendoring {flavor} styles failed: {e}"
-            ),
+            Ok(Err(e)) => tracing::warn!("{}", auto_vendor_failure(&e)),
+            Err(e) => tracing::warn!("--auto-vendor: vendoring {flavor} styles failed: {e}"),
         }
     }
     let hint = vendor_hint(flavor, path);
@@ -174,26 +161,21 @@ pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet:
         Initial::Ready(b) => b.with_fallbacks(),
         Initial::NoFlavor(b) => {
             if !quiet {
-                eprintln!(
-                    "md-render: {}",
-                    fallback_notice(path, flavor, false, auto_vendor)
-                );
+                tracing::info!("{}", fallback_notice(path, flavor, false, auto_vendor));
             }
             b.with_fallbacks()
         }
         Initial::Missing => {
             if !quiet {
-                eprintln!(
-                    "md-render: {}",
-                    fallback_notice(path, flavor, true, auto_vendor)
-                );
+                tracing::info!("{}", fallback_notice(path, flavor, true, auto_vendor));
             }
             Bundle::fallback()
         }
         Initial::Broken(e) => {
-            // Shown even with --quiet: the user asked for a bundle that cannot be used.
-            eprintln!(
-                "md-render: warning: {e:#}; using minimal fallback styles.\n           Re-create the bundle with `{hint}`."
+            // Shown even with --quiet (an error event): the user asked for a bundle that cannot
+            // be used.
+            tracing::error!(
+                "{e:#}; using minimal fallback styles.\n           Re-create the bundle with `{hint}`."
             );
             Bundle::fallback()
         }
@@ -395,7 +377,7 @@ impl Styles {
 
     fn log(&self, msg: &str) {
         if !self.quiet {
-            eprintln!(" * {msg}");
+            tracing::info!(target: crate::STATUS, " * {msg}");
         }
     }
 
@@ -440,8 +422,8 @@ impl Styles {
         match opened {
             Ok(Ok(b)) => {
                 if b.flavor(self.flavor).is_none_or(|f| f.fallback) && !self.quiet {
-                    eprintln!(
-                        "md-render: the new style bundle has no vendored {} styles; run `{}`",
+                    tracing::info!(
+                        "the new style bundle has no vendored {} styles; run `{}`",
                         self.flavor,
                         vendor_hint(self.flavor, &self.path)
                     );

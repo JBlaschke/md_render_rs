@@ -56,13 +56,18 @@ fn report(e: &CliError) -> ExitCode {
 
 /// The log filter for `--quiet` / `-v` / `-vv` / `-vvv`, unless `RUST_LOG` is set.
 ///
+/// `--quiet` keeps errors only: the library's diagnostics (export, server, styles, vendor) are
+/// `tracing` events, so `-q`, `-v` and `RUST_LOG` apply to all of them (Q-LOG-1).
+///
 /// `-vv` traces md-render and tarfs only: the HTML parser and selector engine log a line per
 /// character at TRACE/DEBUG, which would bury md-render's own messages (CLI-5). `-vvv` traces
 /// everything (still without the secret-bearing crates, see [`SECRET_BEARING_CRATES`]).
 pub fn log_filter(quiet: bool, verbose: u8) -> &'static str {
     match (quiet, verbose) {
         (true, _) => "error",
-        (false, 0) => "warn,md_render=info,tarfs=info",
+        // html5ever warns "foster parenting not implemented" for every misnested table
+        // (it is implemented); that is noise for anyone not debugging the parser.
+        (false, 0) => "warn,html5ever=error,md_render=info,tarfs=info",
         (false, 1) => "info,md_render=debug,tarfs=debug",
         (false, 2) => "info,md_render=trace,tarfs=trace",
         (false, _) => "trace",
@@ -135,6 +140,12 @@ where
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
         use tracing::Level;
+        let mut fields = PlainFields::default();
+        event.record(&mut fields);
+        if event.metadata().target() == crate::STATUS {
+            // ` * Running on …`, vendor progress: printed as they are.
+            return writeln!(writer, "{}", fields.message);
+        }
         let (label, color) = match *event.metadata().level() {
             Level::ERROR => (Some("error"), "\x1b[1;31m"),
             Level::WARN => (Some("warning"), "\x1b[1;33m"),
@@ -148,8 +159,6 @@ where
                 write!(writer, "{label}: ")?;
             }
         }
-        let mut fields = PlainFields::default();
-        event.record(&mut fields);
         write!(writer, "{}", fields.message)?;
         if !fields.rest.is_empty() {
             write!(writer, " ({})", fields.rest.join(", "))?;
@@ -292,7 +301,10 @@ mod tests {
     #[test]
     fn filters() {
         assert_eq!(log_filter(true, 3), "error");
-        assert_eq!(log_filter(false, 0), "warn,md_render=info,tarfs=info");
+        assert_eq!(
+            log_filter(false, 0),
+            "warn,html5ever=error,md_render=info,tarfs=info"
+        );
         assert_eq!(log_filter(false, 1), "info,md_render=debug,tarfs=debug");
         assert_eq!(log_filter(false, 2), "info,md_render=trace,tarfs=trace");
         assert_eq!(log_filter(false, 3), "trace");
@@ -345,6 +357,8 @@ mod tests {
                 tracing::warn!(path, count = 2, "bundle file missing; not copied");
                 tracing::info!(target: "md_render::render::api", "rendering through the API");
                 tracing::error!("boom");
+                tracing::info!(target: crate::STATUS, " * Running on http://localhost:6419/");
+                tracing::warn!(target: "html5ever::tree_builder", "foster parenting not implemented");
             });
             String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned()
         };
@@ -354,7 +368,8 @@ mod tests {
              md-render: warning: bundle file missing; not copied (path: github/assets/x.svg, \
              count: 2)\n\
              md-render: rendering through the API\n\
-             md-render: error: boom\n"
+             md-render: error: boom\n \
+             * Running on http://localhost:6419/\n"
         );
         let verbose = log(1);
         assert!(

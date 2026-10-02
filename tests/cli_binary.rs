@@ -153,6 +153,79 @@ fn warnings_go_to_stderr_and_quiet_silences_them() {
     assert!(stderr.is_empty(), "{stderr}");
 }
 
+/// Q-LOG-1 / Q-DECODE-1: export diagnostics are log events, so `-q` and `RUST_LOG` silence
+/// them; a file and the same bytes on stdin get the same UTF-8 warning; the fallback hint
+/// names the bundle given with `--styles` (STY-1); html5ever's "foster parenting not
+/// implemented" noise is not shown.
+#[test]
+fn export_diagnostics_are_log_events() {
+    let e = env();
+    let bytes = b"\xEF\xBB\xBF# a\xFFb\n\n<table>x<tr><td>a</td></tr></table>\n";
+    fs::write(e.cwd.join("bad.md"), bytes).unwrap();
+    let styles = e.cwd.join("missing.tar.gz");
+    let styles = styles.to_str().unwrap();
+    let export = |args: &[&str], rust_log: Option<&str>| {
+        let mut cmd = command(&e.cwd, &e.home, args);
+        if let Some(v) = rust_log {
+            cmd.env("RUST_LOG", v);
+        }
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write as _;
+            child.stdin.take().unwrap().write_all(bytes).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let utf8 = "is not valid UTF-8 (first invalid byte at offset 6); invalid bytes were replaced";
+
+    let file = export(&["export", "--styles", styles, "bad.md", "out.html"], None);
+    let bad = e.cwd.join("bad.md");
+    assert!(
+        file.contains(&format!("md-render: warning: {} {utf8}", bad.display())),
+        "{file}"
+    );
+    assert!(
+        file.contains(&format!(
+            "md-render: hint: run `md-render vendor --flavor github -o {styles}`"
+        )),
+        "{file}"
+    );
+    assert!(!file.contains("foster parenting"), "{file}");
+    let stdin = export(&["export", "--styles", styles, "-", "out2.html"], None);
+    assert!(
+        stdin.contains(&format!("md-render: warning: stdin {utf8}")),
+        "{stdin}"
+    );
+
+    for (args, rust_log) in [
+        (
+            &["export", "-q", "--styles", styles, "bad.md", "o.html"][..],
+            None,
+        ),
+        (
+            &["export", "--styles", styles, "bad.md", "o.html"][..],
+            Some("off"),
+        ),
+        (
+            &["export", "--styles", styles, "-", "o.html"][..],
+            Some("off"),
+        ),
+    ] {
+        let stderr = export(args, rust_log);
+        assert!(
+            stderr.is_empty(),
+            "{args:?} RUST_LOG={rust_log:?}: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn cache_path_and_clear_stay_in_the_cache_directory() {
     let e = env();
