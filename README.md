@@ -57,9 +57,9 @@ goes through rustls with the operating system's certificate store. rustls's `rin
 compiles a little C and assembly, so the build needs a C compiler, which most Rust setups already
 have. md-render is not published on crates.io.
 
-md-render is developed on macOS. File watching uses the native backend of each platform
-(FSEvents, inotify, ReadDirectoryChangesW) through the `notify` crate. Windows has not been
-tested.
+md-render is developed on macOS, and CI runs the test suite on Linux and macOS. File watching
+uses each platform's native backend (FSEvents, inotify, ReadDirectoryChangesW) through the
+`notify` crate. Windows has not been tested.
 
 ## Quick start
 
@@ -486,8 +486,10 @@ parity checklist is in `.dev/research/grip.md` §10).
 
 md-render's offline output is checked against real site HTML. Its golden tests compare 43 GitHub
 files, 10 GitLab repository files and 16 GitLab issues with a normalizing DOM diff. All GitHub
-files and all GitLab repository files match, as do 12 of the 16 GitLab issues. These are the
-known differences.
+files and all GitLab repository files match, as do 12 of the 16 GitLab issues. Of the other four,
+three are pages that gitlab.com rendered with an older GitLab version and still serves from its
+cache, and one uses PlantUML and custom emoji, which need GitLab's servers. These are the known
+differences.
 
 **Both flavours**
 
@@ -582,8 +584,9 @@ cargo test -p tarfs --doc                        # includes the tarfs README exa
   `tests/page_client_js.rs` runs the page scripts under Node. Both print `SKIPPED` without `node`
   (or without Chrome; `MD_RENDER_TEST_CHROME` points at a Chrome binary).
 * `MD_RENDER_PROP_CORPUS=DIR` runs the sanitizer property test over a directory of `.md` files.
-* CI (`.github/workflows/`) runs formatting, clippy with warnings as errors, the test suite, the
-  minimum Rust version and the documentation build.
+* CI (`.github/workflows/ci.yml`) checks formatting, runs clippy and rustdoc with warnings as
+  errors, runs the test suite on Linux and macOS, and checks that the crate builds with the
+  minimum supported Rust version (1.88). The golden tests print `SKIPPED` there.
 
 [`docs/DESIGN.md`](docs/DESIGN.md) describes the architecture, the decisions behind it and the
 internal interfaces. The style bundle reader is the separate [`tarfs`](crates/tarfs/README.md)
