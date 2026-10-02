@@ -322,19 +322,36 @@ pub(crate) struct App {
 }
 
 impl App {
+    /// May `rel` resolve outside the root (`--follow-symlinks`, or the target file the user
+    /// named; see [`RenderCtx::follows`])?
+    pub(crate) fn follows(&self, rel: &str) -> bool {
+        self.follow_symlinks || matches!(&self.target, RootTarget::File(t) if t == rel)
+    }
+
     /// Is `rel` rendered as a document (Markdown extension, or the configured target file)?
     pub(crate) fn is_document(&self, rel: &str) -> bool {
         paths::is_markdown(rel, self.flavor)
             || matches!(&self.target, RootTarget::File(t) if t == rel)
     }
 
-    /// Validate a `?path=` document parameter of the events / render endpoints.
-    pub(crate) fn validate_doc_param(
+    /// [`paths::resolve`] for request path `rel`, off the reactor: canonicalisation and
+    /// metadata calls block on a slow or hung (network) file system (Q-ASYNC-1).
+    pub(crate) async fn resolve(&self, rel: &str) -> Result<paths::Resolved, paths::ResolveError> {
+        let (root, rel, follow) = (self.root.clone(), rel.to_owned(), self.follows(rel));
+        blocking(move || paths::resolve(&root, &rel, follow))
+            .await
+            .unwrap_or_else(|e| Err(paths::ResolveError::Io(e)))
+    }
+
+    /// Validate a `?path=` parameter of the events / render endpoints: a Markdown document,
+    /// or a directory URL (trailing `/`, `/` for the root) whose listing is live (LIVE-9).
+    /// Returns the hub key.
+    pub(crate) async fn validate_doc_param(
         &self,
         path: Option<&str>,
     ) -> Result<String, (axum::http::StatusCode, String)> {
         use axum::http::StatusCode;
-        let path = path.ok_or((
+        let path = path.filter(|p| !p.is_empty()).ok_or((
             StatusCode::BAD_REQUEST,
             "missing ?path=<document>".to_owned(),
         ))?;
@@ -345,13 +362,21 @@ impl App {
             )
         })?;
         let rel = rp.rel();
-        if rp.is_root() || rp.trailing_slash || !self.is_document(&rel) {
+        let listing = rp.is_root() || rp.trailing_slash;
+        if !listing && !self.is_document(&rel) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("{path:?} is not a Markdown document path"),
             ));
         }
-        match paths::resolve(&self.root, &rel, self.follow_symlinks) {
+        match self.resolve(&rel).await {
+            Ok(paths::Resolved::Dir(_) | paths::Resolved::Missing) if listing => {
+                Ok(hub::listing_key(&rel))
+            }
+            Ok(paths::Resolved::File(_)) if listing => Err((
+                StatusCode::BAD_REQUEST,
+                format!("{path:?} is not a directory"),
+            )),
             Ok(paths::Resolved::File(_) | paths::Resolved::Missing) => Ok(rel),
             Ok(paths::Resolved::Dir(_)) => {
                 Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory")))
@@ -424,19 +449,10 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         sourcepos: true,
         bundle_url: format!("{}/bundle", crate::PREFIX),
     };
-    let ctx = Arc::new(RenderCtx {
-        renderer: cfg.renderer.clone(),
-        options: options.clone(),
-        root: root.clone(),
-        follow_symlinks: cfg.follow_symlinks,
-        quiet: cfg.quiet,
-        watcher: watcher.clone(),
-    });
-
     let target = match &cfg.target {
         Target::Stdin { name, text } => {
             let renderer = cfg.renderer.clone();
-            let (text, flavor) = (text.clone(), cfg.flavor);
+            let (text, flavor, options) = (text.clone(), cfg.flavor, options.clone());
             let rendered =
                 tokio::task::spawn_blocking(move || renderer.render(&text, &options)).await;
             let content = match rendered {
@@ -459,6 +475,18 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         }
         Target::Dir(p) => RootTarget::Dir(target_rel(&root, p)?),
     };
+    let ctx = Arc::new(RenderCtx {
+        renderer: cfg.renderer.clone(),
+        options,
+        root: root.clone(),
+        follow_symlinks: cfg.follow_symlinks,
+        target: match &target {
+            RootTarget::File(rel) => Some(rel.clone()),
+            _ => None,
+        },
+        quiet: cfg.quiet,
+        watcher: watcher.clone(),
+    });
 
     let styles = Arc::new(Styles::new(
         cfg.flavor,
@@ -518,7 +546,9 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
     }
 
     let url = display_url(&cfg.host, addr);
-    log(&format!("Running on {url} (Press CTRL+C to quit)"));
+    for line in banner(&url, &addrs, network_address) {
+        log(&line);
+    }
     if addrs.len() > 1 {
         let all: Vec<String> = addrs.iter().map(ToString::to_string).collect();
         tracing::debug!("listening on {}", all.join(", "));
@@ -547,6 +577,11 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             eprintln!(" * Shutting down...");
         }
         handle.shutdown();
+        // The handler stays installed while connections drain (up to SHUTDOWN_GRACE): a
+        // second Ctrl-C must not be swallowed (LIVE-11).
+        wait_for_signal().await;
+        eprintln!(" * Forced exit");
+        std::process::exit(130);
     });
     server.wait().await
 }
@@ -606,6 +641,15 @@ async fn dispatch(
     }
 }
 
+/// Run blocking file-system work on tokio's blocking pool (Q-ASYNC-1).
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> std::io::Result<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(std::io::Error::other)
+}
+
 /// A content fragment showing an error (stdin render failures).
 fn error_content(flavor: Flavor, message: &str) -> Rendered {
     eprintln!("md-render: {message}");
@@ -660,8 +704,17 @@ fn target_rel(root: &Path, p: &Path) -> anyhow::Result<String> {
     Ok(rel)
 }
 
+/// How often binding `localhost:0` picks a new port when the one chosen for the first
+/// loopback family is taken on the other.
+const PICK_PORT_ATTEMPTS: usize = 8;
+
 /// Resolve and bind `host:port`. For `localhost` both loopback families are bound on the
 /// same port when possible (GRIP C7); the first address decides the port.
+///
+/// When another program already listens on the other family's loopback address, the bind
+/// fails like a port in use on the first one (CLI-4): `http://localhost:PORT/` would reach
+/// that program from every client that resolves `localhost` to it. Other errors there (no
+/// IPv6 on this host, ...) only mean serving one family.
 async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host((bare, port))
@@ -672,30 +725,51 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<Vec<TcpListener>> {
     let first = *addrs
         .first()
         .with_context(|| format!("host {host:?} has no addresses"))?;
-    let primary = TcpListener::bind(first).await.map_err(|e| {
+    let in_use = |e: std::io::Error, ip: IpAddr| {
         let what = if e.kind() == std::io::ErrorKind::AddrInUse {
-            format!("port {port} is already in use on {}", first.ip())
+            format!("port {port} is already in use on {ip}")
         } else {
-            format!("cannot listen on {first}")
+            format!("cannot listen on {}", SocketAddr::new(ip, port))
         };
         anyhow::Error::new(e).context(what)
-    })?;
-    let bound_port = primary
-        .local_addr()
-        .context("reading the bound address")?
-        .port();
-    let mut out = vec![primary];
-    if bare.eq_ignore_ascii_case("localhost")
-        && let Some(other) = addrs
-            .iter()
-            .find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
-    {
-        match TcpListener::bind(SocketAddr::new(other.ip(), bound_port)).await {
+    };
+    let other = addrs
+        .iter()
+        .find(|a| a.ip().is_loopback() && a.is_ipv4() != first.is_ipv4())
+        .filter(|_| bare.eq_ignore_ascii_case("localhost"))
+        .map(SocketAddr::ip);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let primary = TcpListener::bind(first)
+            .await
+            .map_err(|e| in_use(e, first.ip()))?;
+        let bound_port = primary
+            .local_addr()
+            .context("reading the bound address")?
+            .port();
+        let mut out = vec![primary];
+        let Some(other) = other else {
+            return Ok(out);
+        };
+        match TcpListener::bind(SocketAddr::new(other, bound_port)).await {
             Ok(l) => out.push(l),
-            Err(e) => tracing::debug!("not listening on {}: {e}", other.ip()),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                if port != 0 {
+                    return Err(in_use(e, other));
+                }
+                if attempt < PICK_PORT_ATTEMPTS {
+                    continue; // the free port picked on `first` is taken on `other`
+                }
+                tracing::warn!(
+                    "serving {} only: no free port on both loopback addresses",
+                    first.ip()
+                );
+            }
+            Err(e) => tracing::debug!("not listening on {other}: {e}"),
         }
+        return Ok(out);
     }
-    Ok(out)
 }
 
 /// The URL to print and open: wildcard addresses map to `localhost`, IPv6 is bracketed.
@@ -709,6 +783,41 @@ fn display_url(host: &str, addr: SocketAddr) -> String {
         Err(_) => bare.to_owned(),
     };
     format!("http://{shown}:{}/", addr.port())
+}
+
+/// The startup lines (printed as ` * {line}`) for a server at `url` listening on `addrs`.
+///
+/// A wildcard bind is reachable from the network: the banner says so and adds this
+/// machine's address on the network (`lan(ipv6)`), like Werkzeug/grip, instead of showing
+/// only the local URL (CLI-19).
+fn banner(url: &str, addrs: &[SocketAddr], lan: impl Fn(bool) -> Option<IpAddr>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let wildcard = addrs.iter().find(|a| a.ip().is_unspecified());
+    if let Some(w) = wildcard {
+        lines.push(format!("Running on all addresses ({})", w.ip()));
+    }
+    lines.push(format!("Running on {url} (Press CTRL+C to quit)"));
+    if let Some(w) = wildcard
+        && let Some(ip) = lan(w.is_ipv6())
+    {
+        lines.push(format!("Running on {}", display_url(&ip.to_string(), *w)));
+    }
+    lines
+}
+
+/// This machine's address on its default route (the one other machines reach it by), for
+/// the startup banner of a wildcard bind. Connecting a UDP socket sends nothing; it only
+/// asks the OS which local address it would use (here towards a documentation address).
+fn network_address(v6: bool) -> Option<IpAddr> {
+    let (local, remote) = if v6 {
+        ("[::]:0", "[2001:db8::1]:80")
+    } else {
+        ("0.0.0.0:0", "192.0.2.1:80")
+    };
+    let socket = std::net::UdpSocket::bind(local).ok()?;
+    socket.connect(remote).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
 }
 
 /// A random identifier for this server process.
@@ -770,6 +879,49 @@ mod tests {
         assert_eq!(display_url("192.168.1.2", a), "http://192.168.1.2:6419/");
     }
 
+    /// CLI-19: a wildcard bind says that it serves all addresses and where the network
+    /// reaches it; other binds print the one URL as before.
+    #[test]
+    fn startup_banner() {
+        let lan = |v6: bool| {
+            Some(if v6 {
+                "2001:db8::5".parse().unwrap()
+            } else {
+                "192.168.1.5".parse().unwrap()
+            })
+        };
+        let any: SocketAddr = "0.0.0.0:6419".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:6419/", &[any], lan),
+            [
+                "Running on all addresses (0.0.0.0)",
+                "Running on http://localhost:6419/ (Press CTRL+C to quit)",
+                "Running on http://192.168.1.5:6419/",
+            ]
+        );
+        let any6: SocketAddr = "[::]:7213".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:7213/", &[any6], lan),
+            [
+                "Running on all addresses (::)",
+                "Running on http://localhost:7213/ (Press CTRL+C to quit)",
+                "Running on http://[2001:db8::5]:7213/",
+            ]
+        );
+        assert_eq!(banner("http://localhost:1/", &[any], |_| None).len(), 2);
+        let local: SocketAddr = "127.0.0.1:6419".parse().unwrap();
+        assert_eq!(
+            banner("http://localhost:6419/", &[local], lan),
+            ["Running on http://localhost:6419/ (Press CTRL+C to quit)"]
+        );
+        // Whatever the machine's network, it is never a loopback or wildcard address.
+        for v6 in [false, true] {
+            if let Some(ip) = network_address(v6) {
+                assert!(!ip.is_loopback() && !ip.is_unspecified(), "{ip}");
+            }
+        }
+    }
+
     #[test]
     fn target_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -804,6 +956,36 @@ mod tests {
         assert_eq!((cfg.host.as_str(), cfg.port), ("localhost", 6419));
         assert!(cfg.live && !cfg.open_browser && !cfg.follow_symlinks && cfg.poll.is_none());
         assert_eq!(cfg.bundle_path, crate::styles::default_bundle_path());
+    }
+
+    /// CLI-4: `localhost:PORT` with another program on one loopback address is a port in
+    /// use, not a server that only half of the clients reach.
+    #[tokio::test]
+    async fn localhost_with_the_port_taken_on_one_family_fails() {
+        let families: Vec<SocketAddr> = match tokio::net::lookup_host(("localhost", 0)).await {
+            Ok(a) => a.collect(),
+            Err(_) => return,
+        };
+        let has = |v4: bool| families.iter().any(|a| a.is_ipv4() == v4);
+        if !has(true) || !has(false) || std::net::TcpListener::bind("[::1]:0").is_err() {
+            eprintln!("SKIPPED: localhost does not resolve to both loopback families here");
+            return;
+        }
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let err = bind("localhost", port).await.expect_err("bind must fail");
+        assert!(
+            format!("{err:#}").contains(&format!("port {port} is already in use on 127.0.0.1")),
+            "{err:#}"
+        );
+        // A free port binds both families.
+        let both = bind("localhost", 0).await.unwrap();
+        assert_eq!(both.len(), 2);
+        let ports: Vec<u16> = both
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        assert_eq!(ports[0], ports[1]);
     }
 
     #[test]

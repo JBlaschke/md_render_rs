@@ -168,6 +168,58 @@ async fn a_document_replaced_by_an_escaping_symlink_is_not_read() {
     );
 }
 
+/// CLI-18: the file named as the server's target is served even when it is a symlink to a
+/// file outside the root (the user chose it; grip and `export` render it too), with live
+/// updates; other escaping symlinks stay forbidden, and a directory's README that escapes
+/// is a 403 that says how to allow it, not a 500.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_explicitly_named_symlinked_target_is_served() {
+    let f = Fixture::new();
+    server_support::write(&f.tmp.join("notes/real.md"), "real notes");
+    server_support::write(&f.tmp.join("other.md"), SECRET);
+    server_support::write(&f.tmp.join("elsewhere/README.md"), SECRET);
+    std::os::unix::fs::symlink(f.tmp.join("notes/real.md"), f.root.join("link.md")).unwrap();
+    std::os::unix::fs::symlink(f.tmp.join("other.md"), f.root.join("other.md")).unwrap();
+    std::fs::create_dir(f.root.join("sub")).unwrap();
+    std::os::unix::fs::symlink(
+        f.tmp.join("elsewhere/README.md"),
+        f.root.join("sub/README.md"),
+    )
+    .unwrap();
+    let s = f
+        .start(|cfg| cfg.target = md_render::server::Target::File("link.md".into()))
+        .await;
+    for path in ["/", "/link.md"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}: {}", r.text());
+        assert!(r.text().contains("real notes"), "{path}");
+    }
+    let (status, v) = s.render_json("link.md").await;
+    assert_eq!(status, 200, "{v}");
+    let mut sse = s.events("link.md", "", &[]).await;
+    assert_eq!(sse.status, 200);
+    sse.wait_for("hello").await;
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    server_support::write_atomic(&s.tmp.join("notes/real.md"), "edited notes");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("edited notes"))
+    })
+    .await;
+
+    for path in ["/other.md", "/other.md?raw=1"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 403, "{path}");
+        assert_no_leak(path, &r);
+    }
+    let r = s.get("/sub/").await;
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert_no_leak("/sub/", &r);
+    assert!(r.text().contains("--follow-symlinks"), "{}", r.text());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_directories_are_never_served() {
     let s = server(false).await;
@@ -226,5 +278,87 @@ async fn host_header_allowlist_on_loopback() {
             assert_eq!(r.status, 403, "Host: {host} {path}");
             assert!(!r.text().contains("public readme"));
         }
+    }
+}
+
+/// SEC-5: an absolute-form request line does not override a foreign `Host` header (nor the
+/// other way round), and a second `Host` header is checked too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_guard_checks_every_authority() {
+    let s = server(false).await;
+    let port = s.addr.port();
+    let local = format!("localhost:{port}");
+    let evil = format!("evil.example:{port}");
+    let cases: [(String, Vec<(&str, &str)>); 3] = [
+        (
+            format!("http://{local}/README.md"),
+            vec![("Host", evil.as_str())],
+        ),
+        (
+            format!("http://{evil}/README.md"),
+            vec![("Host", local.as_str())],
+        ),
+        (
+            "/README.md".to_owned(),
+            vec![("Host", local.as_str()), ("Host", evil.as_str())],
+        ),
+    ];
+    for (target, headers) in &cases {
+        let r = s.get_with(target, headers).await;
+        assert_ne!(r.status, 200, "{target} {headers:?}");
+        assert!(!r.text().contains("public readme"), "{target} {headers:?}");
+    }
+    let r = s
+        .get_with(
+            &format!("http://{local}/README.md"),
+            &[("Host", local.as_str())],
+        )
+        .await;
+    assert_eq!(r.status, 200);
+}
+
+/// SEC-6: raw HTML, SVG and XML files are active documents. Served from the preview origin
+/// they could read every file of the root (a README image opens its SVG in a new tab), so
+/// they get a sandbox CSP without `allow-same-origin`: an opaque origin, scripts still run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_active_documents_are_sandboxed() {
+    let f = Fixture::new();
+    f.file("README.md", "![logo](logo.svg)");
+    f.file("logo.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+    f.file("report.html", "<!doctype html><script>1</script>");
+    f.file(
+        "page.xhtml",
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"/>",
+    );
+    f.file("feed.xml", "<feed/>");
+    f.file("pic.png", b"\x89PNG\r\n\x1a\n");
+    f.file("notes.txt", "text");
+    f.file("data.json", "{}");
+    let s = f.start(|_| {}).await;
+    for path in ["/logo.svg", "/report.html", "/page.xhtml", "/feed.xml"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}");
+        let csp = r
+            .header("content-security-policy")
+            .unwrap_or_else(|| panic!("{path} has no Content-Security-Policy"));
+        let tokens: Vec<&str> = csp.split([' ', ';']).collect();
+        assert!(
+            tokens.contains(&"sandbox") && tokens.contains(&"allow-scripts"),
+            "{path}: {csp}"
+        );
+        assert!(!csp.contains("allow-same-origin"), "{path}: {csp}");
+    }
+    for path in [
+        "/",
+        "/README.md",
+        "/README.md?raw=1",
+        "/pic.png",
+        "/notes.txt",
+        "/data.json",
+        "/__/md-render/static/live.js",
+    ] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.header("content-security-policy"), None, "{path}");
     }
 }

@@ -22,6 +22,9 @@ use crate::render::Rendered;
 
 const TEXT_UTF8: &str = "text/plain; charset=utf-8";
 
+/// Title prefix of a document page while the document has an error (must match live.js).
+const ERROR_TITLE_PREFIX: &str = "(Error) ";
+
 /// Build the router for `app`.
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
@@ -33,26 +36,49 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/", get(document))
         .route("/{*path}", get(document))
         .layer(middleware::from_fn_with_state(app.clone(), host_guard))
+        .layer(middleware::from_fn(access_log))
         .with_state(app)
+}
+
+/// Log target of the access log.
+pub const ACCESS_LOG: &str = "md_render::access";
+
+/// One line per request (GRIP C24): method, path and query, status and the time to the
+/// response head (SSE streams: until the stream starts). Failed requests (4xx, 5xx: a
+/// missing image, a broken link) at INFO, which is shown by default; the rest at DEBUG,
+/// shown from `-v` on (CLI-7).
+async fn access_log(req: Request, next: Next) -> Response {
+    let started = std::time::Instant::now();
+    let method = req.method().clone();
+    let target = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| req.uri().path().to_owned(), |p| p.as_str().to_owned());
+    let resp = next.run(req).await;
+    let status = resp.status();
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    if status.is_client_error() || status.is_server_error() {
+        tracing::info!(target: ACCESS_LOG, "{method} {target} -> {status} ({ms:.1} ms)");
+    } else {
+        tracing::debug!(target: ACCESS_LOG, "{method} {target} -> {status} ({ms:.1} ms)");
+    }
+    resp
 }
 
 /// Host-header allowlist against DNS rebinding when bound to loopback (D14, GRIP C39).
 async fn host_guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     if let Some(allow) = &app.hosts {
+        // Both the authority of an absolute-form request line and the Host header must name
+        // this server: either alone could otherwise smuggle a foreign host past the check
+        // (SEC-5). HTTP/1.0 clients may send neither; browsers (the rebinding vector) always
+        // send Host.
+        let authority = req.uri().authority().map(|a| a.as_str().to_owned());
         let host = req
-            .uri()
-            .authority()
-            .map(|a| a.as_str().to_owned())
-            .or_else(|| {
-                req.headers()
-                    .get(header::HOST)
-                    .and_then(|h| h.to_str().ok())
-                    .map(str::to_owned)
-            });
-        // HTTP/1.0 clients may omit Host; browsers (the rebinding vector) always send it.
-        if let Some(h) = host
-            && !allow.allows(&h)
-        {
+            .headers()
+            .get_all(header::HOST)
+            .iter()
+            .map(|h| String::from_utf8_lossy(h.as_bytes()).into_owned());
+        if let Some(h) = authority.into_iter().chain(host).find(|h| !allow.allows(h)) {
             return (
                 StatusCode::FORBIDDEN,
                 [(header::CONTENT_TYPE, TEXT_UTF8)],
@@ -139,7 +165,7 @@ async fn extra_css(
 
 /// `GET /__/md-render/render?path=<doc>`: JSON resync (`{version, html, title, warnings}`).
 async fn render_json(State(app): State<Arc<App>>, Query(q): Query<DocQuery>) -> Response {
-    let key = match app.validate_doc_param(q.path.as_deref()) {
+    let key = match app.validate_doc_param(q.path.as_deref()).await {
         Ok(k) => k,
         Err((status, msg)) => return json_response(status, serde_json::json!({ "error": msg })),
     };
@@ -189,7 +215,7 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
     }
     let rel = rp.rel();
     let raw_requested = wants_raw(query);
-    match paths::resolve(&app.root, &rel, app.follow_symlinks) {
+    match app.resolve(&rel).await {
         Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m).await,
         Err(ResolveError::Io(e)) => {
             let msg = format!("cannot access /{rel}: {e}");
@@ -259,7 +285,7 @@ impl App {
                 )
                 .await
             }
-            RootTarget::File(rel) if !rel.contains('/') => self.doc_page(rel).await,
+            RootTarget::File(rel) if !rel.contains('/') => self.checked_doc_page(rel).await,
             // A target below the root is shown at its own URL so relative links resolve.
             RootTarget::File(rel) => redirect(
                 StatusCode::FOUND,
@@ -271,14 +297,14 @@ impl App {
                 &paths::url_for(rel, true),
                 query.as_deref(),
             ),
-            RootTarget::Dir(_) => match paths::find_root_readme(&self.root, self.flavor) {
+            RootTarget::Dir(_) => match self.find_readme(None).await {
                 Some(readme) => match readme.rsplit_once('/') {
                     Some((dir, _)) => redirect(
                         StatusCode::FOUND,
                         &paths::url_for(dir, true),
                         query.as_deref(),
                     ),
-                    None => self.doc_page(&readme).await,
+                    None => self.checked_doc_page(&readme).await,
                 },
                 None => self.listing_page("", &self.root.clone()).await,
             },
@@ -287,13 +313,55 @@ impl App {
 
     /// A directory URL (with trailing slash): its README or a listing.
     async fn dir_page(&self, rel: &str, abs: &std::path::Path) -> Response {
-        match paths::find_readme(abs, self.flavor) {
-            Some(name) => self.doc_page(&format!("{rel}/{name}")).await,
+        match self.find_readme(Some(abs)).await {
+            Some(name) => self.checked_doc_page(&format!("{rel}/{name}")).await,
             None => self.listing_page(rel, abs).await,
         }
     }
 
+    /// The README of directory `dir` ([`paths::find_readme`]), or of the root with its
+    /// fallbacks ([`paths::find_root_readme`]) for None; off the reactor (Q-ASYNC-1).
+    async fn find_readme(&self, dir: Option<&std::path::Path>) -> Option<String> {
+        let (root, dir, flavor) = (self.root.clone(), dir.map(ToOwned::to_owned), self.flavor);
+        super::blocking(move || match dir {
+            Some(d) => paths::find_readme(&d, flavor),
+            None => paths::find_root_readme(&root, flavor),
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     async fn listing_page(&self, rel: &str, abs: &std::path::Path) -> Response {
+        let shown = if rel.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{rel}/")
+        };
+        let title = self
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Index of {shown}"));
+        if self.live {
+            // A live listing (LIVE-9): the hub keeps it current and pushes changes.
+            let key = super::hub::listing_key(rel);
+            if let Some(snap) = self.hub.current(&key).await
+                && snap.status == DocStatus::Ready
+                && let Some(c) = &snap.content
+            {
+                let live = self.live_info(&key, snap.version);
+                return self
+                    .page(
+                        StatusCode::OK,
+                        c.rendered.clone(),
+                        title,
+                        Some(shown),
+                        Some(live),
+                        Vec::new(),
+                    )
+                    .await;
+            }
+        }
         let (root, dir, follow) = (self.root.clone(), abs.to_path_buf(), self.follow_symlinks);
         let rel_owned = rel.to_owned();
         let listed =
@@ -314,20 +382,11 @@ impl App {
                     .await;
             }
         };
-        let shown = if rel.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("/{rel}/")
-        };
         let html = page::listing_html(self.flavor, &shown, &entries);
         let content = Arc::new(Rendered {
             html,
             ..Default::default()
         });
-        let title = self
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("Index of {shown}"));
         self.page(
             StatusCode::OK,
             content,
@@ -339,6 +398,19 @@ impl App {
         .await
     }
 
+    /// A document found without resolving a request path (the target, a README): refused
+    /// with 403 like a requested path when it escapes the root, not read and failed as a 500
+    /// (CLI-18).
+    async fn checked_doc_page(&self, rel: &str) -> Response {
+        match self.resolve(rel).await {
+            Err(ResolveError::Forbidden(m)) => {
+                let msg = format!("cannot serve /{rel}: {m}");
+                self.error_page(StatusCode::FORBIDDEN, &msg).await
+            }
+            _ => self.doc_page(rel).await,
+        }
+    }
+
     /// A Markdown document (existing or not).
     async fn doc_page(&self, rel: &str) -> Response {
         let Some(snap) = self.hub.current(rel).await else {
@@ -346,7 +418,13 @@ impl App {
             return self.error_page(StatusCode::SERVICE_UNAVAILABLE, &msg).await;
         };
         let file_title = rel.rsplit('/').next().unwrap_or(rel).to_owned();
-        let title = self.title.clone().unwrap_or(file_title);
+        let mut title = self.title.clone().unwrap_or(file_title);
+        if matches!(snap.status, DocStatus::Failed { .. } | DocStatus::Missing) {
+            // The `(Error) ` prefix live.js shows while an error is active (GRIP §11): a page
+            // loaded in that state starts with it, and the client takes it as an active error
+            // that the next good content clears (LIVE-7).
+            title.insert_str(0, ERROR_TITLE_PREFIX);
+        }
         let live = self.live.then(|| self.live_info(rel, snap.version));
         match (&snap.status, &snap.content) {
             (DocStatus::Ready, Some(c)) => {

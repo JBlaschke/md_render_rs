@@ -90,6 +90,31 @@ pub fn looks_like_text(head: &[u8], cut: bool) -> bool {
     }
 }
 
+/// Content-Security-Policy of raw files the browser runs as documents (SEC-6).
+///
+/// github.com and gitlab.com serve raw files from a separate, sandboxed origin; here they
+/// share the preview's origin, so script in an SVG or HTML file of an untrusted repository
+/// (opened by clicking a README image) could read every file of the root. `sandbox` without
+/// `allow-same-origin` gives the document an opaque origin, which makes same-origin reads
+/// fail, while its own scripts, popups and forms keep working (local HTML reports stay
+/// usable). `<img src=x.svg>` embedding is unaffected.
+pub const SANDBOX_CSP: &str = "sandbox allow-scripts allow-popups allow-forms";
+
+/// Is a Content-Type one the browser renders as an active document (HTML, SVG, XML, whose
+/// XSLT output can carry script too)?
+pub fn is_active_document(ctype: &str) -> bool {
+    let essence = ctype
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html" | "text/xml" | "application/xml" | "text/xsl"
+    ) || essence.ends_with("+xml")
+}
+
 /// Read up to [`SNIFF_LEN`] bytes of a file (None on any I/O error).
 pub fn sniff_file(path: &Path) -> Option<Vec<u8>> {
     let f = std::fs::File::open(path).ok()?;
@@ -118,6 +143,12 @@ pub async fn serve_raw(path: &Path, req: Request, force_type: Option<&str>) -> R
     };
     let mut resp = resp.map(Body::new);
     let status = resp.status();
+    if (status.is_success() || status == StatusCode::NOT_MODIFIED) && is_active_document(&ctype) {
+        resp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SANDBOX_CSP),
+        );
+    }
     if status.is_success() {
         if let Ok(v) = HeaderValue::from_str(&ctype) {
             resp.headers_mut().insert(header::CONTENT_TYPE, v);
@@ -158,6 +189,22 @@ mod tests {
         assert_eq!(ct("a.sh"), "text/plain; charset=utf-8");
         assert_eq!(ct("a.woff2"), "font/woff2");
         assert_eq!(ct("a.pdf"), "application/pdf");
+    }
+
+    #[test]
+    fn active_documents() {
+        for name in [
+            "a.html", "a.htm", "a.svg", "a.xhtml", "a.xml", "a.rss", "a.atom", "a.xsl",
+        ] {
+            assert!(is_active_document(&ct(name)), "{name}: {}", ct(name));
+        }
+        for name in [
+            "a.png", "a.txt", "a.js", "a.json", "a.css", "a.pdf", "a.md", "a.woff2",
+        ] {
+            assert!(!is_active_document(&ct(name)), "{name}: {}", ct(name));
+        }
+        assert!(is_active_document("Text/HTML; charset=utf-8"));
+        assert!(!SANDBOX_CSP.contains("allow-same-origin"));
     }
 
     #[test]

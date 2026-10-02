@@ -1,8 +1,11 @@
 // md-render live-update client (owner: server). Protocol: docs/DESIGN.md §7, GRIP §11.1.
 //
 // Keeps #md-content in sync with the Markdown file on disk:
-//   * one EventSource per page (`retry: 1000` from the server; manual back-off when the
-//     browser gives up), closed on `pagehide`, resynced on `pageshow` / visibility;
+//   * one EventSource per visible page (`retry: 1000` from the server; manual back-off
+//     when the browser gives up), closed on `pagehide` and a few seconds after the tab is
+//     hidden, reopened (and resynced) when it is shown again: browsers allow only about six
+//     HTTP/1.1 connections per server, so streams held open by background tabs would stall
+//     every further page and request (LIVE-3);
 //   * content-keyed reconciliation of the top-level blocks, so unchanged blocks keep their
 //     DOM (rendered math and mermaid, open <details>, loaded images, text selection);
 //   * scroll anchoring by the `data-sourcepos` start line of the block at the top of the
@@ -22,9 +25,15 @@
   const PREFIX = '/__/md-render';
   const ANCHOR_KEY = 'mdr-live-anchor:';
   const RELOAD_KEY = 'mdr-live-reload:';
+  // Banners the server rendered into the page (src/page: `.mdr-banner` in #mdr-banners).
+  const SERVER_BANNERS = '#mdr-banners > .mdr-banner';
+  const ERROR_PREFIX_RE = /^\(Error\) /;
   const MAX_BACKOFF_MS = 10000;
   const BOTTOM_SLACK_PX = 4;
   const RENDERING_TIMEOUT_MS = 10000;
+  // How long a hidden tab keeps its event stream, so quick tab switches do not reconnect.
+  // Short: while six streams are open, the browser queues every other request to the server.
+  const HIDDEN_GRACE_MS = 5000;
 
   const live = readConfig();
   if (!live || !live.events_url || typeof window.EventSource !== 'function') {
@@ -40,8 +49,12 @@
     contentVersion: Number(live.version) || 0,
     errorVersion: 0, // version of the error / deletion behind the "doc" banner
     stylesVersion: null, // baseline from the first `hello`
-    baseTitle: document.title.replace(/^\(Error\) /, ''),
+    baseTitle: document.title.replace(ERROR_PREFIX_RE, ''),
     source: null,
+    // The stream is closed because the page is hidden (or was hidden when it loaded); it
+    // is reopened when the page becomes visible.
+    suspended: false,
+    hiddenTimer: 0,
     backoff: 1000,
     reconnectTimer: 0,
     renderingTimer: 0,
@@ -49,8 +62,13 @@
     frame: 0,
     lastResync: 0,
     reloading: false,
+    lastAnchor: null, // scroll anchor of the last update applied to non-empty content
   };
   const keys = new WeakMap(); // top-level node -> key computed from pristine server HTML
+  // Decoded URL path of a changed local file -> its latest cache-bust token. Applied to the
+  // media of every block inserted later too: re-inserted server HTML has the plain URL,
+  // which the browser's in-document image cache would answer with the old file (LIVE-6).
+  const bustTokens = new Map();
   const banners = new Map(); // slot ("doc" | "bundle" | "warnings") -> element
   const activeErrors = new Set(); // slots whose banner is an error
   let statusDot = null;
@@ -81,28 +99,68 @@
     // Keys come from the pristine server HTML, so compute them before flavor scripts
     // (math, mermaid, copy buttons) mutate the blocks.
     for (let n = container.firstChild; n; n = n.nextSibling) keys.set(n, keyOf(n));
+    if (ERROR_PREFIX_RE.test(document.title)) {
+      // The server rendered the page while the document had an error (it puts the prefix
+      // into <title>): the error is active until newer content arrives.
+      activeErrors.add('doc');
+      state.errorVersion = state.version;
+    }
     restoreSavedAnchor(container);
-    window.addEventListener('pagehide', closeSource);
+    window.addEventListener('pagehide', () => {
+      clearTimeout(state.hiddenTimer);
+      state.hiddenTimer = 0;
+      clearTimeout(state.reconnectTimer);
+      closeSource();
+    });
     window.addEventListener('pageshow', (ev) => {
-      if (ev.persisted) {
-        connect(); // back/forward cache: the page is stale (GRIP #255)
-        resync();
-      }
+      // Back/forward cache: the page is stale (GRIP #255).
+      if (ev.persisted) resume();
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible') return;
-      if (!state.source || state.source.readyState === EventSource.CLOSED) connect();
-      resync();
+      if (document.visibilityState === 'hidden') {
+        if (!state.hiddenTimer) state.hiddenTimer = setTimeout(suspend, HIDDEN_GRACE_MS);
+      } else {
+        resume();
+      }
     });
-    connect();
+    if (document.visibilityState === 'hidden') {
+      // Opened in a background tab: the page is current; connect once it is looked at.
+      state.suspended = true;
+    } else {
+      connect();
+    }
   }
 
   // ---------------------------------------------------------------------------------------
   // Connection
 
+  // The page has been hidden for HIDDEN_GRACE_MS: give its connection back to the browser.
+  function suspend() {
+    state.hiddenTimer = 0;
+    if (document.visibilityState !== 'hidden') return;
+    state.suspended = true;
+    clearTimeout(state.reconnectTimer);
+    closeSource();
+  }
+
+  // The page is shown (again): reconnect if needed (the server replays what was missed
+  // since our version) and resync.
+  function resume() {
+    clearTimeout(state.hiddenTimer);
+    state.hiddenTimer = 0;
+    if (document.visibilityState === 'hidden') {
+      state.suspended = true;
+      return;
+    }
+    state.suspended = false;
+    if (!state.source || state.source.readyState === EventSource.CLOSED) connect();
+    resync();
+  }
+
   function connect() {
     clearTimeout(state.reconnectTimer);
     closeSource();
+    if (state.suspended) return;
     // `v`/`sid` tell the server which state this page shows, so it replays what we missed;
     // EventSource adds `Last-Event-ID` on its own reconnects.
     const sep = live.events_url.indexOf('?') >= 0 ? '&' : '?';
@@ -143,8 +201,11 @@
       state.backoff = 1000;
       setStatus('connected', '');
     };
-    es.onerror = () => {
+    es.onerror = (ev) => {
       if (es !== state.source) return;
+      // The protocol's own `error` event (a document error) is dispatched under the same
+      // name as connection errors; it carries data and the connection is fine.
+      if (ev && typeof ev.data === 'string') return;
       setStatus('disconnected', 'Disconnected from md-render; reconnecting…');
       // CLOSED means the browser will not retry (e.g. an HTTP error status): we do.
       if (es.readyState === EventSource.CLOSED) scheduleReconnect();
@@ -161,6 +222,7 @@
   function scheduleReconnect() {
     closeSource();
     clearTimeout(state.reconnectTimer);
+    if (state.suspended) return; // reconnects when shown
     state.reconnectTimer = setTimeout(connect, state.backoff);
     state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF_MS);
   }
@@ -235,7 +297,9 @@
   function onAssets(d) {
     const container = root();
     if (!container || !Array.isArray(d.urls)) return;
-    bustMedia(container, d.urls, String(d.v || Date.now()));
+    const token = String(d.v || Date.now());
+    d.urls.forEach((u) => bustTokens.set(decodePath(String(u)), token));
+    bustMedia([container], true);
   }
 
   function onStyles(d) {
@@ -251,7 +315,14 @@
   function applyContent(msg) {
     const container = root();
     if (!container) return;
-    const anchor = captureAnchor(container);
+    let anchor = captureAnchor(container);
+    if (container.firstElementChild) {
+      state.lastAnchor = anchor;
+    } else if (state.lastAnchor) {
+      // The previous update emptied the document (e.g. a truncate-then-write save), which
+      // scrolled the page to the top: return to where the reader was before that.
+      anchor = state.lastAnchor;
+    }
     let added;
     try {
       added = reconcile(container, msg.html);
@@ -263,6 +334,7 @@
         keys.set(n, keyOf(n));
         if (n.nodeType === Node.ELEMENT_NODE) added.push(n);
       }
+      bustMedia([container], true);
     }
     state.contentVersion = Number(msg.version);
     state.version = Math.max(state.version, state.contentVersion);
@@ -270,7 +342,7 @@
     // Fresh content replaces older errors and the banners the server rendered into the page
     // (content that was waiting for a frame must not hide an error that came after it).
     if (state.contentVersion > state.errorVersion) clearBanner('doc');
-    document.querySelectorAll('[data-mdr-banner]').forEach((b) => b.remove());
+    document.querySelectorAll(SERVER_BANNERS).forEach((b) => b.remove());
     const warnings = Array.isArray(msg.warnings) ? msg.warnings.filter(Boolean) : [];
     if (warnings.length) showBanner('warnings', 'warning', warnings.join('\n'));
     else clearBanner('warnings');
@@ -339,6 +411,9 @@
       }
     });
     pool.forEach((list) => list.forEach((n) => container.removeChild(n)));
+    // While the new nodes are still inert template content, so the stale URL of a changed
+    // image is never requested.
+    bustMedia(added, false);
     // Every remaining child is in `result`; walk it with a cursor so nodes that are
     // already in place are not moved (moving reloads iframes and restarts media).
     let cursor = container.firstChild;
@@ -374,6 +449,16 @@
     return m ? Number(m[1]) : null;
   }
 
+  // Source start line of a top-level block: its own `data-sourcepos`, else that of the
+  // first element inside it. GitLab wraps code blocks, tables, mermaid and raw HTML in
+  // elements without one; the position is on the inner `pre` / `table` (LIVE-12).
+  function blockLine(el) {
+    const own = startLine(el);
+    if (own !== null) return own;
+    const inner = el.querySelector('[data-sourcepos]');
+    return inner ? startLine(inner) : null;
+  }
+
   function maxScroll() {
     const se = document.scrollingElement || document.documentElement;
     return se.scrollHeight - window.innerHeight;
@@ -387,16 +472,20 @@
     // The first top-level block reaching below the top of the viewport. Reconciliation
     // usually keeps that very node (or at least its predecessor), which is the most precise
     // anchor; its source line is the fallback (and what survives a page reload).
+    let block = null;
     const blocks = container.children;
     for (let i = 0; i < blocks.length; i++) {
       const r = blocks[i].getBoundingClientRect();
       if (r.bottom > 0) {
-        const line = startLine(blocks[i]);
-        if (line !== null) return { el: blocks[i], prev: blocks[i].previousElementSibling, line, offset: r.top };
-        break;
+        block = { el: blocks[i], prev: blocks[i].previousElementSibling, offset: r.top };
+        const line = blockLine(blocks[i]);
+        if (line === null) break;
+        block.line = line;
+        return block;
       }
     }
-    // No source positions (e.g. --api output): the last heading above the viewport top.
+    // No source positions (e.g. --api output): the last heading above the viewport top,
+    // used when the block itself is not kept.
     const hs = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
     let heading = null;
     for (let i = 0; i < hs.length; i++) {
@@ -404,8 +493,8 @@
       if (top > 0) break;
       heading = { text: hs[i].textContent, index: i, offset: top };
     }
-    if (heading) return { heading };
-    return { ratio: max > 0 ? y / max : 0 };
+    const fallback = heading ? { heading } : { ratio: max > 0 ? y / max : 0 };
+    return block ? Object.assign(block, fallback) : fallback;
   }
 
   function restoreAnchor(container, a) {
@@ -427,7 +516,7 @@
       let best = -1;
       const blocks = container.children;
       for (let i = 0; i < blocks.length; i++) {
-        const l = startLine(blocks[i]);
+        const l = blockLine(blocks[i]);
         if (l !== null && l <= a.line && l > best) {
           best = l;
           target = blocks[i];
@@ -577,17 +666,27 @@
     });
   }
 
-  // Cache-bust local media whose files changed (`assets` event).
-  function bustMedia(container, urls, token) {
-    const wanted = new Set(urls.map((u) => decodePath(String(u))));
+  // Point local media at the latest version of files that changed (`assets` events, see
+  // `bustTokens`), in and below `nodes`. `reload` re-loads media elements whose <source> or
+  // <track> changed (only needed for media that is already in the document).
+  function bustMedia(nodes, reload) {
+    if (!bustTokens.size) return;
     const bust = (value) => {
       const u = sameOrigin(value);
-      if (!u || !wanted.has(decodePath(u.pathname))) return value;
+      const token = u && bustTokens.get(decodePath(u.pathname));
+      if (!token || u.searchParams.get('mdrv') === token) return value;
       u.searchParams.set('mdrv', token);
       return u.pathname + u.search + u.hash;
     };
-    const reload = new Set();
-    container.querySelectorAll('img, source, video, audio, track, input[type="image"]').forEach((el) => {
+    const selector = 'img, source, video, audio, track, input[type="image"]';
+    const elements = [];
+    nodes.forEach((n) => {
+      if (n.nodeType !== Node.ELEMENT_NODE) return;
+      if (n.matches(selector)) elements.push(n);
+      n.querySelectorAll(selector).forEach((el) => elements.push(el));
+    });
+    const media = new Set();
+    elements.forEach((el) => {
       let changed = false;
       ['src', 'poster'].forEach((attr) => {
         const old = el.getAttribute(attr);
@@ -611,10 +710,12 @@
         }
       }
       // A changed <source>/<track> only takes effect after the media element reloads.
-      const media = el.parentElement;
-      if (changed && el.localName !== 'img' && media && typeof media.load === 'function') reload.add(media);
+      const parent = el.parentElement;
+      if (reload && changed && el.localName !== 'img' && parent && typeof parent.load === 'function') {
+        media.add(parent);
+      }
     });
-    reload.forEach((m) => m.load());
+    media.forEach((m) => m.load());
   }
 
   // ---------------------------------------------------------------------------------------

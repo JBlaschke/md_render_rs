@@ -223,6 +223,27 @@ async fn changed_images_send_assets_events() {
     sse.expect_none("content", Duration::from_millis(300)).await;
 }
 
+/// LIVE-5: an image in a directory that does not exist when the document is rendered is
+/// still a dependency: creating the directory and the image sends `assets`, and later
+/// changes to the image do too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn images_in_directories_created_later_send_assets_events() {
+    let f = Fixture::new();
+    f.file("img.md", "intro\n![](imgs/deep/b.svg)");
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("img.md").await;
+    std::fs::create_dir_all(s.path("imgs/deep")).unwrap();
+    write(&s.path("imgs/deep/b.svg"), "<svg/>");
+    let assets = sse.wait_for("assets").await.json();
+    assert_eq!(assets["urls"], serde_json::json!(["/imgs/deep/b.svg"]));
+    // Once the directory exists the image is watched like any other.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    write_atomic(&s.path("imgs/deep/b.svg"), "<svg></svg>");
+    let assets = sse.wait_for("assets").await.json();
+    assert_eq!(assets["urls"], serde_json::json!(["/imgs/deep/b.svg"]));
+    sse.expect_none("content", Duration::from_millis(300)).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replacing_the_bundle_sends_styles_and_a_corrupt_one_keeps_the_old() {
     let f = Fixture::new();
@@ -351,4 +372,167 @@ async fn graceful_shutdown_ends_every_stream() {
     }
     // The listener is gone.
     assert!(tokio::net::TcpStream::connect(s.addr).await.is_err());
+}
+
+/// LIVE-4: a document whose directory does not exist yet is watched through its nearest
+/// existing ancestor, so creating the directory and the file pushes the content, and later
+/// saves keep arriving (also after the directory is deleted and created again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_in_a_directory_created_later() {
+    let f = Fixture::new();
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("newdir/sub/new.md").await;
+    std::fs::create_dir_all(s.path("newdir/sub")).unwrap();
+    write(&s.path("newdir/sub/new.md"), "hello");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("hello"))
+    })
+    .await;
+    write_atomic(&s.path("newdir/sub/new.md"), "hello again");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("hello again"))
+    })
+    .await;
+
+    // A second tab subscribing now gets the live updates too.
+    let (mut second, _) = s.subscribe("newdir/sub/new.md").await;
+    write_atomic(&s.path("newdir/sub/new.md"), "third save");
+    for sse in [&mut sse, &mut second] {
+        sse.wait_until("content", |c| {
+            c["html"].as_str().is_some_and(|h| h.contains("third save"))
+        })
+        .await;
+    }
+
+    // The directory goes away and comes back.
+    std::fs::remove_dir_all(s.path("newdir")).unwrap();
+    sse.wait_for("deleted").await;
+    std::fs::create_dir_all(s.path("newdir/sub")).unwrap();
+    write(&s.path("newdir/sub/new.md"), "reborn");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("reborn"))
+    })
+    .await;
+}
+
+/// LIVE-1 / Q-INCLUDE-1: editing a GitLab `::include`d file pushes new content, and a page
+/// load shows it too (the dedup hash covers the included files).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gitlab_included_files_are_watched() {
+    let f = Fixture::new();
+    f.file("README.md", "# GL doc\n\n::include{file=inc.md}\n\nafter\n");
+    f.file("inc.md", "Included **ONE**\n");
+    let s = f
+        .start(|cfg| {
+            cfg.flavor = md_render::flavor::Flavor::Gitlab;
+            cfg.renderer = std::sync::Arc::new(md_render::render::OfflineRenderer);
+        })
+        .await;
+    let (mut sse, _) = s.subscribe("README.md").await;
+    write_atomic(&s.path("inc.md"), "Included **TWO**\n");
+    let content = sse
+        .wait_until("content", |c| {
+            c["html"].as_str().is_some_and(|h| h.contains("TWO"))
+        })
+        .await
+        .json();
+    assert!(!content["html"].as_str().unwrap().contains("ONE"));
+    // An in-place write is seen as well, and the page itself is never stale.
+    write(&s.path("inc.md"), "Included **THREE**\n");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("THREE"))
+    })
+    .await;
+    write(&s.path("inc.md"), "Included **FOUR**\n");
+    assert!(s.get("/").await.text().contains("FOUR"));
+}
+
+/// LIVE-10: re-pointing a symlinked document (`ln -sfn`, a checkout that changes the link)
+/// pushes the new target's content, and the new target is watched from then on.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repointing_a_symlinked_document() {
+    let f = Fixture::new();
+    f.file("real/one.md", "Real one");
+    f.file("other/two.md", "Real two");
+    std::os::unix::fs::symlink("real/one.md", f.root.join("link.md")).unwrap();
+    let s = f.start(|_| {}).await;
+    let (mut sse, _) = s.subscribe("link.md").await;
+    write_atomic(&s.path("real/one.md"), "Real one edited");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("Real one edited"))
+    })
+    .await;
+
+    // Atomically replace the link (like `ln -sfn` with a rename).
+    let tmp = s.path(".link.tmp");
+    std::os::unix::fs::symlink("other/two.md", &tmp).unwrap();
+    std::fs::rename(&tmp, s.path("link.md")).unwrap();
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("Real two"))
+    })
+    .await;
+    // Edits of the new target arrive; the old target no longer matters.
+    write_atomic(&s.path("other/two.md"), "Real two edited");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("Real two edited"))
+    })
+    .await;
+}
+
+/// LIVE-9: directory listings are live: new and removed entries are pushed as content, and
+/// a README appearing (the URL now shows it) reloads the page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_listings_are_live() {
+    let f = Fixture::new();
+    f.file("nolist/x.md", "x");
+    f.file("top.txt", "t");
+    let s = f.start(|_| {}).await;
+    let body = s.get("/nolist/").await.text();
+    assert!(body.contains("x.md"), "{body}");
+    assert!(
+        body.contains("/__/md-render/events?path=nolist/"),
+        "the listing has no live client: {body}"
+    );
+
+    let (mut sse, _) = s.subscribe("nolist/").await;
+    write(&s.path("nolist/new.md"), "n");
+    sse.wait_until("content", |c| {
+        c["html"].as_str().is_some_and(|h| h.contains("new.md"))
+    })
+    .await;
+    std::fs::remove_file(s.path("nolist/x.md")).unwrap();
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("new.md") && !h.contains("x.md"))
+    })
+    .await;
+    write_atomic(&s.path("nolist/README.md"), "now with a readme");
+    sse.wait_for("reload").await;
+    assert!(s.get("/nolist/").await.text().contains("now with a readme"));
+
+    // The root listing (no README at the root) is live too.
+    let body = s.get("/").await.text();
+    assert!(
+        body.contains("top.txt") && body.contains("events?path=/"),
+        "{body}"
+    );
+    let (mut sse, _) = s.subscribe("/").await;
+    write(&s.path("another.txt"), "a");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("another.txt"))
+    })
+    .await;
+    // A file is not a listing.
+    let r = s.get("/__/md-render/events?path=top.txt/").await;
+    assert_eq!(r.status, 400);
 }
