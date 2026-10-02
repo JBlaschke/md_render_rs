@@ -349,8 +349,9 @@ impl Bundle {
     }
 }
 
-/// The values of every `url()` and `@import` reference in `css`, in source order, with CSS
-/// escapes resolved. References inside comments and strings are not reported (CR §7).
+/// The values of every `url()` and `@import` reference in `css`, and of every string argument
+/// of `image-set()` / `-webkit-image-set()` (an image URL too), in source order, with CSS
+/// escapes resolved. References inside comments and other strings are not reported (CR §7).
 pub fn css_references(css: &str) -> Vec<String> {
     vendor::css::scan(css)
         .into_iter()
@@ -358,7 +359,7 @@ pub fn css_references(css: &str) -> Vec<String> {
         .collect()
 }
 
-/// Rewrite the value of every `url()` / `@import` reference in `css` for which `replace`
+/// Rewrite the value of every reference [`css_references`] reports in `css` for which `replace`
 /// returns a new (unescaped) value; it is escaped as the reference's quoting requires. Other
 /// bytes are kept verbatim. Export uses this to inline bundle files as `data:` URIs, e.g. with
 /// [`resolve_bundle_ref`] and [`Bundle::read`].
