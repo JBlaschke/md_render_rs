@@ -1,0 +1,26 @@
+<div class="highlight highlight-source-ruby" dir="auto"><pre class="notranslate"><span class="pl-en">require</span> <span class="pl-s">'json'</span>
+
+<span class="pl-k">module</span> <span class="pl-v">Greeter</span>
+  <span class="pl-k">class</span> <span class="pl-v">Person</span> &lt; <span class="pl-v">Base</span>
+    <span class="pl-en">attr_accessor</span> <span class="pl-pds">:name</span>
+    <span class="pl-c1">CONST</span> <span class="pl-c1">=</span> <span class="pl-c1">42</span>
+
+    <span class="pl-k">def</span> <span class="pl-en">initialize</span><span class="pl-kos">(</span><span class="pl-s1">name</span><span class="pl-kos">,</span> *<span class="pl-s1">args</span><span class="pl-kos">,</span> **<span class="pl-s1">opts</span><span class="pl-kos">,</span> &amp;<span class="pl-s1">blk</span><span class="pl-kos">)</span>
+      <span class="pl-c1">@name</span> <span class="pl-c1">=</span> <span class="pl-s1">name</span>
+      <span class="pl-c1">@@count</span> ||= <span class="pl-c1">0</span>
+      $global <span class="pl-c1">=</span> <span class="pl-c1">nil</span>
+    <span class="pl-k">end</span>
+
+    <span class="pl-k">def</span> <span class="pl-en">greet</span><span class="pl-kos">(</span><span class="pl-s1">other</span> <span class="pl-c1">=</span> <span class="pl-c1">nil</span><span class="pl-kos">)</span>
+      <span class="pl-k">return</span> <span class="pl-s">"Hi <span class="pl-s1"><span class="pl-kos">#{</span><span class="pl-s1">other</span><span class="pl-kos">.</span><span class="pl-en">name</span><span class="pl-kos">}</span></span>!"</span> <span class="pl-k">if</span> <span class="pl-s1">other</span>
+      <span class="pl-en">puts</span> <span class="pl-s">'hello'</span><span class="pl-kos">,</span> <span class="pl-pds">:sym</span><span class="pl-kos">,</span> <span class="pl-kos">%w[</span><span class="pl-s">a</span> <span class="pl-s">b</span><span class="pl-kos">]</span><span class="pl-kos">,</span> <span class="pl-sr">/re+/i</span>
+      <span class="pl-kos">[</span><span class="pl-c1">1</span><span class="pl-kos">,</span> <span class="pl-c1">2</span><span class="pl-kos">,</span> <span class="pl-c1">3</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">each_with_index</span> <span class="pl-k">do</span> |<span class="pl-s1">x</span><span class="pl-kos">,</span> <span class="pl-s1">i</span>|
+        <span class="pl-k">yield</span> <span class="pl-s1">x</span> * <span class="pl-s1">i</span> <span class="pl-k">unless</span> <span class="pl-s1">x</span><span class="pl-kos">.</span><span class="pl-en">nil?</span>
+      <span class="pl-k">end</span>
+    <span class="pl-k">end</span>
+
+    <span class="pl-k">private</span>
+
+    <span class="pl-k">def</span> <span class="pl-smi">self</span><span class="pl-kos">.</span><span class="pl-en">build</span> <span class="pl-c1">=</span> <span class="pl-en">new</span><span class="pl-kos">(</span><span class="pl-s">"x"</span><span class="pl-kos">)</span>
+  <span class="pl-k">end</span>
+<span class="pl-k">end</span></pre></div>

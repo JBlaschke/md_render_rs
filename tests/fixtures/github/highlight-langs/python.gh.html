@@ -1,0 +1,25 @@
+<div class="highlight highlight-source-python" dir="auto"><pre class="notranslate"><span class="pl-k">import</span> <span class="pl-s1">os</span>
+<span class="pl-k">from</span> <span class="pl-s1">typing</span> <span class="pl-k">import</span> <span class="pl-v">List</span>, <span class="pl-v">Optional</span>
+
+<span class="pl-en">@<span class="pl-en">dataclass</span>(<span class="pl-s1">frozen</span><span class="pl-c1">=</span><span class="pl-c1">True</span>)</span>
+<span class="pl-k">class</span> <span class="pl-v">User</span>(<span class="pl-v">Base</span>):
+    <span class="pl-s">"""A user."""</span>
+    <span class="pl-s1">name</span>: <span class="pl-smi">str</span> <span class="pl-c1">=</span> <span class="pl-s">"anon"</span>
+    <span class="pl-s1">tags</span>: <span class="pl-v">List</span>[<span class="pl-smi">str</span>] <span class="pl-c1">=</span> <span class="pl-en">field</span>(<span class="pl-s1">default_factory</span><span class="pl-c1">=</span><span class="pl-s1">list</span>)
+
+    <span class="pl-k">def</span> <span class="pl-en">greet</span>(<span class="pl-s1">self</span>, <span class="pl-s1">other</span>: <span class="pl-v">Optional</span>[<span class="pl-s">"User"</span>] <span class="pl-c1">=</span> <span class="pl-c1">None</span>, <span class="pl-c1">*</span><span class="pl-s1">args</span>, <span class="pl-c1">**</span><span class="pl-s1">kwargs</span>) <span class="pl-c1">-&gt;</span> <span class="pl-smi">str</span>:
+        <span class="pl-k">if</span> <span class="pl-s1">other</span> <span class="pl-c1">is</span> <span class="pl-c1">None</span> <span class="pl-c1">and</span> <span class="pl-en">len</span>(<span class="pl-s1">args</span>) <span class="pl-c1">&gt;</span> <span class="pl-c1">0</span>:
+            <span class="pl-k">return</span> <span class="pl-s">f"Hello <span class="pl-s1"><span class="pl-kos">{</span><span class="pl-s1">self</span>.<span class="pl-c1">name</span>!r<span class="pl-kos">}</span></span>, <span class="pl-s1"><span class="pl-kos">{</span><span class="pl-s1">args</span>[<span class="pl-c1">0</span>]:&gt;10<span class="pl-kos">}</span></span>"</span>
+        <span class="pl-k">elif</span> <span class="pl-en">isinstance</span>(<span class="pl-s1">other</span>, <span class="pl-v">User</span>):
+            <span class="pl-k">raise</span> <span class="pl-en">ValueError</span>(<span class="pl-s">'bad %s'</span> <span class="pl-c1">%</span> <span class="pl-s1">other</span>)
+        <span class="pl-k">for</span> <span class="pl-s1">i</span>, <span class="pl-s1">x</span> <span class="pl-c1">in</span> <span class="pl-en">enumerate</span>(<span class="pl-en">range</span>(<span class="pl-c1">10</span>)):
+            <span class="pl-k">yield</span> <span class="pl-s1">i</span> <span class="pl-c1">**</span> <span class="pl-c1">2</span> <span class="pl-c1">+</span> <span class="pl-c1">0x1F</span> <span class="pl-c1">-</span> <span class="pl-c1">3.14e-2</span>
+        <span class="pl-k">lambda</span> <span class="pl-s1">y</span>: <span class="pl-s1">y</span> @ <span class="pl-s1">self</span>.<span class="pl-c1">matrix</span>
+        <span class="pl-k">return</span> <span class="pl-c1">None</span>
+
+<span class="pl-k">async</span> <span class="pl-k">def</span> <span class="pl-en">main</span>():
+    <span class="pl-k">await</span> <span class="pl-s1">asyncio</span>.<span class="pl-c1">sleep</span>(<span class="pl-c1">1</span>)  <span class="pl-c"># comment</span>
+    <span class="pl-en">print</span>(<span class="pl-c1">True</span>, <span class="pl-c1">False</span>, <span class="pl-s1">__name__</span>, <span class="pl-s1">self</span>, <span class="pl-s1">cls</span>)
+
+<span class="pl-k">if</span> <span class="pl-s1">__name__</span> <span class="pl-c1">==</span> <span class="pl-s">"__main__"</span>:
+    <span class="pl-en">main</span>()</pre></div>

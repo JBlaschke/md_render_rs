@@ -1,0 +1,31 @@
+<div class="highlight highlight-source-yaml" dir="auto"><pre class="notranslate"><span class="pl-c"><span class="pl-c">#</span> CI</span>
+<span class="pl-ent">name</span>: <span class="pl-s">CI</span>
+<span class="pl-ent">on</span>:
+  <span class="pl-ent">push</span>:
+    <span class="pl-ent">branches</span>: <span class="pl-s">[main]</span>
+  <span class="pl-ent">pull_request</span>:
+
+<span class="pl-ent">env</span>:
+  <span class="pl-ent">RUST_BACKTRACE</span>: <span class="pl-c1">1</span>
+  <span class="pl-ent">DEBUG</span>: <span class="pl-c1">true</span>
+  <span class="pl-ent">RATIO</span>: <span class="pl-c1">0.5</span>
+
+<span class="pl-ent">jobs</span>:
+  <span class="pl-ent">build</span>:
+    <span class="pl-ent">runs-on</span>: <span class="pl-s">${{ matrix.os }}</span>
+    <span class="pl-ent">strategy</span>:
+      <span class="pl-ent">matrix</span>:
+        <span class="pl-ent">os</span>: <span class="pl-s">[ubuntu-latest, macos-latest]</span>
+    <span class="pl-ent">steps</span>:
+      - <span class="pl-ent">uses</span>: <span class="pl-s">actions/checkout@v4</span>
+      - <span class="pl-ent">name</span>: <span class="pl-s">Test</span>
+        <span class="pl-ent">run</span>: <span class="pl-s">|</span>
+<span class="pl-s">          cargo test --all</span>
+<span class="pl-s">          echo "done"</span>
+<span class="pl-s"></span>      - <span class="pl-ent">name</span>: <span class="pl-s"><span class="pl-pds">"</span>Quoted<span class="pl-pds">"</span></span>
+        <span class="pl-ent">if</span>: <span class="pl-s">github.event_name == 'push'</span>
+<span class="pl-ent">anchors</span>: <span class="pl-s">&amp;default</span>
+  <span class="pl-ent">key</span>: <span class="pl-s">value</span>
+<span class="pl-ent">other</span>:
+  <span class="pl-ent">&lt;&lt;</span>: <span class="pl-s">*default</span>
+<span class="pl-ent">empty</span>: <span class="pl-c1">~</span></pre></div>

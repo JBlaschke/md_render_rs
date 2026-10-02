@@ -4,12 +4,13 @@
 //! (`R/gitlab-src/lib/rouge/formatters/html_gitlab.rb`, GL §8.2): one entry per source line,
 //! tokens as `<span class="{short}">escaped</span>` (plain `Text` unwrapped), a token spanning
 //! lines split per line, empty pieces dropped. We tokenize with syntect + two-face and map scopes
-//! to Rouge classes ([`classes`]); `diff` and `console` are exact ports of the Rouge lexers'
-//! line logic ([`diff`], [`console`]).
+//! to Rouge classes ([`classes`]); `diff`, `console` and `docker` are ports of the Rouge
+//! lexers' line logic ([`diff`], [`console`], [`docker`]).
 
 mod classes;
 mod console;
 mod diff;
+mod docker;
 pub(crate) mod registry;
 mod words;
 
@@ -99,6 +100,8 @@ pub(crate) fn segments_for(code: &str, lang: &str, variant: Variant) -> (String,
             let lexer = if tag == "console" { "shell" } else { tag };
             let result = if tag == "console" {
                 console::segments(&code, &scheme.for_lang(lexer), &mut out)
+            } else if tag == "docker" {
+                docker::segments(&code, &scheme.for_lang("shell"), &mut out)
             } else {
                 match select_syntax(tag, lang) {
                     Some(syntax) => tokenize(&code, syntax, &scheme.for_lang(tag), &mut out),
@@ -351,6 +354,124 @@ mod tests {
             "<span class=\"go\">   Compiling foo v0.1.0</span>"
         );
         assert_eq!(r.lines[3], "<span class=\"go\">hi</span>");
+    }
+
+    /// GL-HL-1: lines as Rouge 5.1.0 with GitLab's formatter renders them
+    /// (`R/tools/rouge_gitlab.rb`).
+    #[test]
+    fn rouge_lexer_fixes() {
+        // YAML: a key the grammar reads as a boolean, flow sequences, opening quotes.
+        let r = gl("on: [push, pull_request]\nenv:\n  A: \"q\"\n", "yaml");
+        assert_eq!(
+            r.lines,
+            [
+                "<span class=\"na\">on</span><span class=\"pi\">:</span> \
+                 <span class=\"pi\">[</span><span class=\"nv\">push</span>\
+                 <span class=\"pi\">,</span> <span class=\"nv\">pull_request</span>\
+                 <span class=\"pi\">]</span>",
+                "<span class=\"na\">env</span><span class=\"pi\">:</span>",
+                "  <span class=\"na\">A</span><span class=\"pi\">:</span> \
+                 <span class=\"s2\">\"</span><span class=\"s\">q\"</span>",
+            ]
+        );
+        // Ruby: builtins, plain keywords, constants, operators, names, `0x` numbers.
+        let r = gl(
+            "require 'json'\nclass Bar < Base\n  attr_reader :name\n  def initialize(opts = \
+             {})\n    puts x.inspect if true && !nil\n  end\nend\nn = 0x1f\n",
+            "ruby",
+        );
+        assert_eq!(
+            r.lines,
+            [
+                "<span class=\"nb\">require</span> <span class=\"s1\">'json'</span>",
+                "<span class=\"k\">class</span> <span class=\"nc\">Bar</span> \
+                 <span class=\"o\">&lt;</span> <span class=\"no\">Base</span>",
+                "  <span class=\"nb\">attr_reader</span> <span class=\"ss\">:name</span>",
+                "  <span class=\"k\">def</span> <span class=\"nf\">initialize</span>\
+                 <span class=\"p\">(</span><span class=\"n\">opts</span> \
+                 <span class=\"o\">=</span> <span class=\"p\">{})</span>",
+                "    <span class=\"nb\">puts</span> <span class=\"n\">x</span>\
+                 <span class=\"p\">.</span><span class=\"nf\">inspect</span> \
+                 <span class=\"k\">if</span> <span class=\"kp\">true</span> \
+                 <span class=\"o\">&amp;&amp;</span> <span class=\"o\">!</span>\
+                 <span class=\"kp\">nil</span>",
+                "  <span class=\"k\">end</span>",
+                "<span class=\"k\">end</span>",
+                "<span class=\"n\">n</span> <span class=\"o\">=</span> \
+                 <span class=\"mh\">0x1f</span>",
+            ]
+        );
+        // PHP: `<?php`, namespaces, variables, keywords, strings with interpolation.
+        let r = gl(
+            "<?php\nnamespace App\\Http;\nuse Foo\\Bar;\n  private $name = \"str\";\n  \
+             public function __construct(int $a) { $this->a = $a; }\necho \"Hello {$name}\";\n",
+            "php",
+        );
+        assert_eq!(
+            r.lines,
+            [
+                "<span class=\"cp\">&lt;?php</span>",
+                "<span class=\"kn\">namespace</span> <span class=\"nn\">App\\Http</span>\
+                 <span class=\"p\">;</span>",
+                "<span class=\"kn\">use</span> <span class=\"nc\">Foo\\Bar</span>\
+                 <span class=\"p\">;</span>",
+                "  <span class=\"k\">private</span> <span class=\"nv\">$name</span> \
+                 <span class=\"o\">=</span> <span class=\"s2\">\"str\"</span>\
+                 <span class=\"p\">;</span>",
+                "  <span class=\"k\">public</span> <span class=\"k\">function</span> \
+                 <span class=\"n\">__construct</span><span class=\"p\">(</span>\
+                 <span class=\"kt\">int</span> <span class=\"nv\">$a</span>\
+                 <span class=\"p\">)</span> <span class=\"p\">{</span> \
+                 <span class=\"nv\">$this</span><span class=\"o\">-&gt;</span>\
+                 <span class=\"n\">a</span> <span class=\"o\">=</span> \
+                 <span class=\"nv\">$a</span><span class=\"p\">;</span> \
+                 <span class=\"p\">}</span>",
+                "<span class=\"k\">echo</span> <span class=\"s2\">\"Hello </span>\
+                 <span class=\"si\">{</span><span class=\"nv\">$name</span>\
+                 <span class=\"si\">}</span><span class=\"s2\">\"</span>\
+                 <span class=\"p\">;</span>",
+            ]
+        );
+        // Dockerfile: instruction arguments are strings, `RUN` is shell (continued after
+        // `\`), comments only where a token starts.
+        let r = gl(
+            "FROM ubuntu:22.04 AS build\n# comment\nARG VERSION=1\nRUN apt-get update && \\\n    \
+             apt-get install -y curl\nCOPY --from=build /app /app\nCMD [\"./run\"]\n\
+             onbuild copy . .\n",
+            "dockerfile",
+        );
+        assert_eq!(r.tag, "docker");
+        assert_eq!(
+            r.lines,
+            [
+                "<span class=\"k\">FROM</span><span class=\"w\"> </span>\
+                 <span class=\"s\">ubuntu:22.04</span><span class=\"w\"> </span>\
+                 <span class=\"k\">AS</span><span class=\"w\"> </span>\
+                 <span class=\"s\">build</span>",
+                "<span class=\"c\"># comment</span>",
+                "<span class=\"k\">ARG</span><span class=\"s\"> VERSION=1</span>",
+                "<span class=\"k\">RUN </span>apt-get update <span class=\"o\">&amp;&amp;</span> \
+                 <span class=\"se\">\\</span>",
+                "    apt-get <span class=\"nb\">install</span> <span class=\"nt\">-y</span> curl",
+                "<span class=\"k\">COPY</span><span class=\"s\"> --from=build /app /app</span>",
+                "<span class=\"k\">CMD</span><span class=\"s\"> [\"./run\"]</span>",
+                "<span class=\"k\">onbuild</span><span class=\"w\"> </span>\
+                 <span class=\"k\">copy</span><span class=\"s\"> . .</span>",
+            ]
+        );
+        // Every byte is covered, also without a final newline and with a lone `\`.
+        let r = gl("RUN a \\", "dockerfile");
+        assert_eq!(
+            r.lines,
+            ["<span class=\"k\">RUN </span>a <span class=\"err\">\\</span>"]
+        );
+        let r = gl("RUN\n  echo x\nx = 1 # c", "dockerfile");
+        assert_eq!(r.lines.len(), 3);
+        assert!(
+            r.lines[2].ends_with("<span class=\"c\"># c</span>"),
+            "{:?}",
+            r.lines
+        );
     }
 
     #[test]

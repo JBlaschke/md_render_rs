@@ -225,7 +225,7 @@ fn shell_fixups(code: &str, segs: Vec<Segment>) -> Vec<Segment> {
 }
 
 /// Lexers that emit `Text.Whitespace` (`w`) for whitespace between tokens.
-pub(super) const WHITESPACE_TAGS: &[&str] = &["json", "json-doc", "toml", "docker"];
+pub(super) const WHITESPACE_TAGS: &[&str] = &["json", "json-doc", "toml"];
 
 /// Give unclassified whitespace runs the class `w` (Rouge's `\s+` → `Text::Whitespace`).
 pub(super) fn mark_whitespace(code: &str, segments: Vec<Segment>) -> Vec<Segment> {
@@ -370,9 +370,173 @@ pub(super) fn for_tag(tag: &str) -> Option<&'static Words> {
         "shell" => &SHELL,
         "java" => &JAVA,
         "sql" => &SQL,
+        "ruby" => &RUBY,
+        "yaml" => &YAML,
         _ => return None,
     })
 }
+
+/// `Rouge::Lexers::Ruby` root: after `.`/`::` a method name `nf`; keywords (with `def`,
+/// `class`, `module`) `k`, pseudo-keywords `kp`, `not`/`and`/`or` `ow`, global builtins `nb`,
+/// constants (capitalized) `no`, else `n`.
+static RUBY: Words = Words {
+    rules: &[
+        (When::any().after_dot(), "nf"),
+        (When::word_in(RUBY_KEYWORDS), "k"),
+        (When::word_in(RUBY_DECLARATIONS), "k"),
+        (When::word_in(RUBY_KEYWORDS_PSEUDO), "kp"),
+        (When::word_in(RUBY_OPERATOR_WORDS), "ow"),
+        (When::word_in(RUBY_BUILTINS), "nb"),
+        (When::any().capitalized(), "no"),
+    ],
+    bare: Some("n"),
+    dot_joins: &[],
+    trailing_blanks: false,
+};
+
+pub(super) const RUBY_KEYWORDS: &[&str] = &[
+    "BEGIN", "END", "alias", "begin", "break", "case", "do", "else", "elsif", "end", "ensure",
+    "for", "if", "in", "next", "raise", "redo", "rescue", "retry", "return", "super", "then",
+    "undef", "unless", "until", "when", "while", "yield",
+];
+
+/// The `(def|class|module)\b` rules' `Keyword`.
+pub(super) const RUBY_DECLARATIONS: &[&str] = &["class", "def", "module"];
+
+pub(super) const RUBY_KEYWORDS_PSEUDO: &[&str] = &[
+    "__FILE__",
+    "__LINE__",
+    "alias_method",
+    "attr",
+    "catch",
+    "extend",
+    "false",
+    "include",
+    "loop",
+    "module_function",
+    "nil",
+    "private",
+    "protected",
+    "public",
+    "raise",
+    "throw",
+    "true",
+];
+
+pub(super) const RUBY_OPERATOR_WORDS: &[&str] = &["and", "not", "or"];
+
+/// `builtins_g` (`const_defined\?` is matched as a word and never ends in `?`).
+pub(super) const RUBY_BUILTINS: &[&str] = &[
+    "__id__",
+    "__send__",
+    "abort",
+    "ancestors",
+    "at_exit",
+    "attr_accessor",
+    "attr_reader",
+    "attr_writer",
+    "autoload",
+    "binding",
+    "callcc",
+    "caller",
+    "catch",
+    "chomp",
+    "chop",
+    "class_eval",
+    "class_variables",
+    "clone",
+    "const_get",
+    "const_missing",
+    "const_set",
+    "constants",
+    "display",
+    "dup",
+    "eval",
+    "exec",
+    "exit",
+    "extend",
+    "fail",
+    "fork",
+    "format",
+    "freeze",
+    "getc",
+    "gets",
+    "global_variables",
+    "gsub",
+    "hash",
+    "id",
+    "included_modules",
+    "inspect",
+    "instance_eval",
+    "instance_method",
+    "instance_methods",
+    "instance_variable_get",
+    "instance_variable_set",
+    "instance_variables",
+    "lambda",
+    "load",
+    "local_variables",
+    "loop",
+    "method",
+    "method_missing",
+    "methods",
+    "module_eval",
+    "name",
+    "object_id",
+    "open",
+    "p",
+    "print",
+    "printf",
+    "private_class_method",
+    "private_instance_methods",
+    "private_methods",
+    "proc",
+    "protected_instance_methods",
+    "protected_methods",
+    "public_class_method",
+    "public_instance_methods",
+    "public_methods",
+    "putc",
+    "puts",
+    "raise",
+    "rand",
+    "readline",
+    "readlines",
+    "require",
+    "require_relative",
+    "scan",
+    "select",
+    "self",
+    "send",
+    "set_trace_func",
+    "singleton_methods",
+    "sleep",
+    "split",
+    "sprintf",
+    "srand",
+    "sub",
+    "syscall",
+    "system",
+    "taint",
+    "test",
+    "throw",
+    "to_a",
+    "to_s",
+    "trace_var",
+    "trap",
+    "untaint",
+    "untrace_var",
+    "warn",
+];
+
+/// `Rouge::Lexers::YAML`: an implicit key (`([^#,?\[\]{}"'\n]+)(:)(?=\s|$)`) is an attribute,
+/// also where the grammar reads it as a constant (`on:`, `true:`).
+static YAML: Words = Words {
+    rules: &[(When::before(":"), "na")],
+    bare: None,
+    dot_joins: &[],
+    trailing_blanks: false,
+};
 
 /// `Rouge::Lexers::Shell` `:basic`: `KEYWORDS` → `k`, `BUILTINS` (not followed by `.`/`-`)
 /// → `nb`; other words are `Text`.

@@ -1,0 +1,12 @@
+<div class="highlight highlight-source-kotlin" dir="auto"><pre class="notranslate"><span class="pl-k">package</span> <span class="pl-en">demo</span>
+
+<span class="pl-k">data class</span> <span class="pl-en">User</span>(<span class="pl-k">val</span> <span class="pl-smi">name</span><span class="pl-k">:</span> <span class="pl-c1">String</span>, <span class="pl-k">var</span> <span class="pl-smi">age</span><span class="pl-k">:</span> <span class="pl-c1">Int</span> = <span class="pl-c1">0</span>)
+
+<span class="pl-k">fun</span> <span class="pl-en">main</span>(<span class="pl-smi">args</span><span class="pl-k">:</span> <span class="pl-c1">Array</span>&lt;<span class="pl-en">String</span>&gt;) {
+    <span class="pl-k">val</span> users <span class="pl-k">=</span> <span class="pl-c1">listOf</span>(<span class="pl-en">User</span>(<span class="pl-s"><span class="pl-pds">"</span>a<span class="pl-pds">"</span></span>), <span class="pl-en">User</span>(<span class="pl-s"><span class="pl-pds">"</span>b<span class="pl-pds">"</span></span>, <span class="pl-c1">3</span>))
+    users.filter { it.age <span class="pl-k">&gt;</span> <span class="pl-c1">1</span> }.forEach { <span class="pl-c1">println</span>(<span class="pl-s"><span class="pl-pds">"</span><span class="pl-e">${it.name}</span> is <span class="pl-e">$it</span><span class="pl-pds">"</span></span>) }
+    <span class="pl-k">when</span> (<span class="pl-k">val</span> x <span class="pl-k">=</span> args.size) {
+        <span class="pl-c1">0</span> <span class="pl-k">-&gt;</span> <span class="pl-c1">println</span>(<span class="pl-s"><span class="pl-pds">"</span>none<span class="pl-pds">"</span></span>)
+        <span class="pl-k">else</span> <span class="pl-k">-&gt;</span> <span class="pl-k">throw</span> <span class="pl-en">IllegalStateException</span>()
+    }
+}</pre></div>

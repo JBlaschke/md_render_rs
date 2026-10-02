@@ -255,8 +255,12 @@ pub(crate) const BASELINE_RULES: &[(&str, Rule)] = &[
 ];
 
 /// Rules that replace (same selector) or extend [`BASELINE_RULES`] for every language in
-/// [`Variant::Improved`].
-const IMPROVED_RULES: &[(&str, Rule)] = &[];
+/// [`Variant::Improved`]: Rouge's lexers read a number with its base prefix (`0x1f`) and a
+/// regular expression with its flags (`/re/i`) as one token.
+const IMPROVED_RULES: &[(&str, Rule)] = &[
+    ("punctuation.definition.numeric", Inherit),
+    ("string.regexp keyword.other", Inherit),
+];
 
 /// `Rouge::Lexers::Rust`: strings `s` (placeholders included), chars `sc`, `<`/`>` operators,
 /// macros and attributes `nd` throughout, `->` a keyword, lifetimes `nv`, type names plain
@@ -448,6 +452,9 @@ const SHELL: &[(&str, Rule)] = &[
 const HTML: &[(&str, Rule)] = &[
     ("string.quoted", Span("s")),
     ("meta.class-name", Inherit),
+    // `<?php` / `?>` of a PHP block (Rouge's PHP lexer: `Comment::Preproc`).
+    ("punctuation.section.embedded.begin.php", Span("cp")),
+    ("punctuation.section.embedded.end.php", Span("cp")),
     (
         "meta.attribute-with-value punctuation.separator.key-value",
         Span("na"),
@@ -487,11 +494,35 @@ const CSS: &[(&str, Rule)] = &[
     ("meta.group string.unquoted", Span("sx")),
 ];
 
-/// `Rouge::Lexers::YAML`: numbers `m`, quoted strings `s`, anchors `nl`, aliases `nv`, block
-/// scalar indicators `pi`.
+/// `Rouge::Lexers::YAML`: numbers `m`, quoted strings `s` after an opening quote `s2`/`s1`,
+/// anchors `nl`, aliases `nv`, block scalar indicators `pi`; in flow collections (`[a, b]`,
+/// `{k: v}`) every plain scalar is `Name::Variable` and the brackets and separators are
+/// indicators. Keys the grammar reads as constants (`on:`) are attributes (`super::words`).
 const YAML: &[(&str, Rule)] = &[
     ("constant.numeric", Span("m")),
     ("string.quoted", Span("s")),
+    (
+        "string.quoted.double punctuation.definition.string.begin",
+        Span("s2"),
+    ),
+    (
+        "string.quoted.single punctuation.definition.string.begin",
+        Span("s1"),
+    ),
+    (
+        "meta.flow-sequence punctuation.definition.sequence",
+        Span("pi"),
+    ),
+    ("meta.flow-sequence punctuation.separator", Span("pi")),
+    (
+        "meta.flow-mapping punctuation.definition.mapping",
+        Span("pi"),
+    ),
+    ("meta.flow-mapping punctuation.separator", Span("pi")),
+    ("meta.flow-sequence string.unquoted", Span("nv")),
+    ("meta.flow-mapping string.unquoted", Span("nv")),
+    ("meta.flow-sequence constant", Span("nv")),
+    ("meta.flow-mapping constant", Span("nv")),
     ("meta.property", Span("nl")),
     ("meta.property punctuation", Span("nl")),
     ("meta.property keyword", Span("nl")),
@@ -542,14 +573,6 @@ const TOML: &[(&str, Rule)] = &[
     ("punctuation.definition.key-value", Span("o")),
     ("punctuation.definition.table", Span("k")),
     ("string", Span("s")),
-];
-
-/// `Rouge::Lexers::Docker`: instruction arguments are strings.
-const DOCKER: &[(&str, Rule)] = &[
-    ("string.quoted.double", Span("s")),
-    ("entity.name.enum.tag-digest", Span("s")),
-    ("variable.stage-name", Span("s")),
-    ("keyword.operator", Span("k")),
 ];
 
 /// `Rouge::Lexers::XML`: `<?xml …?>` and CDATA sections `cp` as a whole, values `s`, `=` `na`,
@@ -605,6 +628,47 @@ const MAKE: &[(&str, Rule)] = &[
     ("string.unquoted", Plain),
 ];
 
+/// `Rouge::Lexers::Ruby`: `class`/`def`/`module` plain keywords and `require` a builtin
+/// (names via the word rules), superclasses constants, `<` and block-parameter bars operators,
+/// `%w[…]` literals `Str::Other`.
+const RUBY: &[(&str, Rule)] = &[
+    ("keyword.control.import", Plain),
+    ("entity.other.inherited-class", Span("no")),
+    ("punctuation.separator.inheritance", Span("o")),
+    (
+        "meta.block.parameters punctuation.definition.parameters",
+        Span("o"),
+    ),
+    ("string.quoted.other.literal", Span("sx")),
+];
+
+/// `Rouge::Lexers::PHP`: `<?php`/`?>` `cp`; variables (with `$`, `$this` too) `nv`; strings as a
+/// whole `s2`/`s1` with `{…}` interpolation braces `si`; declaration keywords (`class`,
+/// `extends`, `implements`) `kd`, every other keyword (`function`, `public`, `echo`, …) `k`;
+/// declared function names `n`; properties `n` after an `->` operator; namespace names `nn`
+/// (`namespace`) or classes `nc` (`use`); parameter types `kt`.
+const PHP: &[(&str, Rule)] = &[
+    ("punctuation.section.embedded", Span("cp")),
+    ("variable.other", Span("nv")),
+    ("variable.parameter", Span("nv")),
+    ("variable.language", Span("nv")),
+    ("variable.other.member", Span("n")),
+    ("punctuation.accessor", Span("o")),
+    ("storage.modifier", Span("k")),
+    ("storage.modifier.extends", Span("kd")),
+    ("storage.modifier.implements", Span("kd")),
+    ("storage.type.function", Span("k")),
+    ("entity.name.function", Span("n")),
+    ("entity.name.function support", Span("n")),
+    ("support.function.construct", Span("k")),
+    ("string punctuation.definition.expression", Span("si")),
+    ("entity.name.namespace", Span("nn")),
+    ("entity.name.namespace punctuation", Span("nn")),
+    ("meta.use support", Span("nc")),
+    ("meta.use punctuation.separator.namespace", Span("nc")),
+    ("meta.function.parameters support.class", Span("kt")),
+];
+
 /// `Rouge::Lexers::INI`: keys `py`, `[section]` `nn` as a whole, comments `c`.
 const INI: &[(&str, Rule)] = &[
     ("comment", Span("c")),
@@ -632,11 +696,12 @@ const OVERLAYS: &[(&str, &[(&str, Rule)])] = &[
     ("yaml", YAML),
     ("markdown", MARKDOWN),
     ("toml", TOML),
-    ("docker", DOCKER),
     ("xml", XML),
     ("sql", SQL),
     ("make", MAKE),
     ("ini", INI),
+    ("ruby", RUBY),
+    ("php", PHP),
 ];
 
 /// Embedded-language roots (syntect scope → Rouge tag): Rouge's HTML and Markdown lexers hand
@@ -656,6 +721,8 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("source.shell", "shell"),
     ("source.yaml", "yaml"),
     ("text.html.basic", "html"),
+    // Rouge's PHP lexer hands everything outside `<?php … ?>` to the HTML lexer.
+    ("source.php", "php"),
 ];
 
 /// Class scheme variants.

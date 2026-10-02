@@ -22,7 +22,11 @@ pub(crate) type Class = Option<&'static str>;
 type Table = &'static [(&'static str, Class)];
 
 /// A table of text-conditioned `(selector, condition, class)` rules.
-type TextTable = &'static [(&'static str, TextIs, &'static str)];
+type TextTable = &'static [(&'static str, TextIs, Class)];
+
+/// The text-conditioned alternatives of one selector, in table order (the first whose condition
+/// holds decides).
+pub(crate) type TextRules = [(TextIs, Class)];
 
 /// The PrettyLights map (GH §7.5), verbatim and in file order.
 pub(crate) const PRETTYLIGHTS_MAP: &[(&str, &str)] = &[
@@ -276,12 +280,22 @@ const PYTHON: &[(&str, Class)] = &[
     ("storage.modifier.conversion", None),
     ("meta.annotation", Some("pl-en")),
     ("variable.annotation", None),
+    // `@dataclass(frozen=True)`: the decorator is a call.
+    (
+        "variable.annotation.function meta.generic-name",
+        Some("pl-en"),
+    ),
+    // `ValueError(…)`: a call, not a type.
+    ("variable.function support.type", None),
     ("entity.name.class", Some("pl-v")),
     ("entity.other.inherited-class", Some("pl-v")),
-    (
-        "meta.expression.generator keyword.control.loop.for.in",
-        Some("pl-c1"),
-    ),
+    // `"in" @operator`, in `for` statements and comprehensions alike; `@` is not an operator
+    // capture (it is also the decorator marker).
+    ("keyword.control.loop.for.in", Some("pl-c1")),
+    ("keyword.operator.matrix", None),
+    // tree-sitter-python does not look into `%s` placeholders or format specs.
+    ("constant.other.placeholder", None),
+    ("constant.other.format-spec", None),
     ("source.regexp", None),
 ];
 
@@ -298,6 +312,9 @@ const JAVASCRIPT: &[(&str, Class)] = &[
     ("entity.other.inherited-class", Some("pl-v")),
     ("storage.type.function.arrow", Some("pl-c1")),
     ("keyword.operator.ternary", None),
+    // tree-sitter-javascript captures no `...` (spread and rest alike).
+    ("keyword.operator.spread", None),
+    ("keyword.operator.rest", None),
     ("meta.string", Some("pl-s")),
     ("meta.string string", None),
     ("string.regexp", Some("pl-pds")),
@@ -331,16 +348,22 @@ const TYPESCRIPT: &[(&str, Class)] = &[
     ("meta.embedded.line", None),
 ];
 
-/// JSX in TSX: tag names `pl-s1`, tag brackets and attribute names `pl-c1`.
+/// JSX in TSX (and in JavaScript containing JSX, which is tokenized with the TSX grammar): tag
+/// names `pl-s1` (components `pl-v`, [`JSX_BY_TEXT`]), `<` and `>` `pl-c1` (tree-sitter captures
+/// them as operators), `</` and `/>` `pl-kos`, attribute names `pl-c1`, text and character
+/// references unclassified.
 const TSX: &[(&str, Class)] = &[
     ("meta.tag entity.name.tag", Some("pl-s1")),
+    ("meta.tag support.class.component", None),
     ("meta.tag punctuation.definition.tag", Some("pl-c1")),
+    ("meta.tag constant.character.entity", None),
     ("entity.other.attribute-name", Some("pl-c1")),
     ("variable.other.constant entity.name.function", None),
 ];
 
 /// Rust (tree-sitter on github.com): types `pl-smi`, constructors `pl-v`, macros and calls
-/// `pl-en`, attributes `pl-c1` as a whole, lifetimes `pl-c1`; `=`/`=>`/`->` unclassified.
+/// `pl-en`, attributes `pl-c1` as a whole, lifetimes `'` `pl-c1` + name `pl-ent`
+/// ([`RUST_WORDS`]); `=`/`=>`/`->` unclassified.
 const RUST: &[(&str, Class)] = &[
     ("storage.type", Some("pl-smi")),
     ("storage.type.function", Some("pl-k")),
@@ -352,7 +375,7 @@ const RUST: &[(&str, Class)] = &[
     ("storage.type.module", Some("pl-k")),
     ("storage.type.numeric", Some("pl-c1")),
     ("storage.type.string", None),
-    ("storage.modifier.lifetime", Some("pl-c1")),
+    ("storage.modifier.lifetime", None),
     ("support.type", Some("pl-smi")),
     ("support.macro", Some("pl-en")),
     ("variable.language", Some("pl-smi")),
@@ -373,15 +396,21 @@ const RUST: &[(&str, Class)] = &[
     ("meta.function.return-type punctuation.separator", None),
 ];
 
-/// C (tree-sitter on github.com): no punctuation classes, types `pl-smi`, escapes and format
-/// placeholders unclassified inside strings.
+/// C (tree-sitter on github.com): no punctuation classes, types `pl-smi` (`typedef`, `struct`,
+/// `union`, `enum` are keywords, [`BY_TEXT`]), `sizeof` a keyword, number suffixes part of the
+/// number, escapes and format placeholders unclassified inside strings, macro bodies
+/// (tree-sitter's opaque `preproc_arg`) unclassified.
 const C: &[(&str, Class)] = &[
     ("punctuation", None),
     ("storage.type", Some("pl-smi")),
     ("support.type", Some("pl-smi")),
+    ("entity.name.type", Some("pl-smi")),
+    ("keyword.operator.word", Some("pl-k")),
+    ("constant.numeric storage.type.numeric", None),
     ("constant.other.placeholder", None),
     ("constant.character.escape", None),
     ("meta.preprocessor.macro constant.numeric", None),
+    ("meta.preprocessor.macro keyword.operator", None),
 ];
 
 /// Go (tree-sitter on github.com): no punctuation classes, types `pl-smi`, identifiers `pl-s1`,
@@ -457,14 +486,27 @@ const HTML: &[(&str, Class)] = &[
     ("source", None),
 ];
 
-/// Makefile (TextMate): assignments and plain words unclassified, `$(VAR)` a string, recipes
-/// are shell without a wrapper class.
+/// Makefile (TextMate): assignments and plain words unclassified, `$(VAR)` and `$(func …)`
+/// strings (the name inside `pl-smi`, [`MAKEFILE_WORDS`]), recipes are shell without a wrapper
+/// class and without command classes (GitHub's grammar does not embed shell), `@`
+/// unclassified; special targets (`.PHONY`, ...) `pl-c1` ([`BY_TEXT`]). Sublime's "expected a
+/// tab" marker on space-indented lines is not an error on github.com.
 const MAKEFILE: &[(&str, Class)] = &[
     ("keyword.operator.assignment", None),
     ("string.unquoted", None),
     ("source", None),
     ("variable.parameter", Some("pl-s")),
+    ("meta.function-call.makefile", Some("pl-s")),
+    ("meta.function-call.arguments.makefile", Some("pl-s")),
+    // Sublime closes the call scope before its `)`.
+    (
+        "meta.function-call.arguments + keyword.other.block.end",
+        Some("pl-s"),
+    ),
     ("keyword.other.block", None),
+    ("constant.language", None),
+    ("source.shell support.function", None),
+    ("invalid.illegal.inconsistent", None),
 ];
 
 /// C++ (TextMate on github.com): operators, calls and parameters unclassified, member calls
@@ -499,6 +541,7 @@ const INI: &[(&str, Class)] = &[
 /// Kotlin (TextMate): template expressions `pl-e`, local names unclassified.
 const KOTLIN: &[(&str, Class)] = &[
     ("entity.name.variable", None),
+    ("keyword.operator.dot", None),
     ("variable.parameter.template", Some("pl-e")),
     ("storage.type.buildin", Some("pl-c1")),
 ];
@@ -578,25 +621,32 @@ const XML: &[(&str, Class)] = &[
     ("meta.tag.sgml.cdata keyword", Some("pl-pds")),
 ];
 
-/// PHP (tree-sitter on github.com): no punctuation classes, `$` of variables `pl-c1` inside
-/// `pl-s1`, `<?php` `pl-ent`, namespaces `pl-v`.
+/// PHP (tree-sitter on github.com): no punctuation or operator classes, `$` of variables
+/// `pl-c1` inside `pl-s1` (`$this` too), `<?php` `pl-ent`, namespace segments `pl-v`
+/// ([`PHP_WORDS`]), declared and extended class names unclassified, instantiated classes
+/// `pl-v`.
 const PHP: &[(&str, Class)] = &[
     ("source", None),
     ("punctuation", None),
+    ("keyword.operator", None),
     ("punctuation.section.embedded", Some("pl-ent")),
     ("punctuation.definition.variable", Some("pl-c1")),
     ("variable.other", Some("pl-s1")),
+    ("variable.language", Some("pl-s1")),
     ("storage.type", Some("pl-smi")),
     ("storage.type.function", Some("pl-k")),
     ("storage.type.class", Some("pl-k")),
+    ("storage.type.nullable", None),
     ("storage.modifier", Some("pl-k")),
-    ("entity.name.namespace", Some("pl-v")),
+    ("entity.name.namespace", None),
     ("support.other.namespace", Some("pl-v")),
+    ("entity.name.class", None),
+    ("entity.other.inherited-class", None),
     ("support.class", Some("pl-smi")),
+    ("keyword.other.new + support.class", Some("pl-v")),
+    ("entity.name.function support.function", None),
     ("meta.string-contents", Some("pl-s")),
     ("constant.character.escape", None),
-    ("keyword.operator.string", None),
-    ("keyword.operator.assignment", None),
 ];
 
 /// C# (tree-sitter on github.com).
@@ -696,6 +746,12 @@ pub(crate) enum TextIs {
     Capitalized,
     /// Is exactly one of these words.
     OneOf(&'static [&'static str]),
+    /// Any text (a fallback after more specific alternatives of the same selector).
+    Any,
+    /// Starts with an ASCII letter or `_` (an identifier, for [`WORDS`]).
+    Identifier,
+    /// Starts with an ASCII lowercase letter or `_`.
+    Lowercase,
 }
 
 impl TextIs {
@@ -703,38 +759,153 @@ impl TextIs {
         match self {
             TextIs::Capitalized => text.starts_with(|c: char| c.is_ascii_uppercase()),
             TextIs::OneOf(words) => words.contains(&text),
+            TextIs::Any => true,
+            TextIs::Identifier => text.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'),
+            TextIs::Lowercase => text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_'),
         }
     }
 }
 
-use TextIs::{Capitalized, OneOf};
+use TextIs::{Any, Capitalized, Identifier, Lowercase, OneOf};
+
+/// A condition on the code around a word ([`WORDS`]): tree-sitter rules depend on the syntax
+/// node a name is in (`call_expression function:`, `scoped_identifier path:`); the token that
+/// follows or precedes the name is the lexical trace of that node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Near {
+    /// No condition.
+    Anywhere,
+    /// The code right after the word starts with one of these.
+    Before(&'static [&'static str]),
+    /// The code right before the word ends with one of these.
+    After(&'static [&'static str]),
+    /// The word's line, without its indentation, starts with one of these.
+    InLine(&'static [&'static str]),
+}
+
+impl Near {
+    /// Whether the condition holds for the word at `start..end` of `code`.
+    pub(crate) fn holds(self, code: &str, start: usize, end: usize) -> bool {
+        match self {
+            Near::Anywhere => true,
+            Near::Before(next) => code
+                .get(end..)
+                .is_some_and(|rest| next.iter().any(|n| rest.starts_with(n))),
+            Near::After(prev) => code
+                .get(..start)
+                .is_some_and(|head| prev.iter().any(|p| head.ends_with(p))),
+            Near::InLine(prefixes) => code.get(..start).is_some_and(|head| {
+                let line = head.rsplit('\n').next().unwrap_or(head).trim_start();
+                prefixes.iter().any(|p| line.starts_with(p))
+            }),
+        }
+    }
+}
+
+use Near::{After, Anywhere, Before, InLine};
+
+/// A table of word rules: `(selector, word condition, context condition, class)`.
+type WordTable = &'static [(&'static str, TextIs, Near, Class)];
+
+/// The word rules of one selector, in table order (the first that holds decides, also when its
+/// class is `None`).
+pub(crate) type WordRules = [(TextIs, Near, Class)];
 
 /// Text-conditioned classes per Linguist `tm_scope` ([`Variant::Hybrid`]): when a scope whose
 /// class is not `None` matches the selector and its first text satisfies the condition, the
-/// class given here is used instead.
+/// class given here (`None`: no span) is used instead. Several rules with the same selector are
+/// alternatives, tried in table order.
 const BY_TEXT: &[(&str, TextTable)] = &[
     (
         "source.python",
         &[
-            ("meta.generic-name", Capitalized, "pl-v"),
+            ("meta.generic-name", Capitalized, Some("pl-v")),
             (
                 "meta.function.parameters.annotation meta.generic-name",
                 Capitalized,
-                "pl-smi",
+                Some("pl-smi"),
             ),
-            ("variable.function", Capitalized, "pl-en"),
+            ("variable.function", Capitalized, Some("pl-en")),
+            // `Optional[...]`: a subscripted name is not a `type` node itself, so the
+            // constructor rule applies.
+            (
+                "meta.function.parameters.annotation meta.item-access meta.generic-name",
+                Capitalized,
+                Some("pl-v"),
+            ),
         ],
     ),
     ("source.js", JS_BY_TEXT),
     ("source.ts", JS_BY_TEXT),
     ("source.tsx", JS_BY_TEXT),
+    ("source.tsx", JSX_BY_TEXT),
     ("source.rust", RUST_BY_TEXT),
+    (
+        "text.html.php",
+        &[
+            // Keywords the (pre-PHP 7.4/8.0) Sublime grammar scopes as functions or types.
+            (
+                "support.function.construct",
+                OneOf(&["echo", "print"]),
+                Some("pl-k"),
+            ),
+            ("variable.function", OneOf(&["fn"]), Some("pl-k")),
+            (
+                "support.class",
+                OneOf(&["public", "protected", "private", "readonly"]),
+                Some("pl-k"),
+            ),
+            // `declare(strict_types=1)` directives.
+            (
+                "constant.other",
+                OneOf(&["strict_types", "ticks", "encoding"]),
+                None,
+            ),
+        ],
+    ),
+    // Kotlin: a parameter's default value `=` is plain, its type `:` a keyword.
+    (
+        "source.kotlin",
+        &[("keyword.operator.declaration", OneOf(&["="]), None)],
+    ),
+    (
+        "source.makefile",
+        &[(
+            "entity.name.function",
+            OneOf(&[
+                ".PHONY",
+                ".SUFFIXES",
+                ".DEFAULT",
+                ".PRECIOUS",
+                ".INTERMEDIATE",
+                ".SECONDARY",
+                ".SECONDEXPANSION",
+                ".DELETE_ON_ERROR",
+                ".IGNORE",
+                ".LOW_RESOLUTION_TIME",
+                ".SILENT",
+                ".EXPORT_ALL_VARIABLES",
+                ".NOTPARALLEL",
+                ".ONESHELL",
+                ".POSIX",
+            ]),
+            Some("pl-c1"),
+        )],
+    ),
+    (
+        "source.c",
+        &[(
+            "storage.type",
+            OneOf(&["typedef", "struct", "union", "enum"]),
+            Some("pl-k"),
+        )],
+    ),
     (
         "source.sql",
         &[(
             "constant.language",
             OneOf(&["NULL", "null", "Null"]),
-            "pl-k",
+            Some("pl-k"),
         )],
     ),
     (
@@ -742,21 +913,32 @@ const BY_TEXT: &[(&str, TextTable)] = &[
         &[(
             "storage.type",
             OneOf(&["class", "interface", "enum", "record"]),
-            "pl-k",
+            Some("pl-k"),
         )],
     ),
 ];
 
 /// tree-sitter-javascript: `((identifier) @constructor (#match? @constructor "^[A-Z]"))`.
-const JS_BY_TEXT: &[(&str, TextIs, &str)] = &[
-    ("entity.name.function", Capitalized, "pl-v"),
-    ("variable.other.constant", Capitalized, "pl-v"),
-    ("variable.other.readwrite", Capitalized, "pl-v"),
+const JS_BY_TEXT: TextTable = &[
+    ("entity.name.function", Capitalized, Some("pl-v")),
+    ("variable.other.constant", Capitalized, Some("pl-v")),
+    ("variable.other.readwrite", Capitalized, Some("pl-v")),
+];
+
+/// tree-sitter-javascript's JSX rules: capitalized tag names are constructors, `</` and `/>`
+/// are brackets (`<` and `>` are operators, as everywhere).
+const JSX_BY_TEXT: TextTable = &[
+    ("meta.tag entity.name.tag", Capitalized, Some("pl-v")),
+    (
+        "meta.tag punctuation.definition.tag",
+        OneOf(&["</", "/>"]),
+        Some("pl-kos"),
+    ),
 ];
 
 /// Sublime's Rust scopes keywords like `let` and primitive types alike (`storage.type`), and
 /// constructors like `Some` like std types (`support.type`).
-const RUST_BY_TEXT: &[(&str, TextIs, &str)] = &[
+const RUST_BY_TEXT: TextTable = &[
     (
         "storage.type",
         OneOf(&[
@@ -776,14 +958,133 @@ const RUST_BY_TEXT: &[(&str, TextIs, &str)] = &[
             "crate",
             "dyn",
         ]),
-        "pl-k",
+        Some("pl-k"),
     ),
     (
         "support.type",
         OneOf(&["Some", "None", "Ok", "Err"]),
-        "pl-v",
+        Some("pl-v"),
     ),
-    ("keyword.operator", OneOf(&["as"]), "pl-k"),
+    // `(self) @variable.builtin`, also as a parameter.
+    ("variable.parameter", OneOf(&["self"]), Some("pl-smi")),
+    // tree-sitter-rust captures only `*`, `&` and `'` as operators; `as` and `in` are keywords.
+    ("keyword.operator", OneOf(&["as", "in"]), Some("pl-k")),
+    ("keyword.operator", OneOf(&["*", "&"]), Some("pl-c1")),
+    ("keyword.operator", Any, None),
+];
+
+/// Word rules per Linguist `tm_scope` ([`Variant::Hybrid`]) for text that no scope classifies:
+/// tree-sitter captures names the Sublime grammars leave unscoped (`dyn`, derive names, path
+/// calls). The text is split into words (identifier and number runs, single punctuation
+/// characters); a word gets the class of the first rule that holds, looking from the innermost
+/// scope with word rules outwards, but never past a scope that has a class of its own (words in
+/// strings and comments are left alone).
+const WORDS: &[(&str, WordTable)] = &[
+    ("source.rust", RUST_WORDS),
+    ("source.makefile", MAKEFILE_WORDS),
+    ("text.html.php", PHP_WORDS),
+    ("source.kotlin", KOTLIN_WORDS),
+];
+
+/// tree-sitter-rust's `highlights.scm`, for the names Sublime's Rust leaves unscoped.
+const RUST_WORDS: WordTable = &[
+    // `(lifetime "'" (identifier) @label)`, `"'" @operator` (the lifetime scope has no class).
+    (
+        "storage.modifier.lifetime",
+        OneOf(&["'"]),
+        Anywhere,
+        Some("pl-c1"),
+    ),
+    (
+        "storage.modifier.lifetime",
+        Identifier,
+        Anywhere,
+        Some("pl-ent"),
+    ),
+    // `#[derive(Debug, Clone)]`: identifiers `^[A-Z]` are constructors.
+    ("meta.annotation", Capitalized, Anywhere, Some("pl-v")),
+    // Type arguments are `type_identifier`s.
+    ("meta.generic", Capitalized, Anywhere, Some("pl-smi")),
+    // Enum variants are constructors, the fields of struct variants properties, the types of
+    // their fields types.
+    (
+        "meta.enum meta.group",
+        Capitalized,
+        Anywhere,
+        Some("pl-smi"),
+    ),
+    (
+        "meta.enum meta.block",
+        Capitalized,
+        After(&[": "]),
+        Some("pl-smi"),
+    ),
+    ("meta.enum meta.block", Capitalized, Anywhere, Some("pl-v")),
+    (
+        "meta.enum meta.block",
+        Lowercase,
+        Before(&[": "]),
+        Some("pl-c1"),
+    ),
+    ("source.rust", OneOf(&["dyn"]), Anywhere, Some("pl-k")),
+    // Unscoped lifetimes (`Formatter<'_>`).
+    ("source.rust", OneOf(&["'"]), Anywhere, Some("pl-c1")),
+    ("source.rust", Identifier, After(&["'"]), Some("pl-ent")),
+    // "Assume that uppercase names in paths are types."
+    ("source.rust", Capitalized, Before(&["::"]), Some("pl-smi")),
+    // The names a `use` declaration imports are plain identifiers: constructors.
+    (
+        "source.rust",
+        Capitalized,
+        InLine(&["use ", "pub use ", "pub(crate) use "]),
+        Some("pl-v"),
+    ),
+    // `call_expression function:` and `generic_function function:` (also `scoped_identifier
+    // name:` and method calls).
+    (
+        "source.rust",
+        Lowercase,
+        Before(&["(", "::<"]),
+        Some("pl-en"),
+    ),
+    ("source.rust", OneOf(&[","]), Anywhere, Some("pl-kos")),
+];
+
+/// GitHub's Makefile grammar: the name inside `$(…)` is a variable (`pl-smi` inside the `pl-s`
+/// reference), the delimiters are not.
+const MAKEFILE_WORDS: WordTable = &[
+    (
+        "variable.parameter.makefile keyword.other.block",
+        Any,
+        Anywhere,
+        None,
+    ),
+    ("variable.parameter.makefile", Any, Anywhere, Some("pl-smi")),
+];
+
+/// tree-sitter-php: namespace names are constructors segment by segment, `$this` is
+/// `variable.builtin`.
+const PHP_WORDS: WordTable = &[
+    ("entity.name.namespace", Identifier, Anywhere, Some("pl-v")),
+    (
+        "variable.language",
+        OneOf(&["this"]),
+        Anywhere,
+        Some("pl-smi"),
+    ),
+];
+
+/// GitHub's Kotlin grammar (as observed on github.com): calls of capitalized names
+/// (constructors) are entity names, the standard-library builtins `println` and `listOf`
+/// support functions.
+const KOTLIN_WORDS: WordTable = &[
+    ("source", Capitalized, Before(&["("]), Some("pl-en")),
+    (
+        "source",
+        OneOf(&["println", "listOf"]),
+        Before(&["("]),
+        Some("pl-c1"),
+    ),
 ];
 
 /// Per-language overlays ([`Variant::Hybrid`]), keyed by Linguist `tm_scope`; each is a list of
@@ -870,7 +1171,21 @@ pub(crate) struct Scheme {
 pub(crate) struct Overlay {
     rules: RuleSet<Class>,
     absorb: RuleSet<()>,
-    by_text: RuleSet<(TextIs, &'static str)>,
+    by_text: RuleSet<Vec<(TextIs, Class)>>,
+    words: Option<RuleSet<Vec<(TextIs, Near, Class)>>>,
+}
+
+/// Group `(selector, alternative…)` rows by selector, keeping table order: rules with the same
+/// selector are alternatives of one rule.
+fn alternatives<A>(rows: impl Iterator<Item = (&'static str, A)>) -> Vec<(&'static str, Vec<A>)> {
+    let mut out: Vec<(&'static str, Vec<A>)> = Vec::new();
+    for (selector, alternative) in rows {
+        match out.iter_mut().find(|(s, _)| *s == selector) {
+            Some((_, alternatives)) => alternatives.push(alternative),
+            None => out.push((selector, vec![alternative])),
+        }
+    }
+    out
 }
 
 impl Scheme {
@@ -887,7 +1202,8 @@ impl Scheme {
                 .iter()
                 .map(|(l, _)| *l)
                 .chain(ABSORB.iter().map(|(l, _)| *l))
-                .chain(BY_TEXT.iter().map(|(l, _)| *l));
+                .chain(BY_TEXT.iter().map(|(l, _)| *l))
+                .chain(WORDS.iter().map(|(l, _)| *l));
             for lang in langs {
                 let tables = OVERLAYS
                     .iter()
@@ -898,17 +1214,26 @@ impl Scheme {
                     .iter()
                     .filter(|(l, _)| *l == lang)
                     .flat_map(|(_, s)| *s);
-                let by_text = BY_TEXT
-                    .iter()
-                    .filter(|(l, _)| *l == lang)
-                    .flat_map(|(_, t)| *t);
+                let by_text = alternatives(
+                    BY_TEXT
+                        .iter()
+                        .filter(|(l, _)| *l == lang)
+                        .flat_map(|(_, t)| *t)
+                        .map(|&(selector, cond, class)| (selector, (cond, class))),
+                );
+                let words = alternatives(
+                    WORDS
+                        .iter()
+                        .filter(|(l, _)| *l == lang)
+                        .flat_map(|(_, t)| *t)
+                        .map(|&(selector, word, near, class)| (selector, (word, near, class))),
+                );
                 overlays.entry(lang).or_insert_with(|| Overlay {
                     rules: RuleSet::new(Precedence::LongestFirst, rules),
                     absorb: RuleSet::new(Precedence::LongestFirst, absorb.map(|s| (*s, ()))),
-                    by_text: RuleSet::new(
-                        Precedence::LongestFirst,
-                        by_text.map(|&(s, cond, class)| (s, (cond, class))),
-                    ),
+                    by_text: RuleSet::new(Precedence::LongestFirst, by_text),
+                    words: (!words.is_empty())
+                        .then(|| RuleSet::new(Precedence::LongestFirst, words)),
                 });
             }
         }
@@ -934,13 +1259,13 @@ impl Scheme {
     /// Class for a pushed `scope` with `parents` further out and `previous` the innermost scope
     /// of the previous non-blank text: the overlay's verdict if it has a matching rule, else the
     /// base table's; plus a text-conditioned replacement class ([`BY_TEXT`]).
-    pub(crate) fn classify(
+    pub(crate) fn classify<'o>(
         &self,
-        overlay: Option<&Overlay>,
+        overlay: Option<&'o Overlay>,
         scope: Scope,
         parents: &[Scope],
         previous: Option<Scope>,
-    ) -> (Class, Option<(TextIs, &'static str)>) {
+    ) -> (Class, Option<&'o TextRules>) {
         let class = match overlay.and_then(|o| o.rules.lookup_after(scope, parents, previous)) {
             Some(class) => *class,
             None => self
@@ -953,7 +1278,7 @@ impl Scheme {
             Some(_) => overlay.and_then(|o| o.by_text.lookup_after(scope, parents, previous)),
             None => None,
         };
-        (class, by_text.copied())
+        (class, by_text.map(Vec::as_slice))
     }
 
     /// Whether a span for `scope` replaces its parent's span when both start together.
@@ -968,8 +1293,24 @@ impl Scheme {
             out.extend_from_slice(o.rules.rejected());
             out.extend_from_slice(o.absorb.rejected());
             out.extend_from_slice(o.by_text.rejected());
+            if let Some(words) = &o.words {
+                out.extend_from_slice(words.rejected());
+            }
         }
         out
+    }
+}
+
+impl Overlay {
+    /// Whether the language has word rules ([`WORDS`]).
+    pub(crate) fn has_words(&self) -> bool {
+        self.words.is_some()
+    }
+
+    /// The word rules for text directly inside `scope` (with `parents` further out), if any.
+    pub(crate) fn words(&self, scope: Scope, parents: &[Scope]) -> Option<&WordRules> {
+        let rules = self.words.as_ref()?.lookup(scope, parents)?;
+        Some(rules.as_slice())
     }
 }
 
@@ -1011,5 +1352,28 @@ mod tests {
         assert_eq!(c("storage.type.function.rust"), Some("pl-k"));
         assert_eq!(c("meta.function.rust"), None);
         assert_eq!(c("punctuation.terminator.rust"), None);
+    }
+
+    #[test]
+    fn word_conditions() {
+        let code = "use a::B;\n  x::new(1)";
+        let at = |w: &str| {
+            let i = code.rfind(w).unwrap();
+            (i, i + w.len())
+        };
+        let (s, e) = at("new");
+        assert!(Before(&["("]).holds(code, s, e));
+        assert!(!Before(&["::"]).holds(code, s, e));
+        assert!(After(&["::"]).holds(code, s, e));
+        assert!(InLine(&["x::"]).holds(code, s, e));
+        assert!(!InLine(&["use "]).holds(code, s, e));
+        let (s, e) = at("B");
+        assert!(InLine(&["use "]).holds(code, s, e));
+        assert!(Before(&[";\n"]).holds(code, s, e));
+        assert!(Anywhere.holds(code, s, e));
+        // At the edges of the code.
+        assert!(!Before(&["("]).holds(code, code.len(), code.len()));
+        assert!(!After(&["x"]).holds(code, 0, 3));
+        assert!(Identifier.matches("_x") && !Identifier.matches("1x") && !Lowercase.matches("X"));
     }
 }

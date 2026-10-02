@@ -16,7 +16,7 @@ use syntect::parsing::{Scope, SyntaxReference};
 use super::GithubCode;
 use super::engine::{self, Event, Limits};
 
-use classes::{Class, Overlay, Scheme, TextIs};
+use classes::{Class, Overlay, Scheme, TextRules, WordRules};
 pub(crate) use classes::{DEFAULT_VARIANT, Variant};
 
 /// How a Linguist language is tokenized.
@@ -148,8 +148,9 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
     } else {
         code
     };
+    let (grammar, overlay_scope) = with_jsx(grammar, tm_scope, code);
     let scheme = Scheme::get(variant);
-    let overlay = scheme.overlay(tm_scope);
+    let overlay = scheme.overlay(overlay_scope);
     let html = match grammar {
         Grammar::Syntect(syntax) => render(code, syntax, scheme, overlay),
         Grammar::ShellSession => session::render(code, scheme, overlay),
@@ -167,6 +168,20 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
         scope,
         html: Some(html),
     }
+}
+
+/// The grammar and the overlay scope for a block: JavaScript containing JSX is tokenized with
+/// the TypeScriptReact grammar and classified like TSX (github.com's tree-sitter output for JSX
+/// is the same in `source.js` and `source.tsx` blocks), see [`jsx`](super::jsx). The block keeps
+/// its Linguist scope (`highlight-source-js`).
+fn with_jsx<'a>(grammar: Grammar, tm_scope: &'a str, code: &str) -> (Grammar, &'a str) {
+    const JSX_SCOPE: &str = "source.tsx";
+    if tm_scope == "source.js" && super::jsx::contains_jsx(code) {
+        if let Some(tsx) = engine::syntax_by_scope(JSX_SCOPE) {
+            return (Grammar::Syntect(tsx), JSX_SCOPE);
+        }
+    }
+    (grammar, tm_scope)
 }
 
 /// Linguist scopes github.com highlights with tree-sitter (GH §7.7, confirmed by output shape:
@@ -227,11 +242,12 @@ fn push_escaped(out: &mut String, s: &str) {
 
 /// One scope on the writer's stack.
 #[derive(Clone, Copy, Debug)]
-struct Entry {
+struct Entry<'s> {
     class: Class,
-    /// Replaces `class` if the scope's first text satisfies the condition (tree-sitter-style
-    /// text predicates, GH §7.7); resolved when the span is first opened.
-    by_text: Option<(TextIs, &'static str)>,
+    /// Replace `class` (possibly by no class) with the first alternative whose condition the
+    /// scope's first text satisfies (tree-sitter-style text predicates, GH §7.7); resolved when
+    /// the span is first opened.
+    by_text: Option<&'s TextRules>,
 }
 
 /// Builds nested-span HTML from a scope event stream (GH §7.6).
@@ -240,7 +256,7 @@ pub(crate) struct SpanWriter<'s> {
     overlay: Option<&'s Overlay>,
     out: String,
     /// One entry per scope on the tokenizer's stack.
-    entries: Vec<Entry>,
+    entries: Vec<Entry<'s>>,
     /// Number of entries with a class.
     some: usize,
     /// How many of the entries with a class (outermost first) are currently open in `out`.
@@ -250,6 +266,11 @@ pub(crate) struct SpanWriter<'s> {
     root_depth: usize,
     /// Innermost scope of the previous non-blank text (for `PREVIOUS +` rules).
     previous: Option<Scope>,
+    /// The code being tokenized, when every text event is the next slice of it: enables the
+    /// overlay's word rules, whose conditions look at the code around a word.
+    source: Option<&'s str>,
+    /// Byte offset in `source` of the next text event.
+    pos: usize,
 }
 
 impl<'s> SpanWriter<'s> {
@@ -263,7 +284,15 @@ impl<'s> SpanWriter<'s> {
             opened: 0,
             root_depth: 0,
             previous: None,
+            source: None,
+            pos: 0,
         }
+    }
+
+    /// Enable word rules: the text events will be the consecutive slices of `code`.
+    fn with_source(mut self, code: &'s str) -> Self {
+        self.source = Some(code);
+        self
     }
 
     /// Start embedded code: the next syntax root scope is pushed on top of the current stack.
@@ -294,11 +323,85 @@ impl<'s> SpanWriter<'s> {
             }
             Event::Pop => self.pop_class(),
             Event::Text(text) => {
-                self.text(text);
+                let at = self.pos;
+                self.pos += text.len();
+                // Word rules need the text's position in the code; never guess it.
+                if self
+                    .source
+                    .is_some_and(|s| s.get(at..self.pos) != Some(text))
+                {
+                    self.source = None;
+                }
+                let words = self.source.map(|_| (stack, at));
+                self.text_with(text, words);
                 if !text.trim().is_empty() {
                     self.previous = stack.last().copied();
                 }
             }
+        }
+    }
+
+    /// The word-rule tables that apply to text under `stack`, innermost first: from the
+    /// innermost scope outwards, every scope's rules, up to the first scope with a class of its
+    /// own.
+    fn word_tables(&self, stack: &[Scope]) -> Vec<&'s WordRules> {
+        let mut tables = Vec::new();
+        let Some(overlay) = self.overlay.filter(|o| o.has_words()) else {
+            return tables;
+        };
+        // One entry per scope on the stack (the writer mirrors the tokenizer's stack).
+        if self.entries.len() != stack.len() {
+            return tables;
+        }
+        for i in (0..stack.len()).rev() {
+            if let Some(rules) = overlay.words(stack[i], &stack[..i]) {
+                tables.push(rules);
+            }
+            if self.entries[i].class.is_some() {
+                break;
+            }
+        }
+        tables
+    }
+
+    /// Emit `body` (no newline) at byte `at` of `source`, wrapping the words that a rule in
+    /// `tables` classifies.
+    fn push_words(&mut self, body: &str, at: usize, source: &str, tables: &[&WordRules]) {
+        let mut rest = body;
+        let mut start = at;
+        while let Some(c) = rest.chars().next() {
+            let word_char = |c: char| c.is_alphanumeric() || c == '_';
+            let len = if c.is_whitespace() {
+                rest.find(|c: char| !c.is_whitespace())
+                    .unwrap_or(rest.len())
+            } else if word_char(c) {
+                rest.find(|c: char| !word_char(c)).unwrap_or(rest.len())
+            } else {
+                c.len_utf8()
+            };
+            let (word, tail) = rest.split_at(len);
+            let class = if c.is_whitespace() {
+                None
+            } else {
+                let end = start + len;
+                tables
+                    .iter()
+                    .flat_map(|rules| rules.iter())
+                    .find(|(is, near, _)| is.matches(word) && near.holds(source, start, end))
+                    .and_then(|&(_, _, class)| class)
+            };
+            match class {
+                Some(class) => {
+                    self.out.push_str("<span class=\"");
+                    self.out.push_str(class);
+                    self.out.push_str("\">");
+                    push_escaped(&mut self.out, word);
+                    self.out.push_str("</span>");
+                }
+                None => push_escaped(&mut self.out, word),
+            }
+            rest = tail;
+            start += len;
         }
     }
 
@@ -320,7 +423,7 @@ impl<'s> SpanWriter<'s> {
         });
     }
 
-    fn push_entry(&mut self, entry: Entry) {
+    fn push_entry(&mut self, entry: Entry<'s>) {
         if entry.class.is_some() {
             self.some += 1;
         }
@@ -340,13 +443,26 @@ impl<'s> SpanWriter<'s> {
 
     /// Emit text (at most one `\n`, as its last byte).
     pub(crate) fn text(&mut self, text: &str) {
+        self.text_with(text, None);
+    }
+
+    /// [`SpanWriter::text`], applying the word rules for `stack` when `words` gives the text's
+    /// stack and its byte offset in [`SpanWriter::source`].
+    fn text_with(&mut self, text: &str, words: Option<(&[Scope], usize)>) {
         let (body, newline) = match text.strip_suffix('\n') {
             Some(body) => (body, true),
             None => (text, false),
         };
         if !body.is_empty() {
             self.open_pending(body);
-            push_escaped(&mut self.out, body);
+            // After `open_pending`: entries settle their text-dependent class there.
+            let tables = words.map(|(stack, at)| (self.word_tables(stack), at));
+            match (tables, self.source) {
+                (Some((tables, at)), Some(source)) if !tables.is_empty() => {
+                    self.push_words(body, at, source, &tables)
+                }
+                _ => push_escaped(&mut self.out, body),
+            }
         }
         if newline {
             self.close_all();
@@ -360,22 +476,31 @@ impl<'s> SpanWriter<'s> {
             return;
         }
         let mut seen = 0;
+        let mut dropped = 0;
         for entry in self.entries.iter_mut() {
             let Some(class) = entry.class else { continue };
             seen += 1;
             if seen <= self.opened {
                 continue;
             }
-            // A span opened for the first time settles its text-dependent class.
-            let class = match entry.by_text.take() {
-                Some((cond, alt)) if cond.matches(first) => alt,
-                _ => class,
+            // A span opened for the first time settles its text-dependent class; an entry
+            // whose class turns out to be `None` no longer counts as classified.
+            let alternative = entry.by_text.take().and_then(|rules| {
+                rules
+                    .iter()
+                    .find(|(cond, _)| cond.matches(first))
+                    .map(|&(_, alt)| alt)
+            });
+            entry.class = alternative.unwrap_or(Some(class));
+            let Some(class) = entry.class else {
+                dropped += 1;
+                continue;
             };
-            entry.class = Some(class);
             self.out.push_str("<span class=\"");
             self.out.push_str(class);
             self.out.push_str("\">");
         }
+        self.some -= dropped;
         self.opened = self.some;
     }
 
@@ -400,7 +525,7 @@ fn render(
     scheme: &Scheme,
     overlay: Option<&Overlay>,
 ) -> Result<String, engine::Error> {
-    let mut writer = SpanWriter::new(scheme, overlay, code.len() * 2);
+    let mut writer = SpanWriter::new(scheme, overlay, code.len() * 2).with_source(code);
     engine::tokenize(code, syntax, Limits::DEFAULT, |event, stack| {
         writer.event(event, stack)
     })?;
@@ -466,6 +591,200 @@ mod tests {
         let a = gh("let x = 1;\r\nlet y = 2;\r\n", "rust");
         let b = gh("let x = 1;\nlet y = 2;\n", "rust");
         assert_eq!(a, b);
+    }
+
+    /// GH-HL-1: JSX in ```jsx / ```js blocks. With two-face's JavaScript grammar `</div>` was a
+    /// division plus a regex literal (string color over the rest of the block) and the closing
+    /// brackets after JSX `invalid.illegal` (`pl-ii`).
+    #[test]
+    fn jsx_in_javascript() {
+        for lang in ["jsx", "js", "javascript"] {
+            let r = gh("const a = <div>x</div>;\nconst b = 1;\n", lang);
+            assert_eq!(r.scope.as_deref(), Some("source.js"), "{lang}");
+            let html = r.html.unwrap();
+            assert!(!html.contains("pl-pds"), "{lang}: {html}");
+            assert!(!html.contains("pl-ii"), "{lang}: {html}");
+            // github.com (tree-sitter-javascript): `<`/`>` pl-c1, `</` pl-kos, names pl-s1.
+            assert_eq!(
+                html,
+                "<span class=\"pl-k\">const</span> <span class=\"pl-s1\">a</span> \
+                 <span class=\"pl-c1\">=</span> <span class=\"pl-c1\">&lt;</span>\
+                 <span class=\"pl-s1\">div</span><span class=\"pl-c1\">&gt;</span>x\
+                 <span class=\"pl-kos\">&lt;/</span><span class=\"pl-s1\">div</span>\
+                 <span class=\"pl-c1\">&gt;</span><span class=\"pl-kos\">;</span>\n\
+                 <span class=\"pl-k\">const</span> <span class=\"pl-s1\">b</span> \
+                 <span class=\"pl-c1\">=</span> <span class=\"pl-c1\">1</span>\
+                 <span class=\"pl-kos\">;</span>",
+                "{lang}"
+            );
+        }
+        let component = "export function App({ items }) {\n  return (\n    <ul className=\"x\">\
+            \n      {items.map((i) => <Item key={i.id} {...i} />)}\n      <p>n: {n}</p>\n    \
+            </ul>\n  );\n}\n";
+        let html = gh(component, "jsx").html.unwrap();
+        assert!(
+            !html.contains("pl-ii") && !html.contains("pl-pds"),
+            "{html}"
+        );
+        assert!(html.ends_with("<span class=\"pl-kos\">}</span>"), "{html}");
+        assert!(
+            html.contains(
+                "<span class=\"pl-c1\">&lt;</span><span class=\"pl-v\">Item</span> \
+                 <span class=\"pl-c1\">key</span>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"pl-kos\">{</span>...<span class=\"pl-s1\">i</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"pl-kos\">/&gt;</span>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn jsx_grammar_only_for_jsx() {
+        let js = engine::syntax_by_scope("source.js").unwrap();
+        let pick = |code: &str| match with_jsx(Grammar::Syntect(js), "source.js", code) {
+            (Grammar::Syntect(s), overlay) => (s.scope.build_string(), overlay),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            pick("if (a < b) f(a);\n"),
+            ("source.js".into(), "source.js")
+        );
+        assert_eq!(pick("x = '<b>';\n"), ("source.js".into(), "source.js"));
+        assert_eq!(pick("x = <b>y</b>;\n"), ("source.tsx".into(), "source.tsx"));
+        // Other scopes never switch.
+        let ts = engine::syntax_by_scope("source.ts").unwrap();
+        assert!(matches!(
+            with_jsx(Grammar::Syntect(ts), "source.ts", "x = <b>y</b>;\n"),
+            (Grammar::Syntect(s), "source.ts") if s.scope.build_string() == "source.ts"
+        ));
+    }
+
+    /// Assert that `gh(code, lang)` contains every one of `parts`.
+    #[track_caller]
+    fn has(code: &str, lang: &str, parts: &[&str]) {
+        let html = gh(code, lang).html.unwrap();
+        for part in parts {
+            assert!(html.contains(part), "{lang}: {part:?} not in\n{html}");
+        }
+    }
+
+    /// GH-HL-2: classes github.com's tree-sitter (and TextMate) grammars give that the Sublime
+    /// scopes alone got wrong.
+    #[test]
+    fn language_class_fixes() {
+        // C: `typedef`/`struct` keywords, not types; `sizeof` a keyword, not an operator.
+        has(
+            "typedef struct node { int v; } node_t;\nint n = sizeof(node_t);\n",
+            "c",
+            &[
+                "<span class=\"pl-k\">typedef</span> <span class=\"pl-k\">struct</span>",
+                "<span class=\"pl-k\">sizeof</span>",
+            ],
+        );
+        // Rust: imported names and derive names are constructors, `dyn` a keyword, lifetimes
+        // `'` + label, enum variants constructors and their fields properties, path calls
+        // functions, uppercase path segments types; `self` parameters builtins.
+        has(
+            "use std::fmt::Display;\n#[derive(Debug)]\nenum E<'a> { A(&'a dyn Display), \
+             B { w: u8 } }\nfn f(&self) { let m = HashMap::new(); }\n",
+            "rust",
+            &[
+                "<span class=\"pl-kos\">::</span><span class=\"pl-v\">Display</span>\
+                 <span class=\"pl-kos\">;</span>",
+                "derive<span class=\"pl-kos\">(</span><span class=\"pl-v\">Debug</span>",
+                "<span class=\"pl-c1\">'</span><span class=\"pl-ent\">a</span> \
+                 <span class=\"pl-k\">dyn</span> <span class=\"pl-smi\">Display</span>",
+                "<span class=\"pl-v\">A</span><span class=\"pl-kos\">(</span>",
+                "<span class=\"pl-v\">B</span> <span class=\"pl-kos\">{</span> \
+                 <span class=\"pl-c1\">w</span>",
+                "<span class=\"pl-c1\">&amp;</span><span class=\"pl-smi\">self</span>",
+                "<span class=\"pl-smi\">HashMap</span><span class=\"pl-kos\">::</span>\
+                 <span class=\"pl-en\">new</span>",
+            ],
+        );
+        // Words in strings and comments are left alone.
+        has(
+            "let s = \"HashMap::new()\"; // foo(x)\n",
+            "rust",
+            &[
+                "<span class=\"pl-s\">\"HashMap::new()\"</span>",
+                "<span class=\"pl-c\">// foo(x)</span>",
+            ],
+        );
+        // Makefile: the name inside `$(…)` is a variable, `$(func …)` a string.
+        has(
+            "OBJS = $(SRCS)\nall: $(wildcard *.c)\n",
+            "makefile",
+            &[
+                "<span class=\"pl-s\">$(<span class=\"pl-smi\">SRCS</span>)</span>",
+                "<span class=\"pl-s\">$(<span class=\"pl-c1\">wildcard</span> </span>",
+            ],
+        );
+        // PHP: `echo`, `fn` and promoted-property modifiers are keywords, declared classes
+        // plain, instantiated ones constructors, operators plain, namespaces per segment.
+        has(
+            "<?php\nnamespace App\\Http;\nclass A extends B { public function __construct(\
+             private int $a) { echo $this->a; $f = fn($x) => $x * 2; throw new E(); } }\n",
+            "php",
+            &[
+                "<span class=\"pl-v\">App</span>\\<span class=\"pl-v\">Http</span>",
+                "<span class=\"pl-k\">class</span> A <span class=\"pl-k\">extends</span> B {",
+                "(<span class=\"pl-k\">private</span> <span class=\"pl-smi\">int</span>",
+                "<span class=\"pl-k\">echo</span> <span class=\"pl-s1\">\
+                 <span class=\"pl-c1\">$</span><span class=\"pl-smi\">this</span></span>",
+                "<span class=\"pl-k\">fn</span>(",
+                ") =&gt; ",
+                "<span class=\"pl-k\">new</span> <span class=\"pl-v\">E</span>",
+            ],
+        );
+        // Python: decorator calls and exception constructors are calls, `in` an operator,
+        // `%s` placeholders not looked into.
+        has(
+            "@dataclass(frozen=True)\nclass P:\n    def f(self, x: Optional[int]):\n        \
+             for i in x: raise ValueError(\"%s\" % i)\n",
+            "python",
+            &[
+                "<span class=\"pl-en\"><span class=\"pl-en\">dataclass</span></span>",
+                "<span class=\"pl-v\">Optional</span>",
+                "<span class=\"pl-c1\">in</span>",
+                "<span class=\"pl-en\">ValueError</span>(",
+                "<span class=\"pl-s\">%s\"</span>",
+            ],
+        );
+        // Kotlin: constructor calls are entity names.
+        has(
+            "val u = listOf(User(\"a\"))\n",
+            "kotlin",
+            &["<span class=\"pl-c1\">listOf</span>(<span class=\"pl-en\">User</span>("],
+        );
+    }
+
+    /// Word rules only run where every text event is the next slice of the code.
+    #[test]
+    fn word_rules_need_the_source() {
+        let scheme = Scheme::get(DEFAULT_VARIANT);
+        let overlay = scheme.overlay("source.rust");
+        let syntax = engine::syntax_by_scope("source.rust").unwrap();
+        let code = "fn f(x: &dyn T) {}\n";
+        let mut with = SpanWriter::new(scheme, overlay, 0).with_source(code);
+        let mut without = SpanWriter::new(scheme, overlay, 0);
+        engine::tokenize(code, syntax, Limits::DEFAULT, |e, s| {
+            with.event(e, s);
+            without.event(e, s);
+        })
+        .unwrap();
+        assert!(with.finish().contains("<span class=\"pl-k\">dyn</span>"));
+        assert!(without.finish().contains("</span>dyn T"));
+        // A source that does not match the events disables them instead of misreading it.
+        let mut wrong = SpanWriter::new(scheme, overlay, 0).with_source("xx");
+        engine::tokenize(code, syntax, Limits::DEFAULT, |e, s| wrong.event(e, s)).unwrap();
+        assert!(wrong.finish().contains("</span>dyn T"));
     }
 
     #[test]

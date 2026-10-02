@@ -38,6 +38,11 @@ fn tables_are_sorted() {
         JAVA_KEYWORDS,
         JAVA_DECLARATIONS,
         JAVA_TYPES,
+        RUBY_KEYWORDS,
+        RUBY_DECLARATIONS,
+        RUBY_KEYWORDS_PSEUDO,
+        RUBY_OPERATOR_WORDS,
+        RUBY_BUILTINS,
     ];
     for t in tables {
         assert!(t.windows(2).all(|w| w[0] < w[1]), "{t:?}");

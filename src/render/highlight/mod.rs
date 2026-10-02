@@ -16,6 +16,7 @@
 mod engine;
 #[cfg(test)]
 mod eval;
+mod jsx;
 mod memo;
 mod pl;
 mod rouge;

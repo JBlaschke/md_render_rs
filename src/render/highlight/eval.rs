@@ -242,6 +242,26 @@ fn gitlab_dump() {
     }
 }
 
+/// Debug aid: `MDR_HL_TOKENS=file:scope` prints every syntect token of the code in `file` with
+/// its scope stack, tokenized with the two-face syntax for `scope` (e.g. `source.tsx`).
+#[test]
+fn tokens_dump() {
+    let Ok(spec) = std::env::var("MDR_HL_TOKENS") else {
+        return;
+    };
+    let Some((file, scope)) = spec.rsplit_once(':') else {
+        return;
+    };
+    let code = std::fs::read_to_string(file).unwrap();
+    let syntax = super::engine::syntax_by_scope(scope).expect("syntax");
+    let _ = super::engine::tokenize(&code, syntax, super::engine::Limits::DEFAULT, |e, stack| {
+        if let super::engine::Event::Text(t) = e {
+            let scopes: Vec<String> = stack.iter().skip(1).map(|s| s.build_string()).collect();
+            println!("TOK\t{t:?}\t{}", scopes.join(" "));
+        }
+    });
+}
+
 /// Debug aid: `MDR_HL_COMPARE=out.gfm.html:in.md` compares every highlighted block of a GitHub
 /// API output with ours (exact match, or the differing lines).
 #[test]
