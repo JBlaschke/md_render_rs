@@ -685,6 +685,33 @@ fn api_options() {
         "{:?}",
         inv.warnings
     );
+
+    // CLI-22: the offline renderers do not link references, so --context only matters with
+    // --api (and the help says so).
+    let context_warning = |args: &[&str]| {
+        run(&fx, args)
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("--context has no effect without --api"))
+    };
+    assert!(context_warning(&["--context", "o/r"]));
+    assert!(context_warning(&[
+        "export",
+        "--context",
+        "o/r",
+        "README.md",
+        "-"
+    ]));
+    assert!(!context_warning(&["--api", "--context", "o/r"]));
+    assert!(!context_warning(&["--context", " "]));
+    assert!(!context_warning(&[]));
+    let mut cmd = <md_render::cli::Cli as clap::CommandFactory>::command();
+    // Whitespace-insensitive: the help is wrapped to the terminal width.
+    let help = cmd.render_long_help().to_string();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("(no effect offline)"), "{help}");
+    assert!(!help.contains("for reference links"), "{help}");
 }
 
 #[test]

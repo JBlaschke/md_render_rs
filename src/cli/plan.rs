@@ -676,6 +676,14 @@ fn render_plan(
         if g.api_url.is_some() || g.token.is_some() {
             warnings.push("--api-url and --token have no effect without --api".to_owned());
         }
+        // The offline renderers do not link references (#123, @user) (CLI-22).
+        if g.context.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+            warnings.push(
+                "--context has no effect without --api (offline rendering does not link \
+                 references like #123)"
+                    .to_owned(),
+            );
+        }
         None
     };
     Ok(RenderPlan {

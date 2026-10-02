@@ -119,8 +119,8 @@ pub struct GlobalArgs {
     #[arg(long, global = true, help_heading = "Rendering")]
     pub user_content: bool,
 
-    /// Repository context (owner/repo, or group/project for GitLab), used by --api and for
-    /// reference links
+    /// Repository context (owner/repo, or group/project for GitLab) sent with --api, which
+    /// links references like #123 against it (no effect offline)
     #[arg(long, value_name = "REPO", global = true, help_heading = "Rendering")]
     pub context: Option<String>,
 
