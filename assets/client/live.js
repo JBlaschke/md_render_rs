@@ -1,8 +1,11 @@
 // md-render live-update client (owner: server). Protocol: docs/DESIGN.md §7, GRIP §11.1.
 //
 // Keeps #md-content in sync with the Markdown file on disk:
-//   * one EventSource per page (`retry: 1000` from the server; manual back-off when the
-//     browser gives up), closed on `pagehide`, resynced on `pageshow` / visibility;
+//   * one EventSource per visible page (`retry: 1000` from the server; manual back-off
+//     when the browser gives up), closed on `pagehide` and a few seconds after the tab is
+//     hidden, reopened (and resynced) when it is shown again: browsers allow only about six
+//     HTTP/1.1 connections per server, so streams held open by background tabs would stall
+//     every further page and request (LIVE-3);
 //   * content-keyed reconciliation of the top-level blocks, so unchanged blocks keep their
 //     DOM (rendered math and mermaid, open <details>, loaded images, text selection);
 //   * scroll anchoring by the `data-sourcepos` start line of the block at the top of the
@@ -25,6 +28,9 @@
   const MAX_BACKOFF_MS = 10000;
   const BOTTOM_SLACK_PX = 4;
   const RENDERING_TIMEOUT_MS = 10000;
+  // How long a hidden tab keeps its event stream, so quick tab switches do not reconnect.
+  // Short: while six streams are open, the browser queues every other request to the server.
+  const HIDDEN_GRACE_MS = 5000;
 
   const live = readConfig();
   if (!live || !live.events_url || typeof window.EventSource !== 'function') {
@@ -42,6 +48,10 @@
     stylesVersion: null, // baseline from the first `hello`
     baseTitle: document.title.replace(/^\(Error\) /, ''),
     source: null,
+    // The stream is closed because the page is hidden (or was hidden when it loaded); it
+    // is reopened when the page becomes visible.
+    suspended: false,
+    hiddenTimer: 0,
     backoff: 1000,
     reconnectTimer: 0,
     renderingTimer: 0,
@@ -83,27 +93,61 @@
     // (math, mermaid, copy buttons) mutate the blocks.
     for (let n = container.firstChild; n; n = n.nextSibling) keys.set(n, keyOf(n));
     restoreSavedAnchor(container);
-    window.addEventListener('pagehide', closeSource);
+    window.addEventListener('pagehide', () => {
+      clearTimeout(state.hiddenTimer);
+      state.hiddenTimer = 0;
+      clearTimeout(state.reconnectTimer);
+      closeSource();
+    });
     window.addEventListener('pageshow', (ev) => {
-      if (ev.persisted) {
-        connect(); // back/forward cache: the page is stale (GRIP #255)
-        resync();
-      }
+      // Back/forward cache: the page is stale (GRIP #255).
+      if (ev.persisted) resume();
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible') return;
-      if (!state.source || state.source.readyState === EventSource.CLOSED) connect();
-      resync();
+      if (document.visibilityState === 'hidden') {
+        if (!state.hiddenTimer) state.hiddenTimer = setTimeout(suspend, HIDDEN_GRACE_MS);
+      } else {
+        resume();
+      }
     });
-    connect();
+    if (document.visibilityState === 'hidden') {
+      // Opened in a background tab: the page is current; connect once it is looked at.
+      state.suspended = true;
+    } else {
+      connect();
+    }
   }
 
   // ---------------------------------------------------------------------------------------
   // Connection
 
+  // The page has been hidden for HIDDEN_GRACE_MS: give its connection back to the browser.
+  function suspend() {
+    state.hiddenTimer = 0;
+    if (document.visibilityState !== 'hidden') return;
+    state.suspended = true;
+    clearTimeout(state.reconnectTimer);
+    closeSource();
+  }
+
+  // The page is shown (again): reconnect if needed (the server replays what was missed
+  // since our version) and resync.
+  function resume() {
+    clearTimeout(state.hiddenTimer);
+    state.hiddenTimer = 0;
+    if (document.visibilityState === 'hidden') {
+      state.suspended = true;
+      return;
+    }
+    state.suspended = false;
+    if (!state.source || state.source.readyState === EventSource.CLOSED) connect();
+    resync();
+  }
+
   function connect() {
     clearTimeout(state.reconnectTimer);
     closeSource();
+    if (state.suspended) return;
     // `v`/`sid` tell the server which state this page shows, so it replays what we missed;
     // EventSource adds `Last-Event-ID` on its own reconnects.
     const sep = live.events_url.indexOf('?') >= 0 ? '&' : '?';
@@ -162,6 +206,7 @@
   function scheduleReconnect() {
     closeSource();
     clearTimeout(state.reconnectTimer);
+    if (state.suspended) return; // reconnects when shown
     state.reconnectTimer = setTimeout(connect, state.backoff);
     state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF_MS);
   }
