@@ -7,7 +7,11 @@
 //! namespaced-attribute remover is unshifted to the front), then `CleanElement`, then
 //! `CleanComment`.
 
+use std::fmt::Write as _;
+use std::sync::LazyLock;
+
 use dom_query::{NodeData, NodeRef};
+use regex::Regex;
 
 use super::dom;
 
@@ -625,10 +629,12 @@ pub(super) fn sanitize_links(root: &NodeRef<'_>) -> bool {
     true
 }
 
-/// `SanitizeNodeLink#permit_url?`: Addressable parse + validation, then the unsafe-scheme check.
+/// `SanitizeNodeLink#permit_url?`: Addressable parse + validation, `normalize`, then the
+/// unsafe-scheme check.
 pub(super) fn permit_url(url: &str) -> bool {
     match parse_uri(url) {
         Err(()) => false,
+        Ok(parts) if !normalize_succeeds(&parts) => false,
         Ok(parts) => match parts.scheme {
             None => true,
             Some(scheme) => {
@@ -728,7 +734,133 @@ pub(super) fn parse_uri(url: &str) -> Result<UriParts<'_>, ()> {
             return Err(());
         }
     }
+    // `URI#to_s`, which `URI.new` calls: "Cannot assemble URI string with ambiguous path".
+    if parts.scheme.is_none() && ambiguous_path(parts.path) {
+        return Err(());
+    }
     Ok(parts)
+}
+
+/// Ruby `path =~ Addressable::URI::NORMPATH` (`/^(?!\/)[^\/:]*:.*$/`): a scheme-less path whose
+/// first segment holds a `:` (`:x`) would read as a scheme. `^` matches at every line start and
+/// `[^\/:]` also matches line breaks, so it is enough that some line not starting with `/`
+/// reaches a `:` before any `/` (`a/\n:b`).
+fn ambiguous_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    let mut next_special = None;
+    for i in (0..b.len()).rev() {
+        if matches!(b[i], b'/' | b':') {
+            next_special = Some(b[i]);
+        }
+        let line_start = i == 0 || b[i - 1] == b'\n';
+        if line_start && b[i] != b'/' && next_special == Some(b':') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Longest path [`normalize_succeeds`] normalizes. Addressable's dot-segment removal is
+/// quadratic in the worst case; a longer (hostile) path is kept as Addressable parsed it.
+const MAX_NORMALIZED_PATH: usize = 4096;
+
+/// Whether `Addressable::URI#normalize` succeeds (GL-SAN-1). It rebuilds the URI from the
+/// normalized parts, and the normalized path (percent-decoded where PCHAR allows, dot segments
+/// removed) may fail the checks the raw one passed: a scheme-less path can become ambiguous
+/// (`javascript%3Aalert(1)` -> `javascript:alert(1)`, `./a:b` -> `a:b`), and one without an
+/// authority can start with `//` ("Cannot have a path with two leading slashes": `/.//x`,
+/// `.///`). Checked against Addressable 2.8.7 (GitLab locks 2.9.0, which changes none of
+/// this). Not modelled: normalisation failures of the host (`//%3A%2E`).
+fn normalize_succeeds(parts: &UriParts<'_>) -> bool {
+    let path = parts.path;
+    let lower = path.to_ascii_lowercase();
+    let may_be_ambiguous = parts.scheme.is_none() && (path.contains(':') || lower.contains("%3a"));
+    // Only dot segments and `strip` change a path's shape: `./` + `//x` and ` //x` (after a
+    // scheme) become `//x`.
+    let may_double_slash = parts.authority.is_none()
+        && path.contains('/')
+        && (path.contains('.') || lower.contains("%2e") || dom::ruby_strip(path) != path);
+    if !(may_be_ambiguous || may_double_slash) || path.len() > MAX_NORMALIZED_PATH {
+        return true;
+    }
+    let normalized = normalized_path(path);
+    !(may_be_ambiguous && ambiguous_path(&normalized)
+        || may_double_slash && normalized.starts_with("//"))
+}
+
+/// Addressable `normalized_path`, up to the empty-path default (`/` for http and friends,
+/// which cannot matter here): `strip`, each segment through `normalize_component(PCHAR)`,
+/// then `URI.normalize_path`.
+fn normalized_path(path: &str) -> String {
+    let segments: Vec<String> = dom::ruby_strip(path)
+        .split('/')
+        .map(|segment| {
+            // `normalize_component`: decode every `%XX`, re-encode what is not PCHAR.
+            let mut out = String::with_capacity(segment.len());
+            for b in percent_encoding::percent_decode_str(segment) {
+                if b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@".contains(&b) {
+                    out.push(char::from(b));
+                } else {
+                    let _ = write!(out, "%{b:02X}");
+                }
+            }
+            out
+        })
+        .collect();
+    normalize_dot_segments(&segments.join("/"))
+}
+
+/// `Addressable::URI.normalize_path`: RFC 3986 §5.2.4 the Addressable way. Each round applies
+/// the first rule that changes something (`mod ||= gsub!(...)`), until none does.
+fn normalize_dot_segments(path: &str) -> String {
+    static RULE_2A: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/\./|/\.$").unwrap());
+    static RULE_2B_2C: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"/([^/]*)/\.\./|/([^/]*)/\.\.$").unwrap());
+    static RULE_2D: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\.\.?/?").unwrap());
+    static RULE_PREFIXED_PARENT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^/\.\.?/|^(/\.\.?)+/?$").unwrap());
+    let gsub = |re: &Regex, p: &str, with: &str| {
+        re.is_match(p).then(|| re.replace_all(p, with).into_owned())
+    };
+    let mut p = path.to_owned();
+    loop {
+        if let Some(next) = gsub(&RULE_2A, &p, "/") {
+            p = next;
+            continue;
+        }
+        if let Some(pair) = RULE_2B_2C.captures(&p) {
+            // gsub!(/\/#{parent}\/\.\.\/|(\/#{current}\/\.\.$)/, '/'), the missing one being ''.
+            let parent = format!("/{}/../", pair.get(1).map_or("", |m| m.as_str()));
+            let current = format!("/{}/..", pair.get(2).map_or("", |m| m.as_str()));
+            let mut next = String::with_capacity(p.len());
+            let mut rest = p.as_str();
+            while let Some(c) = rest.chars().next() {
+                if rest.starts_with(&parent) {
+                    next.push('/');
+                    rest = &rest[parent.len()..];
+                } else if rest == current {
+                    next.push('/');
+                    rest = "";
+                } else {
+                    next.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+            if next != p {
+                p = next;
+                continue;
+            }
+        }
+        if let Some(next) = gsub(&RULE_2D, &p, "") {
+            p = next;
+            continue;
+        }
+        if let Some(next) = gsub(&RULE_PREFIXED_PARENT, &p, "/") {
+            p = next;
+            continue;
+        }
+        return p;
+    }
 }
 
 #[cfg(test)]
@@ -902,6 +1034,87 @@ mod tests {
         assert!(parse_uri("http://x:8a/").is_err());
         assert!(permit_url("mailto:x@y"));
         assert!(!permit_url("data:text/html,x"));
+    }
+
+    /// GL-SAN-1: `Addressable::URI.parse(url).normalize` raises for scheme-less references
+    /// whose (normalized) first segment holds a `:`, and for paths that normalize to `//...`
+    /// without an authority. Expected verdicts from Addressable 2.8.7.
+    #[test]
+    fn ambiguous_paths_are_removed_like_addressable() {
+        let drop = [
+            ":x",
+            ":",
+            "::",
+            ":/x",
+            "javascript%3Aalert(1)",
+            "JaVaScRiPt%3Ax",
+            "a%3Ab",
+            "a%3ab",
+            "x%3A",
+            "%3A",
+            "%3A/x",
+            "./a%3Ab",
+            "./a:b",
+            "../a:b",
+            "../x/../a:b",
+            "..a%3Ab",
+            "...a%3Ab",
+            ".a%3Ab",
+            "%2E%2E/a%3Ab",
+            "%2e/a:b",
+            "a%2Fb%3Ac",
+            ".%3A",
+            "/.//x",
+            "/..//x",
+            "/a/..//x",
+            ".///",
+            "..///x:",
+            "%2E///%41",
+            "http:/.//x",
+            "http: //x",
+            "x:\t//y",
+            "a/\n:b",
+            "/x\nb:c",
+            "//h/x\nb:c",
+            "a/\n\nb:c",
+            "a%3Ab.md",
+            "%41%3Ax",
+        ];
+        for url in drop {
+            assert!(!permit_url(url), "{url:?} must be removed");
+        }
+        let keep = [
+            "a/b%3Ac",
+            "sub/../a%3Ab",
+            "x/..%3A",
+            "./",
+            "././/x",
+            "mailto:./a:b",
+            "/a%3Ab",
+            "//h/a%3Ab",
+            "?a:b",
+            "#a:b",
+            "a?b:c",
+            "docs/a%3Ab.md",
+            "a/./b:c",
+            "./x/./y:z",
+            "x/../../a:b",
+            "a/b/../../c:d",
+            "/a/../b:c",
+            "relative/path.md",
+        ];
+        for url in keep {
+            assert!(permit_url(url), "{url:?} must be kept");
+        }
+        assert_eq!(normalized_path("x/../../a:b"), "x/a:b");
+        assert_eq!(normalized_path("a/b/../../c:d"), "a/../c:d");
+        assert_eq!(normalized_path("../x/../a%3Ab"), "a:b");
+        assert_eq!(normalized_path("/.//x"), "//x");
+        assert_eq!(normalized_path("a%2fb%41%zz"), "a%2FbA%25zz");
+        assert_eq!(
+            run("<a href=\"javascript%3Aalert(1)\">z</a><a href=\":x\">y</a>"),
+            "<a>z</a><a>y</a>"
+        );
     }
 
     /// SEC-1: a newline inside the scheme is part of Addressable's scheme (which is then
