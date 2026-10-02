@@ -75,6 +75,22 @@ fn main() -> tarfs::Result<()> {
 }
 ```
 
+Archives you did not create. A small `.tar.gz` can decompress to gigabytes, so cap
+the decompressed size. Decompression stops with `TooLarge` as soon as the cap is
+reached:
+
+```rust,no_run
+fn main() -> tarfs::Result<()> {
+    let limits = tarfs::Limits::default().with_max_decompressed_size(512 << 20);
+    match tarfs::InMemoryFileSystem::open_with_limits("upload.tar.gz", limits) {
+        Ok(fs) => println!("{} files", fs.len()),
+        Err(tarfs::Error::TooLarge { limit }) => eprintln!("larger than {limit} bytes"),
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+```
+
 `InMemoryFileSystem` is `Send + Sync`, so readers can share it, for example as an
 `Arc<InMemoryFileSystem>` in server state. Writing needs `&mut self`.
 
@@ -93,6 +109,7 @@ fn main() -> tarfs::Result<()> {
 | `write_tarball_gz_viatar(fs, p)` | `write_tarball_gz_extended(p)` | plus `write_tarball_extended(w)`; see [Two writers](#two-writers) |
 | `_check_path(p)` | `check_path(p)` | public |
 | none | `contains`, `len`, `is_empty`, `paths`, `iter`, `file_size`, `read_dir` | listings are sorted by path |
+| none | `Limits` | `Limits::default().with_max_decompressed_size(n)`; the default is unlimited; `#[non_exhaustive]` |
 
 Every fallible call returns `tarfs::Result<T>`. The error type is `tarfs::Error`:
 
@@ -198,7 +215,8 @@ one of the two before flushing. TarFS.jl's `write_tarball` writes them anyway.
   create, use `open_with_limits` (or `from_tar_gz_reader_with_limits`,
   `from_tar_gz_bytes_with_limits`) with a `Limits` value: decompression then
   stops with `TooLarge` once the cap is reached, so a small "gzip bomb" cannot
-  exhaust memory.
+  exhaust memory. `open_tarball_gz(p, Some(from), …)` reads `from` without a
+  limit; check an untrusted source with `open_with_limits` first.
 * Data after the last gzip member makes the archive `Corrupt`, unless it is all
   zero bytes.
 
@@ -221,6 +239,11 @@ one of the two before flushing. TarFS.jl's `write_tarball` writes them anyway.
   drops `.` and empty path segments, and skips AppleDouble companions
   (recognised by name and magic number). It rejects unsafe or non-UTF-8 member
   paths and sparse files.
+* **Size limits.** The `*_with_limits` readers stop at a decompressed-size cap
+  with `TooLarge`. TarFS.jl has no cap.
+* **File and directory with one name.** Both writers refuse a filesystem that
+  holds `a` and `a/b` with `InvalidPath`. TarFS.jl writes such an archive, which
+  `tar -x` cannot recreate.
 * **Gzip output.** The `.tar.gz` bytes are reproducible across platforms. TarFS.jl's
   gzip OS byte varies by platform.
 * **Extended writer.** It needs no temporary directory and writes PAX headers
@@ -246,6 +269,12 @@ The suite covers:
 
 `tests/fixtures/tarfs_jl.tar` is TarFS.jl's output for the shared fixture tree.
 `tests/fixtures/tarfs_jl.jl` regenerates it.
+
+## Status
+
+tarfs lives in the md-render workspace and is used as a path dependency. It is not
+published on crates.io (`publish = false`): the name `tarfs` there belongs to an
+unrelated crate, so the package needs a new name before a release.
 
 ## License
 
