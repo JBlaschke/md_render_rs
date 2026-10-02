@@ -1,9 +1,12 @@
-//! Small DOM helpers over `dom_query` with Nokogiri-like semantics, shared by the GitLab filters.
+//! Small DOM helpers over `dom_query` with Nokogiri-like semantics, shared by the GitLab filters
+//! (the ones the GitHub pipeline and `--api` share live in `render::dom` and are re-exported).
 //!
 //! Every helper is iterative (never recursive), so arbitrarily deep documents cannot overflow the
 //! stack.
 
-use dom_query::{NodeData, NodeId, NodeRef, Tree};
+use dom_query::{NodeData, NodeId, NodeRef};
+
+pub(super) use crate::render::dom::{add_class, classes, new_element, new_text, text_of, unwrap};
 
 /// Whether `n` is an element with local name `name` (any namespace, like Nokogiri's `#name`).
 #[inline]
@@ -35,58 +38,9 @@ pub(super) fn attr_is(n: &NodeRef<'_>, name: &str, value: &str) -> bool {
         .is_some_and(|el| el.attr_ref(name.into()) == Some(value))
 }
 
-/// Whitespace-separated class tokens.
-pub(super) fn classes(n: &NodeRef<'_>) -> Vec<String> {
-    attr(n, "class")
-        .map(|c| c.split_ascii_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-/// Nokogiri `add_class`: appends each token that is not present yet (creates the attribute).
-pub(super) fn add_class(n: &NodeRef<'_>, class: &str) {
-    let mut list = classes(n);
-    let had = n.has_attr("class");
-    let mut changed = !had;
-    for c in class.split_ascii_whitespace() {
-        if !list.iter().any(|x| x == c) {
-            list.push(c.to_owned());
-            changed = true;
-        }
-    }
-    if changed {
-        n.set_attr("class", &list.join(" "));
-    }
-}
-
-/// Removes class tokens; drops the attribute when it becomes empty.
-#[cfg(test)]
-pub(super) fn remove_class_tokens(n: &NodeRef<'_>, remove: &[&str]) {
-    if !n.has_attr("class") {
-        return;
-    }
-    let list: Vec<String> = classes(n)
-        .into_iter()
-        .filter(|c| !remove.contains(&c.as_str()))
-        .collect();
-    if list.is_empty() {
-        n.remove_attr("class");
-    } else {
-        n.set_attr("class", &list.join(" "));
-    }
-}
-
 /// Concatenated text of all descendant text nodes (Nokogiri `#text` / `#content`).
 pub(super) fn text(n: &NodeRef<'_>) -> String {
     n.text().to_string()
-}
-
-/// Contents of a text node (`None` for other nodes).
-pub(super) fn text_node_contents(n: &NodeRef<'_>) -> Option<String> {
-    n.query(|tn| match &tn.data {
-        NodeData::Text { contents } => Some(contents.to_string()),
-        _ => None,
-    })
-    .flatten()
 }
 
 /// Replaces the contents of a text node.
@@ -209,28 +163,6 @@ pub(super) fn following_skip_children<'a>(
     }
 }
 
-/// Replaces `n` by its children (Nokogiri `node.replace(node.children)`).
-pub(super) fn unwrap(n: &NodeRef<'_>) {
-    while let Some(c) = n.first_child() {
-        n.insert_before(&c);
-    }
-    n.remove_from_parent();
-}
-
-/// Creates a detached element with the given attributes (in order).
-pub(super) fn new_element<'a>(tree: &'a Tree, name: &str, attrs: &[(&str, &str)]) -> NodeRef<'a> {
-    let el = tree.new_element(name);
-    for (k, v) in attrs {
-        el.set_attr(k, v);
-    }
-    el
-}
-
-/// Creates a detached text node.
-pub(super) fn new_text<'a>(tree: &'a Tree, text: &str) -> NodeRef<'a> {
-    tree.new_text(text)
-}
-
 /// Ruby `String#strip`: removes leading/trailing ASCII whitespace and NUL.
 pub(super) fn ruby_strip(s: &str) -> &str {
     s.trim_matches(|c: char| matches!(c, '\0' | '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' '))
@@ -245,15 +177,6 @@ pub(super) fn is_blank(s: &str) -> bool {
 mod tests {
     use super::*;
     use dom_query::Document;
-
-    #[test]
-    fn unwrap_keeps_children_in_order() {
-        let doc = Document::fragment("<p>a<u>b<i>c</i>d</u>e</p>");
-        let root = doc.html_root();
-        let u = doc.select("u").nodes()[0];
-        unwrap(&u);
-        assert_eq!(root.inner_html().to_string(), "<p>ab<i>c</i>de</p>");
-    }
 
     #[test]
     fn descendants_document_order() {
@@ -288,16 +211,6 @@ mod tests {
         let p = first_element_named(&root, &["p", "b"]).unwrap();
         assert_eq!(tag(&p).as_deref(), Some("b"));
         assert!(first_element_named(&first, &["tr"]).is_none());
-    }
-
-    #[test]
-    fn class_helpers() {
-        let doc = Document::fragment("<p class=\"a  b\">x</p>");
-        let p = doc.select("p").nodes()[0];
-        add_class(&p, "b c");
-        assert_eq!(attr(&p, "class").as_deref(), Some("a b c"));
-        remove_class_tokens(&p, &["a", "b", "c"]);
-        assert!(!p.has_attr("class"));
     }
 
     #[test]

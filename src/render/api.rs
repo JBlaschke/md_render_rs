@@ -27,6 +27,7 @@ use dom_query::{Document, NodeRef};
 use regex::Regex;
 use sha2::{Digest as _, Sha256};
 
+use super::dom::{add_class, has_ancestor, remove_class};
 use crate::flavor::{Flavor, Mode};
 use crate::{hash, html};
 
@@ -1464,41 +1465,6 @@ fn serialize_fragment(doc: &Document) -> String {
     doc.html_root().inner_html().to_string()
 }
 
-fn class_list(node: &NodeRef) -> Vec<String> {
-    node.class()
-        .map(|c| c.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-/// Remove `class` from `node`, dropping the attribute when it becomes empty.
-fn remove_class(node: &NodeRef, class: &str) {
-    if node.has_class(class) {
-        let rest: Vec<String> = class_list(node)
-            .into_iter()
-            .filter(|c| c != class)
-            .collect();
-        if rest.is_empty() {
-            node.remove_attr("class");
-        } else {
-            node.set_attr("class", &rest.join(" "));
-        }
-    }
-}
-
-fn add_classes(node: &NodeRef, classes: &[&str]) {
-    let mut list = class_list(node);
-    for c in classes {
-        if !list.iter().any(|x| x == c) {
-            list.push((*c).to_owned());
-        }
-    }
-    node.set_attr("class", &list.join(" "));
-}
-
-fn has_ancestor(node: &NodeRef, pred: impl Fn(&NodeRef) -> bool) -> bool {
-    node.ancestors_it(None).any(|a| a.is_element() && pred(&a))
-}
-
 /// `data-mdr-key`s (DESIGN §5) for the elements of GitHub API output that the client mutates,
 /// built from the same parts as the offline renderer (`render/github/code.rs`, `math.rs`), so a
 /// block keeps its key when a page switches between `--api` and offline output. Code blocks
@@ -1838,7 +1804,7 @@ fn readme_headings(doc: &Document, hints: &SourceHints) {
             .attr("dir")
             .map_or_else(|| "auto".to_owned(), |d| d.to_string());
         h.remove_attr("dir");
-        add_classes(h, &["heading-element"]);
+        add_class(h, "heading-element");
         h.set_attr("dir", &dir);
         let (id, href) = if slug.is_empty() {
             (String::new(), "#".to_owned())
@@ -1883,7 +1849,7 @@ fn clipboard_wrappers(doc: &Document, hints: &SourceHints) {
             continue;
         }
         let (raw, lang) = clipboard_text(&mut cursor, &hints.code_langs, div);
-        add_classes(div, &["notranslate", "position-relative", "overflow-auto"]);
+        add_class(div, "notranslate position-relative overflow-auto");
         div.set_attr("data-snippet-clipboard-copy-content", &raw);
         if let Some(lang) = lang {
             div.set_attr("data-mdr-key", &hash::mdr_key(&["code", lang, &raw]));
@@ -1944,7 +1910,7 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
             img.remove_attr("data-src");
             if img.has_class("lazy") {
                 remove_class(img, "lazy");
-                add_classes(img, &["js-lazy-loaded"]);
+                add_class(img, "js-lazy-loaded");
             }
             if !img.has_attr("loading") {
                 img.set_attr("loading", "lazy");
@@ -1969,7 +1935,7 @@ pub(crate) fn postprocess_gitlab(html: &str, origin: &str, prefix: &str) -> Rend
         .nodes()
         .iter()
     {
-        add_classes(pre, &["code-syntax-highlight-theme"]);
+        add_class(pre, "code-syntax-highlight-theme");
     }
 
     // The offline renderer's keys, computed by the same function.

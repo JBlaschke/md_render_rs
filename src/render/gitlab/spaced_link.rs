@@ -74,7 +74,7 @@ pub(super) fn rewrite(text: &str, render: &dyn Fn(&str) -> String) -> Option<Str
 pub(super) fn spaced_links(root: &NodeRef<'_>, render: &dyn Fn(&str) -> String) {
     for id in dom::text_nodes(root) {
         let t = root.tree.get_unchecked(&id);
-        let content = dom::text_node_contents(&t).unwrap_or_default();
+        let content = dom::text_of(&t).unwrap_or_default();
         if !content.contains("](") {
             continue;
         }

@@ -237,7 +237,7 @@ pub(super) fn attributes(root: &NodeRef<'_>) {
         let Some(sib) = img.next_sibling() else {
             continue;
         };
-        let Some(content) = dom::text_node_contents(&sib) else {
+        let Some(content) = dom::text_of(&sib) else {
             continue;
         };
         if !content.starts_with('{') {
@@ -507,7 +507,7 @@ pub(super) fn table_of_contents(root: &NodeRef<'_>) {
     // are case-folded by the XPath translate()), whose parent's parent is a <p> with text `_toc_`.
     for id in dom::text_nodes(root) {
         let t = root.tree.get_unchecked(&id);
-        let content = dom::text_node_contents(&t).unwrap_or_default();
+        let content = dom::text_of(&t).unwrap_or_default();
         if !translate_toc(&content).starts_with("_toc_") {
             continue;
         }
@@ -542,7 +542,7 @@ pub(super) fn table_of_contents(root: &NodeRef<'_>) {
         if !dom::is(&p, "p") {
             continue;
         }
-        let content = dom::text_node_contents(&t).unwrap_or_default();
+        let content = dom::text_of(&t).unwrap_or_default();
         if !translate_toc(&content).starts_with("[toc]") {
             continue;
         }
@@ -689,7 +689,7 @@ pub(super) fn inline_diff_html(text: &str) -> String {
 pub(super) fn inline_diff(root: &NodeRef<'_>) {
     for id in dom::text_nodes(root) {
         let t = root.tree.get_unchecked(&id);
-        let content = dom::text_node_contents(&t).unwrap_or_default();
+        let content = dom::text_of(&t).unwrap_or_default();
         if !(content.contains("[-")
             || content.contains("{-")
             || content.contains("[+")
@@ -798,7 +798,7 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
         // sanitize_link_text!
         for d in dom::descendants(&a) {
             let n = root.tree.get_unchecked(&d);
-            if let Some(t) = dom::text_node_contents(&n) {
+            if let Some(t) = dom::text_of(&n) {
                 if t.contains(RTLO) {
                     dom::set_text_node_contents(&n, &t.replace(RTLO, ENCODED_RTLO));
                 }

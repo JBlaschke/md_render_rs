@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::flavor::{Flavor, Mode};
 
 pub mod api;
+pub(crate) mod dom;
 pub mod github;
 pub mod gitlab;
 pub mod highlight;

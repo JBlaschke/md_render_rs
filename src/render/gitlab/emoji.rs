@@ -315,7 +315,7 @@ pub(super) fn filter(root: &NodeRef<'_>) {
             break;
         }
         let t = root.tree.get_unchecked(&id);
-        let content = dom::text_node_contents(&t).unwrap_or_default();
+        let content = dom::text_of(&t).unwrap_or_default();
         if content.is_ascii() && !content.contains(':') {
             continue;
         }
