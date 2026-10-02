@@ -28,6 +28,7 @@ use regex::Regex;
 use sha2::{Digest as _, Sha256};
 
 use crate::flavor::{Flavor, Mode};
+use crate::html;
 
 use super::{Features, RenderOptions, Rendered, Renderer};
 
@@ -1415,23 +1416,6 @@ const ENRICHMENT_LOADER: &str = r#"<span class="js-render-enrichment-loader d-fl
 </span>
   </span>"#;
 
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn escape_attr(s: &str) -> String {
-    escape_text(s).replace('"', "&quot;")
-}
-
 /// Parse an HTML fragment for post-processing.
 ///
 /// The HTML parser drops a newline that directly follows a `<pre>` start tag (HTML §13.2.6.4.7),
@@ -1577,9 +1561,9 @@ fn mermaid_section(code: &str) -> String {
             "\n    </div>\n  </div>\n  {loader}\n</section>"
         ),
         id = stable_identity(code),
-        json = escape_attr(&json),
-        plain = escape_attr(code),
-        text = escape_text(code),
+        json = html::attr(&json),
+        plain = html::attr(code),
+        text = html::text(code),
         loader = ENRICHMENT_LOADER,
     )
 }
@@ -1822,9 +1806,9 @@ fn readme_headings(doc: &Document, hints: &SourceHints) {
         let wrapper = format!(
             r#"<div class="markdown-heading" dir="auto">{}<a id="{}" class="anchor" aria-label="Permalink: {}" href="{}">{OCTICON_LINK}</a></div>"#,
             h.html(),
-            escape_attr(&id),
-            escape_attr(&text),
-            escape_attr(&href),
+            html::attr(&id),
+            html::attr(&text),
+            html::attr(&href),
         );
         h.replace_with_html(wrapper);
     }
@@ -1869,7 +1853,7 @@ fn clipboard_wrappers(doc: &Document, hints: &SourceHints) {
         let raw = clipboard_text(&mut cursor, pre);
         let wrapper = format!(
             r#"<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="{}">{}</div>"#,
-            escape_attr(&raw),
+            html::attr(&raw),
             pre.html()
         );
         pre.replace_with_html(wrapper);

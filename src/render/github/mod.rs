@@ -223,7 +223,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
 /// ([`budget::MAX_NESTING_COST`]): its source as plain text, with a warning.
 fn too_deep(src: &str, mut warnings: Vec<String>) -> Rendered {
     let mut html = String::from(r#"<pre class="notranslate"><code class="notranslate">"#);
-    util::push_text(&mut html, src);
+    crate::html::push_text(&mut html, src);
     html.push_str("</code></pre>");
     warnings.push(
         "The document nests HTML elements or block quotes too deeply to render in reasonable \
@@ -662,7 +662,7 @@ mod tests {
                 assert!(!r.html.contains("<div") && !r.html.contains("<blockquote"));
                 assert!(!r.html.contains("<script"));
                 let mut escaped = String::new();
-                util::push_text(&mut escaped, &md);
+                crate::html::push_text(&mut escaped, &md);
                 assert!(r.html.contains(&escaped), "the source, escaped");
                 assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
                 assert!(r.warnings[0].contains("too deeply"));

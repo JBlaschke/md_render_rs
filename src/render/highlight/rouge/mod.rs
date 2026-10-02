@@ -243,25 +243,30 @@ const BIDI_WARNING: &str = "Potentially unwanted character detected: Unicode BiD
 /// Rouge's `escape_special_html_chars` (`&`, `<`, `>`; `\r` removed) plus `HTMLGitlab`'s
 /// `replace_space_characters` and `highlight_unicode_control_characters` (GL §6.8, §8.2).
 fn push_rouge_escaped(out: &mut String, text: &str) {
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\r' => {}
-            c if is_non_ascii_space(c) => out.push(' '),
-            c if is_bidi_control(c) => {
-                out.push_str(
-                    "<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"",
-                );
-                out.push_str(BIDI_WARNING);
-                out.push_str("\">");
-                out.push(c);
-                out.push_str("</span>");
-            }
-            c => out.push(c),
+    let mut last = 0;
+    for (i, c) in text.char_indices() {
+        let special = c == '\r' || is_non_ascii_space(c) || is_bidi_control(c);
+        if !special {
+            continue;
+        }
+        crate::html::push_text(out, &text[last..i]);
+        last = i + c.len_utf8();
+        if c == '\r' {
+            continue;
+        }
+        if is_non_ascii_space(c) {
+            out.push(' ');
+        } else {
+            out.push_str(
+                "<span class=\"unicode-bidi has-tooltip\" data-toggle=\"tooltip\" title=\"",
+            );
+            out.push_str(BIDI_WARNING);
+            out.push_str("\">");
+            out.push(c);
+            out.push_str("</span>");
         }
     }
+    crate::html::push_text(out, &text[last..]);
 }
 
 #[cfg(test)]

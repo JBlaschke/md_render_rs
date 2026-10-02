@@ -70,7 +70,7 @@ impl Weigh for GitlabCode {
 /// grammar.
 pub fn github_plain(code: &str) -> String {
     let code = code.replace("\r\n", "\n");
-    pl::escape_text(code.strip_suffix('\n').unwrap_or(&code))
+    crate::html::text(code.strip_suffix('\n').unwrap_or(&code)).into_owned()
 }
 
 /// GitLab code block highlighting result.

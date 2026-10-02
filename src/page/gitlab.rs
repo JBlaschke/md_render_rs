@@ -7,8 +7,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use super::octicons::{self, Icon};
-use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, html, human_size, reason};
+use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, human_size, reason};
 use crate::flavor::{Mode, Theme};
+use crate::html;
 
 /// The `<html>` start tag: `gl-system` / `gl-light` / `gl-dark` plus `ui-neutral` (the
 /// neutral palette tokens are scoped to `:root.ui-neutral`, GL §11.3). `icon_sprite` is the
@@ -21,7 +22,7 @@ pub(crate) fn html_open(theme: Theme, icon_sprite: Option<&str>) -> String {
         Theme::Dark => "gl-dark",
     };
     let sprite = icon_sprite
-        .map(|s| format!(" data-icon-sprite=\"{}\"", html::attr(s)))
+        .map(|s| format!(" data-icon-sprite=\"{}\"", html::attr_any_quote(s)))
         .unwrap_or_default();
     format!("<html class=\"{mode} ui-neutral\" lang=\"en\"{sprite}>\n")
 }
@@ -155,7 +156,7 @@ pub(crate) fn body(
             out.push_str("<div class=\"blob-viewer\" data-type=\"rich\" data-loaded=\"true\">\n");
             out.push_str(&format!(
                 "<div class=\"blob-viewer\" data-path=\"{}\" data-rich-type=\"markup\" data-type=\"rich\">\n",
-                html::attr(file_name.unwrap_or(""))
+                html::attr_any_quote(file_name.unwrap_or(""))
             ));
             out.push_str(&format!("<div class=\"file-content js-markup-content md\" id=\"md-content\"{root_attrs}>{content}</div>\n"));
             out.push_str("</div>\n</div>\n</div>\n");
@@ -238,7 +239,7 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
         out.push_str(&format!(
             "<div class=\"tree-item mdr-listing-row\">{icon}<span class=\"gl-sr-only\">{label}</span>\
              <a class=\"tree-item-link mdr-listing-name\" href=\"{}\">{}</a>{size}</div>\n",
-            html::attr(&e.href),
+            html::attr_any_quote(&e.href),
             html::text(&e.name)
         ));
     }

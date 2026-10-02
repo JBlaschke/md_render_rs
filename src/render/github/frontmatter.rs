@@ -12,7 +12,7 @@ use regex::Regex;
 use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::scanner::TScalarStyle;
 
-use super::util::push_text;
+use crate::html::push_text;
 
 /// Front matter found at the top of a document.
 #[derive(Debug, Clone, PartialEq, Eq)]

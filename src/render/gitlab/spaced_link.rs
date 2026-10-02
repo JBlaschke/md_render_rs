@@ -53,7 +53,8 @@ pub(super) fn rewrite(text: &str, render: &dyn Fn(&str) -> String) -> Option<Str
     if !text.contains("](") || !LINK_OR_IMAGE.is_match(text) {
         return None;
     }
-    let escape = super::filters::escape_text;
+    // Nokogiri's text-node `to_html` escaping.
+    let escape = crate::html::text;
     let mut out = String::with_capacity(text.len() * 2);
     let mut last = 0;
     for m in LINK_OR_IMAGE.find_iter(text) {
@@ -111,7 +112,7 @@ mod tests {
         format!(
             "<p data-sourcepos=\"1:1-1:{}\">RENDERED({})</p>",
             md.len(),
-            dom::escape_html(md)
+            crate::html::attr(md)
         )
     }
 

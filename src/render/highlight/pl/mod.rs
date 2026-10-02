@@ -15,6 +15,7 @@ use syntect::parsing::{Scope, SyntaxReference};
 
 use super::GithubCode;
 use super::engine::{self, Event, Limits};
+use crate::html::push_text;
 
 use classes::{Class, Overlay, Scheme, TextRules, WordRules};
 pub(crate) use classes::{DEFAULT_VARIANT, Variant};
@@ -162,7 +163,7 @@ pub(crate) fn highlight_with(code: &str, lang: &str, variant: Variant) -> Github
         Grammar::Diff => Err(engine::Error),
     };
     // Tokenizer failure (limits, parse error, internal panic): same wrapper, no token spans.
-    let mut html = html.unwrap_or_else(|_| escape_text(code));
+    let mut html = html.unwrap_or_else(|_| crate::html::text(code).into_owned());
     trim_trailing_newlines(&mut html, tm_scope);
     GithubCode {
         scope,
@@ -215,29 +216,6 @@ fn trim_trailing_newlines(html: &mut String, tm_scope: &str) {
     } else if html.ends_with('\n') {
         html.pop();
     }
-}
-
-/// Escape code text like GitHub (GH §7.1): `&`, `<`, `>` only.
-pub(crate) fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + s.len() / 8);
-    push_escaped(&mut out, s);
-    out
-}
-
-fn push_escaped(out: &mut String, s: &str) {
-    let mut last = 0;
-    for (i, b) in s.bytes().enumerate() {
-        let rep = match b {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            _ => continue,
-        };
-        out.push_str(&s[last..i]);
-        out.push_str(rep);
-        last = i + 1;
-    }
-    out.push_str(&s[last..]);
 }
 
 /// One scope on the writer's stack.
@@ -395,10 +373,10 @@ impl<'s> SpanWriter<'s> {
                     self.out.push_str("<span class=\"");
                     self.out.push_str(class);
                     self.out.push_str("\">");
-                    push_escaped(&mut self.out, word);
+                    push_text(&mut self.out, word);
                     self.out.push_str("</span>");
                 }
-                None => push_escaped(&mut self.out, word),
+                None => push_text(&mut self.out, word),
             }
             rest = tail;
             start += len;
@@ -461,7 +439,7 @@ impl<'s> SpanWriter<'s> {
                 (Some((tables, at)), Some(source)) if !tables.is_empty() => {
                     self.push_words(body, at, source, &tables)
                 }
-                _ => push_escaped(&mut self.out, body),
+                _ => push_text(&mut self.out, body),
             }
         }
         if newline {
@@ -581,7 +559,7 @@ mod tests {
         assert!(html.contains("&lt;&amp;&gt;'"), "{html}");
         assert!(html.contains('"'), "quotes stay literal: {html}");
         assert_eq!(
-            escape_text("<a href=\"x\">&</a>"),
+            crate::html::text("<a href=\"x\">&</a>"),
             "&lt;a href=\"x\"&gt;&amp;&lt;/a&gt;"
         );
     }

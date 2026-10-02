@@ -6,6 +6,7 @@ pub mod assets;
 pub mod cli;
 pub mod export;
 pub mod flavor;
+pub(crate) mod html;
 pub mod page;
 pub mod render;
 pub mod server;

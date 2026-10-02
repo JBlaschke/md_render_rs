@@ -89,7 +89,10 @@ pub(super) fn plain_lines(code: &str) -> Vec<String> {
     if lines.last() == Some(&"") {
         lines.pop();
     }
-    lines.into_iter().map(filters::escape_text).collect()
+    lines
+        .into_iter()
+        .map(|l| crate::html::text(l).into_owned())
+        .collect()
 }
 
 /// Returns `(tag, lines)` for a block with the given `data-canonical-lang`.
@@ -161,7 +164,7 @@ pub(super) fn syntax_highlight(root: &NodeRef<'_>) {
             inner.push_str("<span id=\"LC");
             inner.push_str(&(i + 1).to_string());
             inner.push_str("\" class=\"line\" data-lang=\"");
-            inner.push_str(&dom::escape_html(data_lang));
+            crate::html::push_attr(&mut inner, data_lang);
             inner.push_str("\">");
             inner.push_str(&fix_unicode(line));
             inner.push_str("</span>");

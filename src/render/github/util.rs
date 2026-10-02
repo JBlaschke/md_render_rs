@@ -1,42 +1,6 @@
-//! Small shared helpers: HTML escaping and content hashing.
+//! Small shared helpers: content hashing.
 
 use sha2::{Digest, Sha256};
-
-/// Appends `s` HTML-escaped for text content (`&`, `<`, `>`; GH §7.1 "GitHub escapes only
-/// `<`, `>`, `&` in text").
-pub(super) fn push_text(out: &mut String, s: &str) {
-    let mut last = 0;
-    for (i, b) in s.bytes().enumerate() {
-        let rep = match b {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            _ => continue,
-        };
-        out.push_str(&s[last..i]);
-        out.push_str(rep);
-        last = i + 1;
-    }
-    out.push_str(&s[last..]);
-}
-
-/// Appends `s` escaped for a double-quoted attribute value (`&`, `"`, `<`, `>`; GH §7.1 RAW).
-pub(super) fn push_attr(out: &mut String, s: &str) {
-    let mut last = 0;
-    for (i, b) in s.bytes().enumerate() {
-        let rep = match b {
-            b'&' => "&amp;",
-            b'"' => "&quot;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            _ => continue,
-        };
-        out.push_str(&s[last..i]);
-        out.push_str(rep);
-        last = i + 1;
-    }
-    out.push_str(&s[last..]);
-}
 
 /// SHA-256 over `parts`, each part followed by a NUL separator (so `["a", "b"]` and `["ab"]`
 /// differ).
@@ -88,15 +52,6 @@ pub(super) fn uuid_like(parts: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escaping() {
-        let (mut t, mut a) = (String::new(), String::new());
-        push_text(&mut t, r#"a<b>&"c'ü"#);
-        push_attr(&mut a, r#"a<b>&"c'"#);
-        assert_eq!(t, r#"a&lt;b&gt;&amp;"c'ü"#);
-        assert_eq!(a, "a&lt;b&gt;&amp;&quot;c'");
-    }
 
     #[test]
     fn hashing_is_stable() {

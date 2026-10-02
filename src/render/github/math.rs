@@ -16,8 +16,9 @@
 
 use dom_query::{Document, NodeRef};
 
-use super::util::{mdr_key, push_text};
+use super::util::mdr_key;
 use super::{Ctx, dom};
+use crate::html::push_text;
 
 /// `<math-renderer>` markup as a string; `delim` is `$` or `$$`, `display` picks the class.
 pub(super) fn math_html(ctx: &Ctx, tex: &str, delim: &str, display: bool) -> String {

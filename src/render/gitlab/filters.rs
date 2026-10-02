@@ -700,27 +700,14 @@ pub(super) fn inline_diff(root: &NodeRef<'_>) {
         if dom::has_ancestor(&t, &["pre", "code", "tt"], root) {
             continue;
         }
-        let escaped = escape_text(&content);
+        // Nokogiri's text-node `to_html` escaping.
+        let escaped = crate::html::text(&content);
         let html = inline_diff_html(&escaped);
         if html == escaped {
             continue;
         }
         t.replace_with_html(html);
     }
-}
-
-/// Nokogiri's text-node `to_html` escaping (`&`, `<`, `>`).
-pub(super) fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 // ------------------------------------------------------------------------------------------------

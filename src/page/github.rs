@@ -3,8 +3,9 @@
 //! the vendored CSS defines (CQ §3.7: `.Box`, `.Box-row`, `.flash`, `.flash-error`, …).
 
 use super::octicons::{self, Icon};
-use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, html, human_size, reason};
+use super::{Banner, BannerKind, Layout, ListingEntry, crumbs_html, human_size, reason};
 use crate::flavor::{Mode, Theme};
+use crate::html;
 
 /// The `<html>` start tag. The theme attributes must be on the root element because several
 /// rules use `:root[data-color-mode=…]` (GH §3.1); `light` / `dark` are the theme ids actually
@@ -14,8 +15,8 @@ pub(crate) fn html_open(theme: Theme, light: &str, dark: &str) -> String {
         "<html lang=\"en\" data-color-mode=\"{}\" data-light-theme=\"{}\" data-dark-theme=\"{}\" \
          data-a11y-animated-images=\"system\" data-a11y-link-underlines=\"true\">\n",
         theme.as_str(),
-        html::attr(light),
-        html::attr(dark)
+        html::attr_any_quote(light),
+        html::attr_any_quote(dark)
     )
 }
 
@@ -153,7 +154,7 @@ pub(crate) fn listing(dir: &str, entries: &[ListingEntry]) -> String {
         out.push_str(&format!(
             "<div class=\"Box-row Box-row--hover-gray py-2 mdr-listing-row\">{icon}<span class=\"sr-only\">{label}</span>\
              <a class=\"Link--primary mdr-listing-name\" href=\"{}\">{}</a>{size}</div>\n",
-            html::attr(&e.href),
+            html::attr_any_quote(&e.href),
             html::text(&e.name)
         ));
     }

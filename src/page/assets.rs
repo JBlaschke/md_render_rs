@@ -19,7 +19,7 @@ use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_enco
 
 use super::AssetMode;
 use super::css::{self, BUNDLE_ROUTE, RefKind, Target};
-use super::html;
+use crate::html;
 use crate::styles::Bundle;
 
 /// Characters escaped when a bundle path is turned into a URL path (`/` is kept).
@@ -413,7 +413,7 @@ impl<'a> Assets<'a> {
     ) -> anyhow::Result<bool> {
         let media_attr = media
             .filter(|m| !m.is_empty())
-            .map(|m| format!(" media=\"{}\"", html::attr(m)))
+            .map(|m| format!(" media=\"{}\"", html::attr_any_quote(m)))
             .unwrap_or_default();
         if self.is_inline() {
             let Some(bytes) = self.bundle.read(path) else {
@@ -424,14 +424,14 @@ impl<'a> Assets<'a> {
             let inlined = self.inline_css(path, &text);
             out.push_str(&format!(
                 "<style data-mdr-path=\"{}\"{media_attr}{attrs}>\n{}\n</style>\n",
-                html::attr(path),
+                html::attr_any_quote(path),
                 html::inline_style(&inlined)
             ));
             Ok(true)
         } else if let Some(url) = self.bundle_url(path)? {
             out.push_str(&format!(
                 "<link rel=\"stylesheet\" href=\"{}\"{media_attr}{attrs}>\n",
-                html::attr(&url)
+                html::attr_any_quote(&url)
             ));
             Ok(true)
         } else {
@@ -453,7 +453,7 @@ impl<'a> Assets<'a> {
         if matches!(self.mode, AssetMode::Server { .. }) || is_remote(entry) || !local.is_file() {
             out.push_str(&format!(
                 "<link rel=\"stylesheet\" href=\"{}\"{ATTRS}>\n",
-                html::attr(entry)
+                html::attr_any_quote(entry)
             ));
             return Ok(());
         }
@@ -466,7 +466,7 @@ impl<'a> Assets<'a> {
             .unwrap_or_default();
         out.push_str(&format!(
             "<style{ATTRS} data-mdr-file=\"{}\">\n{}\n</style>\n",
-            html::attr(&name),
+            html::attr_any_quote(&name),
             html::inline_style(&css)
         ));
         Ok(())
@@ -484,14 +484,14 @@ impl<'a> Assets<'a> {
             if let Some((bytes, _)) = crate::assets::get(name) {
                 out.push_str(&format!(
                     "<style data-mdr-static=\"{}\"{attrs}>\n{}\n</style>\n",
-                    html::attr(name),
+                    html::attr_any_quote(name),
                     html::inline_style(&String::from_utf8_lossy(bytes))
                 ));
             }
         } else if let Some(url) = self.static_url(name)? {
             out.push_str(&format!(
                 "<link rel=\"stylesheet\" href=\"{}\"{attrs}>\n",
-                html::attr(&url)
+                html::attr_any_quote(&url)
             ));
         }
         Ok(())
@@ -505,11 +505,14 @@ impl<'a> Assets<'a> {
             };
             out.push_str(&format!(
                 "<script data-mdr-static=\"{}\">\n{}\n</script>\n",
-                html::attr(name),
+                html::attr_any_quote(name),
                 html::inline_script(&String::from_utf8_lossy(bytes))
             ));
         } else if let Some(url) = self.static_url(name)? {
-            out.push_str(&format!("<script src=\"{}\"></script>\n", html::attr(&url)));
+            out.push_str(&format!(
+                "<script src=\"{}\"></script>\n",
+                html::attr_any_quote(&url)
+            ));
         }
         Ok(())
     }
@@ -524,7 +527,7 @@ impl<'a> Assets<'a> {
         if let Some(href) = href {
             out.push_str(&format!(
                 "<link rel=\"icon\" type=\"image/svg+xml\" href=\"{}\">\n",
-                html::attr(&href)
+                html::attr_any_quote(&href)
             ));
         }
         Ok(())
@@ -547,7 +550,7 @@ impl<'a> Assets<'a> {
         };
         holders.push_str(&format!(
             "<script type=\"text/plain\" id=\"mdr-lib-{key}\" data-mdr-path=\"{}\">\n{}\n</script>\n",
-            html::attr(path),
+            html::attr_any_quote(path),
             html::inline_script(&String::from_utf8_lossy(&bytes))
         ));
         Ok(Some(format!("#mdr-lib-{key}")))
@@ -573,7 +576,7 @@ impl<'a> Assets<'a> {
             let inlined = self.inline_css(path, &text);
             head.push_str(&format!(
                 "<style id=\"mdr-lib-{key}\" data-mdr-lib=\"{key}\" data-mdr-path=\"{}\">\n{}\n</style>\n",
-                html::attr(path),
+                html::attr_any_quote(path),
                 html::inline_style(&inlined)
             ));
             return Ok(Some(format!("#mdr-lib-{key}")));
@@ -582,7 +585,7 @@ impl<'a> Assets<'a> {
         if let (Some(url), true) = (&url, emit) {
             head.push_str(&format!(
                 "<link rel=\"stylesheet\" href=\"{}\" data-mdr-lib=\"{key}\">\n",
-                html::attr(url)
+                html::attr_any_quote(url)
             ));
         }
         Ok(url)

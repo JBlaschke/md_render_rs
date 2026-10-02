@@ -19,6 +19,7 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use regex::Regex;
 
 use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
+use crate::html;
 use crate::render::Rendered;
 use crate::styles::Bundle;
 
@@ -27,7 +28,6 @@ pub(crate) mod content;
 mod css;
 mod github;
 mod gitlab;
-mod html;
 mod octicons;
 mod sheets;
 
@@ -474,7 +474,7 @@ fn crumbs_html(dir: &str) -> String {
         href.push('/');
         out.push_str(&format!(
             "<a href=\"{}\">{}</a>/",
-            html::attr(&href),
+            html::attr_any_quote(&href),
             html::text(seg)
         ));
     }

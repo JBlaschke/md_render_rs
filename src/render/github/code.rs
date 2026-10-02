@@ -9,7 +9,8 @@ use super::Ctx;
 use super::dom;
 use super::math::math_html;
 use super::octicons;
-use super::util::{mdr_key, push_attr, push_text, uuid_like};
+use super::util::{mdr_key, uuid_like};
+use crate::html::{push_attr, push_text};
 use crate::render::highlight;
 
 /// Info-string languages rendered as enrichment sections (GH §8.7).
