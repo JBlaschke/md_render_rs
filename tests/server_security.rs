@@ -168,6 +168,58 @@ async fn a_document_replaced_by_an_escaping_symlink_is_not_read() {
     );
 }
 
+/// CLI-18: the file named as the server's target is served even when it is a symlink to a
+/// file outside the root (the user chose it; grip and `export` render it too), with live
+/// updates; other escaping symlinks stay forbidden, and a directory's README that escapes
+/// is a 403 that says how to allow it, not a 500.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_explicitly_named_symlinked_target_is_served() {
+    let f = Fixture::new();
+    server_support::write(&f.tmp.join("notes/real.md"), "real notes");
+    server_support::write(&f.tmp.join("other.md"), SECRET);
+    server_support::write(&f.tmp.join("elsewhere/README.md"), SECRET);
+    std::os::unix::fs::symlink(f.tmp.join("notes/real.md"), f.root.join("link.md")).unwrap();
+    std::os::unix::fs::symlink(f.tmp.join("other.md"), f.root.join("other.md")).unwrap();
+    std::fs::create_dir(f.root.join("sub")).unwrap();
+    std::os::unix::fs::symlink(
+        f.tmp.join("elsewhere/README.md"),
+        f.root.join("sub/README.md"),
+    )
+    .unwrap();
+    let s = f
+        .start(|cfg| cfg.target = md_render::server::Target::File("link.md".into()))
+        .await;
+    for path in ["/", "/link.md"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 200, "{path}: {}", r.text());
+        assert!(r.text().contains("real notes"), "{path}");
+    }
+    let (status, v) = s.render_json("link.md").await;
+    assert_eq!(status, 200, "{v}");
+    let mut sse = s.events("link.md", "", &[]).await;
+    assert_eq!(sse.status, 200);
+    sse.wait_for("hello").await;
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    server_support::write_atomic(&s.tmp.join("notes/real.md"), "edited notes");
+    sse.wait_until("content", |c| {
+        c["html"]
+            .as_str()
+            .is_some_and(|h| h.contains("edited notes"))
+    })
+    .await;
+
+    for path in ["/other.md", "/other.md?raw=1"] {
+        let r = s.get(path).await;
+        assert_eq!(r.status, 403, "{path}");
+        assert_no_leak(path, &r);
+    }
+    let r = s.get("/sub/").await;
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert_no_leak("/sub/", &r);
+    assert!(r.text().contains("--follow-symlinks"), "{}", r.text());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_directories_are_never_served() {
     let s = server(false).await;

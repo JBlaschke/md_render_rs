@@ -304,7 +304,9 @@ pub fn check_contained(
     let inside = canon.strip_prefix(root);
     if inside.is_err() && !follow_symlinks {
         return Err(ResolveError::Forbidden(
-            "the path resolves outside the served root (symlink)".into(),
+            "the path resolves outside the served root through a symlink \
+             (start md-render with --follow-symlinks to serve such files)"
+                .into(),
         ));
     }
     let checked = inside.unwrap_or(canon);

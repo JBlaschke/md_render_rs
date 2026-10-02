@@ -192,7 +192,7 @@ async fn document(State(app): State<Arc<App>>, req: Request) -> Response {
     }
     let rel = rp.rel();
     let raw_requested = wants_raw(query);
-    match paths::resolve(&app.root, &rel, app.follow_symlinks) {
+    match paths::resolve(&app.root, &rel, app.follows(&rel)) {
         Err(ResolveError::Forbidden(m)) => app.error_page(StatusCode::FORBIDDEN, &m).await,
         Err(ResolveError::Io(e)) => {
             let msg = format!("cannot access /{rel}: {e}");
@@ -262,7 +262,7 @@ impl App {
                 )
                 .await
             }
-            RootTarget::File(rel) if !rel.contains('/') => self.doc_page(rel).await,
+            RootTarget::File(rel) if !rel.contains('/') => self.checked_doc_page(rel).await,
             // A target below the root is shown at its own URL so relative links resolve.
             RootTarget::File(rel) => redirect(
                 StatusCode::FOUND,
@@ -281,7 +281,7 @@ impl App {
                         &paths::url_for(dir, true),
                         query.as_deref(),
                     ),
-                    None => self.doc_page(&readme).await,
+                    None => self.checked_doc_page(&readme).await,
                 },
                 None => self.listing_page("", &self.root.clone()).await,
             },
@@ -291,7 +291,7 @@ impl App {
     /// A directory URL (with trailing slash): its README or a listing.
     async fn dir_page(&self, rel: &str, abs: &std::path::Path) -> Response {
         match paths::find_readme(abs, self.flavor) {
-            Some(name) => self.doc_page(&format!("{rel}/{name}")).await,
+            Some(name) => self.checked_doc_page(&format!("{rel}/{name}")).await,
             None => self.listing_page(rel, abs).await,
         }
     }
@@ -340,6 +340,19 @@ impl App {
             Vec::new(),
         )
         .await
+    }
+
+    /// A document found without resolving a request path (the target, a README): refused
+    /// with 403 like a requested path when it escapes the root, not read and failed as a 500
+    /// (CLI-18).
+    async fn checked_doc_page(&self, rel: &str) -> Response {
+        match paths::resolve(&self.root, rel, self.follows(rel)) {
+            Err(ResolveError::Forbidden(m)) => {
+                let msg = format!("cannot serve /{rel}: {m}");
+                self.error_page(StatusCode::FORBIDDEN, &msg).await
+            }
+            _ => self.doc_page(rel).await,
+        }
     }
 
     /// A Markdown document (existing or not).

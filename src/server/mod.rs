@@ -322,6 +322,12 @@ pub(crate) struct App {
 }
 
 impl App {
+    /// May `rel` resolve outside the root (`--follow-symlinks`, or the target file the user
+    /// named; see [`RenderCtx::follows`])?
+    pub(crate) fn follows(&self, rel: &str) -> bool {
+        self.follow_symlinks || matches!(&self.target, RootTarget::File(t) if t == rel)
+    }
+
     /// Is `rel` rendered as a document (Markdown extension, or the configured target file)?
     pub(crate) fn is_document(&self, rel: &str) -> bool {
         paths::is_markdown(rel, self.flavor)
@@ -351,7 +357,7 @@ impl App {
                 format!("{path:?} is not a Markdown document path"),
             ));
         }
-        match paths::resolve(&self.root, &rel, self.follow_symlinks) {
+        match paths::resolve(&self.root, &rel, self.follows(&rel)) {
             Ok(paths::Resolved::File(_) | paths::Resolved::Missing) => Ok(rel),
             Ok(paths::Resolved::Dir(_)) => {
                 Err((StatusCode::BAD_REQUEST, format!("{path:?} is a directory")))
@@ -424,19 +430,10 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         sourcepos: true,
         bundle_url: format!("{}/bundle", crate::PREFIX),
     };
-    let ctx = Arc::new(RenderCtx {
-        renderer: cfg.renderer.clone(),
-        options: options.clone(),
-        root: root.clone(),
-        follow_symlinks: cfg.follow_symlinks,
-        quiet: cfg.quiet,
-        watcher: watcher.clone(),
-    });
-
     let target = match &cfg.target {
         Target::Stdin { name, text } => {
             let renderer = cfg.renderer.clone();
-            let (text, flavor) = (text.clone(), cfg.flavor);
+            let (text, flavor, options) = (text.clone(), cfg.flavor, options.clone());
             let rendered =
                 tokio::task::spawn_blocking(move || renderer.render(&text, &options)).await;
             let content = match rendered {
@@ -459,6 +456,18 @@ pub async fn start(cfg: ServeConfig) -> anyhow::Result<RunningServer> {
         }
         Target::Dir(p) => RootTarget::Dir(target_rel(&root, p)?),
     };
+    let ctx = Arc::new(RenderCtx {
+        renderer: cfg.renderer.clone(),
+        options,
+        root: root.clone(),
+        follow_symlinks: cfg.follow_symlinks,
+        target: match &target {
+            RootTarget::File(rel) => Some(rel.clone()),
+            _ => None,
+        },
+        quiet: cfg.quiet,
+        watcher: watcher.clone(),
+    });
 
     let styles = Arc::new(Styles::new(
         cfg.flavor,

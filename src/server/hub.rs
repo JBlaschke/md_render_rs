@@ -55,6 +55,8 @@ pub struct RenderCtx {
     /// Canonical served root.
     pub root: PathBuf,
     pub follow_symlinks: bool,
+    /// Root-relative path of the file the server was started on (`md-render notes.md`).
+    pub target: Option<String>,
     pub quiet: bool,
     /// The file watcher (None when live updates are off).
     pub watcher: Option<Arc<FsWatcher>>,
@@ -66,6 +68,13 @@ impl RenderCtx {
             source_path: Some(path.to_path_buf()),
             ..self.options.clone()
         }
+    }
+
+    /// May document `key` resolve outside the root? With `--follow-symlinks` any may;
+    /// otherwise only the target file, which the user named explicitly: a symlinked
+    /// `md-render notes.md` is served like grip and `md-render export` do (CLI-18).
+    pub fn follows(&self, key: &str) -> bool {
+        self.follow_symlinks || self.target.as_deref() == Some(key)
     }
 
     fn render_error_kind(&self) -> ErrorKind {
@@ -408,7 +417,7 @@ impl DocEntry {
         let Some(w) = ctx.watcher.as_deref() else {
             return;
         };
-        let want = DocWatch::of(&self.path, &ctx.root, ctx.follow_symlinks);
+        let want = DocWatch::of(&self.path, &ctx.root, ctx.follows(&self.key));
         t.set_doc_watch(want, w);
         t.sync_dep_dirs(w);
     }
@@ -438,7 +447,7 @@ impl DocEntry {
         if self.subscribers() == 0 {
             return false;
         }
-        let want = DocWatch::of(&self.path, &ctx.root, ctx.follow_symlinks);
+        let want = DocWatch::of(&self.path, &ctx.root, ctx.follows(&self.key));
         let mut t = self.lock();
         if t.subscribers == 0 || t.doc == want {
             return false;
@@ -875,7 +884,8 @@ async fn worker(entry: Arc<DocEntry>, ctx: Arc<RenderCtx>, mut shutdown: watch::
 async fn process(entry: &DocEntry, ctx: &RenderCtx) {
     let t0 = entry.triggers.load(Ordering::SeqCst);
     let snap = entry.snapshot();
-    let mut read = read_contained(ctx, &entry.path).await;
+    let follow = ctx.follows(&entry.key);
+    let mut read = read_contained(ctx, &entry.path, follow).await;
     if matches!(&read, Ok(b) if b.is_empty())
         && snap
             .content
@@ -887,7 +897,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
         // the empty render would throw away the reader's scroll position and every
         // client-rendered block, so give the writer a moment first.
         tokio::time::sleep(EMPTY_SETTLE).await;
-        read = read_contained(ctx, &entry.path).await;
+        read = read_contained(ctx, &entry.path, follow).await;
     }
     let bytes = match read {
         Ok(b) => b,
@@ -991,7 +1001,8 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
     let renderer = ctx.renderer.clone();
     let key = entry.key.clone();
     let root = ctx.root.clone();
-    let follow = ctx.follow_symlinks;
+    // Images and included files follow the server-wide policy, even for the target file.
+    let deps_follow = ctx.follow_symlinks;
     let Inputs {
         source, includes, ..
     } = inputs;
@@ -1000,7 +1011,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
         let result = renderer.render(&text, &opts);
         let deps = match &result {
             Ok(r) => {
-                let mut deps = resolve_deps(&root, follow, deps::scan(&r.html, &key));
+                let mut deps = resolve_deps(&root, deps_follow, deps::scan(&r.html, &key));
                 deps.extend(source_deps(&root, &includes));
                 deps
             }
@@ -1071,9 +1082,13 @@ async fn run_detached<T: Send + 'static>(
 
 /// Read a document, refusing files that (now) resolve outside the served root, e.g. a
 /// document replaced by a symlink to `/etc/passwd` after the page was opened.
-async fn read_contained(ctx: &RenderCtx, path: &Path) -> std::io::Result<Vec<u8>> {
+async fn read_contained(
+    ctx: &RenderCtx,
+    path: &Path,
+    follow_symlinks: bool,
+) -> std::io::Result<Vec<u8>> {
     let canon = tokio::fs::canonicalize(path).await?;
-    if let Err(e) = paths::check_contained(&ctx.root, &canon, ctx.follow_symlinks) {
+    if let Err(e) = paths::check_contained(&ctx.root, &canon, follow_symlinks) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             e.to_string(),
@@ -1170,6 +1185,7 @@ mod tests {
             options: RenderOptions::new(Flavor::Github),
             root: root.to_path_buf(),
             follow_symlinks: false,
+            target: None,
             quiet: true,
             watcher: None,
         };
@@ -1338,6 +1354,7 @@ mod tests {
             options: RenderOptions::new(Flavor::Github),
             root: root.clone(),
             follow_symlinks: false,
+            target: None,
             quiet: true,
             watcher: None,
         };
@@ -1397,6 +1414,7 @@ mod tests {
                 options: RenderOptions::new(Flavor::Github),
                 root: root.clone(),
                 follow_symlinks: false,
+                target: None,
                 quiet: true,
                 watcher: None,
             };
@@ -1489,6 +1507,7 @@ mod tests {
             options: RenderOptions::new(Flavor::Github),
             root: root.clone(),
             follow_symlinks: false,
+            target: None,
             quiet: true,
             watcher: None,
         };
@@ -1513,6 +1532,7 @@ mod tests {
             options,
             root: root.to_path_buf(),
             follow_symlinks: false,
+            target: None,
             quiet: true,
             watcher: None,
         };
