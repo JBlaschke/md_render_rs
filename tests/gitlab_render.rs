@@ -336,6 +336,142 @@ fn truncate(s: &str) -> String {
     s.chars().take(120).collect()
 }
 
+/// GL-WIKI-1: Gollum links to external images render as images, wrapped like every image.
+#[test]
+fn wiki_link_images() {
+    let mut o = opts();
+    o.sourcepos = false;
+    let html = render(
+        "[[https://example.com/logo.png]] [[Logo|https://example.com/logo.PNG]] [[https://example.com/page]]\n",
+        &o,
+    )
+    .html;
+    assert!(
+        html.starts_with(
+            "<p dir=\"auto\"><a class=\"no-attachment-icon\" href=\"https://example.com/logo.png\" \
+             target=\"_blank\" rel=\"nofollow noreferrer noopener\"><img class=\"gfm\" \
+             src=\"https://example.com/logo.png\""
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            "<a class=\"no-attachment-icon\" href=\"https://example.com/logo.PNG\" target=\"_blank\" \
+             rel=\"nofollow noreferrer noopener\"><img class=\"gfm\" src=\"https://example.com/logo.PNG\""
+        ),
+        "{html}"
+    );
+    assert!(!html.contains(">Logo<"), "link text is dropped: {html}");
+    assert!(
+        html.contains(
+            "<a href=\"https://example.com/page\" data-wikilink=\"true\" class=\"gfm\" \
+             data-canonical-src=\"https://example.com/page\" data-link=\"true\" data-gollum=\"true\" \
+             rel=\"nofollow noreferrer noopener\" target=\"_blank\">https://example.com/page</a>"
+        ),
+        "{html}"
+    );
+}
+
+/// GL-LINK-1: links to Unicode hosts get GitLab's homograph tooltip with the punycode URL.
+#[test]
+fn idn_links_get_the_punycode_tooltip() {
+    let mut o = opts();
+    o.sourcepos = false;
+    let html = render(
+        "[x](https://ёлка.рф/path) https://ёлка.рф/auto [y](https://example.рф/) \
+         [p](https://XN--80atc1g.xn--p1ai/)\n",
+        &o,
+    )
+    .html;
+    for title in [
+        "https://xn--80atc1g.xn--p1ai/path",
+        "https://xn--80atc1g.xn--p1ai/auto",
+        "https://xn--80atc1g.xn--p1ai/",
+    ] {
+        assert!(
+            html.contains(&format!("class=\"has-tooltip\" title=\"{title}\"")),
+            "{title}: {html}"
+        );
+    }
+    assert_eq!(html.matches("has-tooltip").count(), 3, "{html}");
+    assert!(!html.contains("example.xn--p1ai"), "{html}");
+}
+
+/// Fastest of three renders.
+fn best_of_3(md: &str) -> Duration {
+    let o = opts();
+    (0..3)
+        .map(|_| {
+            let start = Instant::now();
+            std::hint::black_box(render(std::hint::black_box(md), &o));
+            start.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+/// GL-PERF-1: task-list checkboxes in a table cost time linear in the table size (each one used
+/// to collect every `tr` of its table to find the header row). Four times the rows must take
+/// well under the 16x of quadratic growth.
+#[test]
+fn task_tables_scale_linearly() {
+    let table = |rows: usize| format!("| a | b |\n|---|---|\n{}", "| [x] | y |\n".repeat(rows));
+    let (small, large) = (table(500), table(2000));
+    let _ = best_of_3(&small); // warm-up
+    let (t_small, t_large) = (best_of_3(&small), best_of_3(&large));
+    let ratio = t_large.as_secs_f64() / t_small.as_secs_f64().max(1e-6);
+    println!("task table 500 rows: {t_small:?}, 2000 rows: {t_large:?} (x{ratio:.1})");
+    assert!(ratio < 8.0, "super-linear: {t_small:?} -> {t_large:?}");
+    let html = gl(&large).html;
+    assert_eq!(
+        html.matches("aria-label=\"Check option in column &quot;a&quot;\"")
+            .count(),
+        2000
+    );
+}
+
+/// `HTML::Pipeline::HTML5Patch::NESTING_TOO_DEEP_MESSAGE` after GitLab's filters.
+const NESTING_TOO_DEEP: &str = "<p dir=\"auto\">Rendering aborted because the document's \
+nesting was too deep. Please reduce the\nlevel of nesting in your markup.</p>\n";
+
+/// GL-PERF-2: gitlab.com parses with `max_tree_depth: 4096` (its `html` root included) and
+/// renders a notice for deeper documents; md-render stops parsing there too, so nesting no
+/// longer makes rendering quadratic (500 KB of `<div>` took 21.6 s, 80 KB of `*` 10 s).
+#[test]
+fn deep_nesting_aborts_like_gitlab() {
+    let fine = gl(&("<div>".repeat(4095) + "deepest"));
+    assert!(fine.html.contains("deepest"), "{}", truncate(&fine.html));
+    assert!(fine.warnings.is_empty(), "{:?}", fine.warnings);
+
+    for md in [
+        "<div>".repeat(4096) + "x",
+        "*".repeat(10_000) + "a" + &"*".repeat(10_000),
+        "> ".repeat(5000) + "quote",
+        "<span>".repeat(100_000),
+    ] {
+        let r = gl(&md);
+        assert_eq!(r.html, NESTING_TOO_DEEP, "{}", truncate(&md));
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert!(r.warnings[0].contains("4096"), "{:?}", r.warnings);
+        assert_eq!(r.title, None);
+        assert_eq!(r.features, Default::default());
+    }
+    // Without source positions too (export), and the notice is no `h1` title.
+    let mut o = opts();
+    o.sourcepos = false;
+    let r = render(&("# T\n\n".to_owned() + &"<div>".repeat(5000)), &o);
+    assert_eq!(r.html, NESTING_TOO_DEEP);
+    assert_eq!(r.title, None);
+
+    // Four times the nesting must take well under the 16x of quadratic growth.
+    let (small, large) = ("<div>".repeat(20_000), "<div>".repeat(80_000));
+    let _ = best_of_3(&small); // warm-up
+    let (t_small, t_large) = (best_of_3(&small), best_of_3(&large));
+    let ratio = t_large.as_secs_f64() / t_small.as_secs_f64().max(1e-6);
+    println!("<div> x 20000: {t_small:?}, x 80000: {t_large:?} (x{ratio:.1})");
+    assert!(ratio < 8.0, "super-linear: {t_small:?} -> {t_large:?}");
+}
+
 /// A ~20 KB README (synthesized from the committed fixtures) renders fast; the measured time
 /// is printed (`--nocapture`). The bound is loose so slow CI machines and debug builds pass; the
 /// release-mode steady state is far below it (see the report in the PR description).

@@ -8,7 +8,8 @@
 //! 2. Stage B (GL §4): comrak 0.55.0 with GitLab's exact option set and the ported
 //!    gitlab-glfm-markdown formatter ([`glfm`], [`formatter`]); output `rstrip`ped.
 //! 3. Stage C (GL §5, [`filters`]): the Banzai filters in GitLab's order on a `dom_query`
-//!    fragment, sanitizer included ([`sanitize`]), syntax highlighting last ([`highlight`]).
+//!    fragment ([`parse`]: GitLab's nesting limit), sanitizer included ([`sanitize`]), syntax
+//!    highlighting last ([`highlight`]).
 //! 4. The post-JavaScript DOM (GL §0.3, [`postjs`]): no lazy-image placeholders,
 //!    `code-syntax-highlight-theme`, GitLab's table wrapper; plus `data-mdr-key` and optional
 //!    removal of `data-sourcepos`.
@@ -26,6 +27,7 @@ mod formatter;
 #[rustfmt::skip]
 mod glfm;
 mod highlight;
+mod parse;
 mod postjs;
 mod preprocess;
 mod sanitize;
@@ -135,9 +137,17 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
         };
     }
 
-    let doc = Document::fragment(html);
-    let root = doc.html_root();
     let mut warnings = included.warnings;
+    // ParseHtmlFilter: a document nested deeper than gitlab.com's parser allows becomes
+    // GitLab's notice, which the remaining filters then process like any document.
+    let doc = parse::fragment(&html).unwrap_or_else(|parse::TooDeep| {
+        warnings.push(format!(
+            "elements nested more than {} deep: rendering aborted, as on GitLab",
+            parse::HTML5_MAX_TREE_DEPTH
+        ));
+        Document::fragment(parse::NESTING_TOO_DEEP_MESSAGE)
+    });
+    let root = doc.html_root();
     warnings.extend(filters::run(&root, &filters::FilterContext::default()));
     postjs::apply(&root);
     postjs::add_keys(&root);

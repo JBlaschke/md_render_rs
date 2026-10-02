@@ -1311,6 +1311,7 @@ dependencies = [
  "comrak",
  "directories",
  "dom_query",
+ "html5ever",
  "jiff",
  "mime_guess",
  "notify",

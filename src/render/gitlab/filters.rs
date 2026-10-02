@@ -173,22 +173,48 @@ pub(super) fn code_language(root: &NodeRef<'_>) {
 
 /// Offline version of `WikiLinkGollumFilter`: links keep their relative `href` (the local server
 /// resolves them), page links get `gfm gfm-gollum-wiki-page` so GitLab's CSS draws the icon.
+/// URL targets behave exactly as on GitLab: image URLs become `<img class="gfm">`
+/// (`process_image_link`; ImageLinkFilter wraps them later), other URLs get
+/// `set_common_attributes`. Relative image targets would be looked up in the project wiki,
+/// which offline cannot see, so they stay page links.
 pub(super) fn wiki_links(root: &NodeRef<'_>) {
     for id in dom::elements_named(root, &["a"]) {
         let a = root.tree.get_unchecked(&id);
         let (Some(href), true) = (dom::attr(&a, "href"), a.has_attr("data-wikilink")) else {
             continue;
         };
+        // `url?` = `start_with?('http', 'https')`.
+        let url = href.starts_with("http");
+        if url && is_wiki_image(&href) {
+            let img = dom::new_element(root.tree, "img", &[("class", "gfm"), ("src", &href)]);
+            a.insert_before(&img);
+            a.remove_from_parent();
+            continue;
+        }
         if href.eq_ignore_ascii_case("_toc_") && dom::text(&a).eq_ignore_ascii_case("_toc_") {
             continue;
         }
-        if href.starts_with("http") {
+        if url {
+            // set_common_attributes
             dom::add_class(&a, "gfm");
+            a.set_attr("data-canonical-src", &href);
+            a.set_attr("data-link", "true");
+            a.set_attr("data-gollum", "true");
         } else {
             dom::add_class(&a, "gfm");
             dom::add_class(&a, "gfm-gollum-wiki-page");
         }
     }
+}
+
+/// `ALLOWED_IMAGE_EXTENSIONS` = `/(jpg|png|gif|svg|bmp)\z/i`: an unanchored suffix match, so
+/// `.../png` counts as well.
+fn is_wiki_image(href: &str) -> bool {
+    let b = href.as_bytes();
+    let tail = &b[b.len().saturating_sub(3)..];
+    ["jpg", "png", "gif", "svg", "bmp"]
+        .iter()
+        .any(|ext| tail.eq_ignore_ascii_case(ext.as_bytes()))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -798,7 +824,7 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
                 dom::add_class(&a, "has-tooltip");
                 let title = url::Url::parse(&current)
                     .map(|u| u.to_string())
-                    .unwrap_or(current);
+                    .unwrap_or_else(|_| with_default_path(&current));
                 a.set_attr("title", &title);
             }
         }
@@ -821,6 +847,26 @@ pub(super) fn external_links(root: &NodeRef<'_>, ctx: &FilterContext) {
     }
 }
 
+/// Addressable `normalized_path` gives an http, https, ftp or tftp URI with an empty path the
+/// path `/` (for the tooltip title where `url` cannot parse the URL, e.g. `http://xn--a.com`).
+fn with_default_path(url: &str) -> String {
+    let empty_path = sanitize::parse_uri(url).is_ok_and(|p| {
+        p.authority.is_some()
+            && p.path.is_empty()
+            && p.scheme.is_some_and(|s| {
+                matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "http" | "https" | "ftp" | "tftp"
+                )
+            })
+    });
+    if !empty_path {
+        return url.to_owned();
+    }
+    let at = url.find(['?', '#']).unwrap_or(url.len());
+    format!("{}/{}", &url[..at], &url[at..])
+}
+
 /// Addressable `hostname`: the host without IPv6 brackets.
 fn hostname(host: &str) -> String {
     host.strip_prefix('[')
@@ -829,10 +875,23 @@ fn hostname(host: &str) -> String {
         .to_owned()
 }
 
-/// `normalized_host.start_with?('xn--')`.
+/// `normalized_host.start_with?('xn--')`. Addressable's `normalized_host` strips, downcases,
+/// percent-decodes and IDNA-encodes the host; comrak percent-encodes non-ASCII hrefs, so the
+/// raw host of `[x](https://ёлка.рф/)` is `%D1%91...` and has to be decoded first.
+/// `url::Host::parse` does both steps (one percent-decoding pass, then UTS #46 with
+/// lower-casing). Where it refuses a host that Addressable would still encode, every
+/// non-ASCII label becomes `xn--...` there (`IDNA.to_ascii` does not validate).
 fn is_idn_host(host: &str) -> bool {
-    let first = host.split('.').next().unwrap_or("");
-    !first.is_ascii() || host.to_ascii_lowercase().starts_with("xn--")
+    let host = dom::ruby_strip(host);
+    let normalized = match url::Host::parse(host) {
+        Ok(url::Host::Domain(d)) => d,
+        Ok(_) => return false, // IP addresses
+        Err(_) => percent_encoding::percent_decode_str(host)
+            .decode_utf8_lossy()
+            .to_lowercase(),
+    };
+    let first = normalized.split('.').next().unwrap_or("");
+    !first.is_ascii() || normalized.starts_with("xn--")
 }
 
 /// Ruby `URI.parse(s).to_s` (RFC 3986 parser): `None` when Ruby raises `URI::InvalidURIError`.
@@ -936,7 +995,8 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
             return None;
         }
         out.push_str("//");
-        if let Some(u) = userinfo {
+        // `split_userinfo("")` gives no user at all, so an empty userinfo loses its `@`.
+        if let Some(u) = userinfo.filter(|u| !u.is_empty()) {
             out.push_str(u);
             out.push('@');
         }
@@ -964,10 +1024,72 @@ pub(super) fn ruby_uri_to_s(s: &str) -> Option<String> {
     if !valid_pct(path, ":@/") {
         return None;
     }
-    out.push_str(path);
+    let has_authority = rest.starts_with("//");
+    // An opaque URI: `path-rootless` after a scheme (RFC 3986 parser).
+    let opaque = (!has_authority && !path.is_empty() && !path.starts_with('/')).then_some(path);
+    match scheme.as_deref() {
+        Some("mailto") => return ruby_mailto_to_s(opaque, query, fragment),
+        Some("ftp") => {
+            // `URI::FTP#initialize` needs a path; it drops the leading `/` and `set_path` puts
+            // it back, turning a second one into `%2F` (`ftp://x` -> `ftp://x/`).
+            if opaque.is_some() {
+                return None;
+            }
+            let rel = path.strip_prefix('/').unwrap_or(path);
+            out.push('/');
+            if let Some(r) = rel.strip_prefix('/') {
+                out.push_str("%2F");
+                out.push_str(r);
+            } else {
+                out.push_str(rel);
+            }
+        }
+        _ => out.push_str(path),
+    }
     if let Some(q) = query {
         out.push('?');
         out.push_str(q);
+    }
+    if let Some(f) = fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    Some(out)
+}
+
+/// `URI::MailTo#initialize` and `#to_s` (uri 1.1.1, which GitLab locks): `None` when it raises
+/// (no opaque part, or not a list of `user@host` addresses). The URI is rebuilt from the
+/// addresses and the `&`-separated headers, which drops empty trailing headers.
+fn ruby_mailto_to_s(
+    opaque: Option<&str>,
+    query: Option<&str>,
+    fragment: Option<&str>,
+) -> Option<String> {
+    static ADDRESSES: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\A(?:[^@,;]+@[^@,;]+(?:\z|[,;]))*\z").expect("regex"));
+    // "The RFC3986 parser does not normally populate opaque"
+    let opaque = match (opaque, query) {
+        (Some(o), Some(q)) => format!("{o}?{q}"),
+        (Some(o), None) => o.to_owned(),
+        (None, Some(q)) => format!("?{q}"),
+        (None, None) => return None, // "missing opaque part for mailto URL"
+    };
+    let (to, header) = match opaque.split_once('?') {
+        Some((to, header)) => (to, Some(header)),
+        None => (opaque.as_str(), None),
+    };
+    if !ADDRESSES.is_match(to) {
+        return None;
+    }
+    // `header.split('&')`: Ruby drops trailing empty fields.
+    let mut headers: Vec<&str> = header.map(|h| h.split('&').collect()).unwrap_or_default();
+    while headers.last() == Some(&"") {
+        headers.pop();
+    }
+    let mut out = format!("mailto:{to}");
+    if !headers.is_empty() {
+        out.push('?');
+        out.push_str(&headers.join("&"));
     }
     if let Some(f) = fragment {
         out.push('#');
@@ -1071,8 +1193,8 @@ fn column_header_text(
         .iter()
         .position(|c| c.id == cell.id)?;
     let table = dom::ancestor(input, "table", root)?;
-    let first_row = dom::elements_named(&table, &["tr"]).into_iter().next()?;
-    let first_row = root.tree.get_unchecked(&first_row);
+    // `table.css('tr').first`, without walking the whole table once per checkbox.
+    let first_row = dom::first_element_named(&table, &["tr"])?;
     let header = dom::element_children(&first_row).into_iter().nth(index)?;
     Some(dom::ruby_strip(&dom::text(&header)).to_owned())
 }
@@ -1358,6 +1480,38 @@ mod tests {
             run("<a href=\"https://e.com/%E2%80%AE\">a\u{202E}b</a>"),
             "<a href=\"https://e.com/%E2%80%AE\" class=\"has-tooltip\" title=\"https://e.com/%E2%80%AE\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">a%E2%80%AEb</a>"
         );
+        // GL-LINK-1: percent-encoded Unicode hosts (as comrak writes them) are IDNs too.
+        assert_eq!(
+            run("<a href=\"https://%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84/path\">x</a>"),
+            "<a href=\"https://%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84/path\" class=\"has-tooltip\" \
+             title=\"https://xn--80atc1g.xn--p1ai/path\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+    }
+
+    /// GL-LINK-1: Addressable `normalized_host.start_with?('xn--')` (cases checked against
+    /// Addressable 2.8.7).
+    #[test]
+    fn idn_hosts() {
+        for (host, idn) in [
+            ("%D1%91%D0%BB%D0%BA%D0%B0.%D1%80%D1%84", true),
+            ("example.%D1%80%D1%84", false),
+            ("XN--80atc1g.xn--p1ai", true),
+            ("xn--80atc1g.xn--p1ai", true),
+            ("m%C3%BCller.de", true),
+            ("%F0%9F%98%80.example", true),
+            ("xn--zz.com", true),
+            // Full-width letters normalise to ASCII.
+            (
+                "%EF%BD%85%EF%BD%98%EF%BD%81%EF%BD%8D%EF%BD%90%EF%BD%8C%EF%BD%85.com",
+                false,
+            ),
+            ("ex%41mple.com", false),
+            ("example.com", false),
+            ("127.0.0.1", false),
+            ("", false),
+        ] {
+            assert_eq!(is_idn_host(host), idn, "{host}");
+        }
     }
 
     #[test]
@@ -1376,6 +1530,82 @@ mod tests {
         );
     }
 
+    /// GL-SAN-1: `URI.parse(s).to_s` details of uri 1.1.1 (GitLab's lock): an empty userinfo
+    /// disappears, `URI::FTP` always has an absolute path, `URI::MailTo` validates and rebuilds
+    /// its opaque part. Empty hosts stay (`http:///foo` is kept by uri 1.1.1's own tests).
+    #[test]
+    fn ruby_uri_scheme_classes() {
+        for (url, expected) in [
+            ("http://@host", Some("http://host")),
+            ("https://@h:443/x", Some("https://h/x")),
+            ("http://:p@host", Some("http://:p@host")),
+            ("http://u:@host", Some("http://u:@host")),
+            ("https:///x", Some("https:///x")),
+            ("///path", Some("///path")),
+            ("ftp://x", Some("ftp://x/")),
+            ("ftp://x/", Some("ftp://x/")),
+            ("ftp://x//a", Some("ftp://x/%2Fa")),
+            ("ftp://x/%2Fa", Some("ftp://x/%2Fa")),
+            ("ftp://x/a;type=i", Some("ftp://x/a;type=i")),
+            ("ftp://x:21/a", Some("ftp://x/a")),
+            ("ftp://x?q", Some("ftp://x/?q")),
+            ("ftp:/x", Some("ftp:/x")),
+            ("ftp:", Some("ftp:/")),
+            ("ftp:x", None),
+            ("mailto:", None),
+            ("mailto:foo", None),
+            ("mailto:a@b@c", None),
+            ("mailto://x", None),
+            ("mailto:/x", None),
+            ("mailto:#f", None),
+            ("mailto:a@b", Some("mailto:a@b")),
+            ("MAILTO:a@b", Some("mailto:a@b")),
+            ("mailto:a@b?", Some("mailto:a@b")),
+            ("mailto:a@b?x=1&", Some("mailto:a@b?x=1")),
+            ("mailto:a@b?&&", Some("mailto:a@b")),
+            ("mailto:a@b?&x", Some("mailto:a@b?&x")),
+            ("mailto:?subject=x", Some("mailto:?subject=x")),
+            ("mailto://x?q", Some("mailto:?q")),
+            ("mailto:/x?q=1", Some("mailto:?q=1")),
+            ("mailto:a@b,c@d", Some("mailto:a@b,c@d")),
+            ("mailto:a@b;c@d", Some("mailto:a@b;c@d")),
+            ("mailto:a@b?x#f", Some("mailto:a@b?x#f")),
+            ("mailto:%61@b", Some("mailto:%61@b")),
+        ] {
+            assert_eq!(ruby_uri_to_s(url).as_deref(), expected, "{url}");
+        }
+        let ctx = FilterContext::default();
+        let run = |h: &str| apply(h, |r| external_links(r, &ctx));
+        // URI.parse raises, so GitLab's `add_nofollow!` sees no scheme.
+        assert_eq!(
+            run("<a href=\"mailto:\">x</a>"),
+            "<a href=\"mailto:\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"http://@host\">x</a>"),
+            "<a href=\"http://host\" rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            run("<a href=\"ftp://x\">x</a>"),
+            "<a href=\"ftp://x/\">x</a>"
+        );
+        // The tooltip title is Addressable's `normalize`, which gives http URIs a `/` path.
+        assert_eq!(
+            run("<a href=\"http://xn--a.com\">x</a>"),
+            "<a href=\"http://xn--a.com\" class=\"has-tooltip\" title=\"http://xn--a.com/\" \
+             rel=\"nofollow noreferrer noopener\" target=\"_blank\">x</a>"
+        );
+        assert_eq!(
+            with_default_path("http://xn--a.com?q#f"),
+            "http://xn--a.com/?q#f"
+        );
+        assert_eq!(
+            with_default_path("http://xn--a.com/p"),
+            "http://xn--a.com/p"
+        );
+        assert_eq!(with_default_path("irc://xn--a.com"), "irc://xn--a.com");
+    }
+
     #[test]
     fn task_list_labels() {
         let html = "<ul><li><input type=\"checkbox\" class=\"task-list-item-checkbox\" data-inapplicable=\"\" disabled=\"\"> skip <em>it</em>\n<ul><li>n</li></ul></li></ul>";
@@ -1387,6 +1617,22 @@ mod tests {
                      <td class=\"task-table-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\"> </td></tr></tbody></table>";
         assert!(
             apply(table, task_list).contains("aria-label=\"Check option in column &quot;B&quot;\"")
+        );
+        // GL-PERF-1: the header row is `table.css('tr').first`, also for later rows and when
+        // the table holds a nested table further down.
+        let rows =
+            "<tr><td class=\"task-table-item\"><input class=\"task-list-item-checkbox\"> </td>\
+                    <td><table><tr><td>nested</td></tr></table></td></tr>"
+                .repeat(3);
+        let table = format!(
+            "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>{rows}</tbody></table>"
+        );
+        let out = apply(&table, task_list);
+        assert_eq!(
+            out.matches("aria-label=\"Check option in column &quot;a&quot;\"")
+                .count(),
+            3,
+            "{out}"
         );
         assert!(
             apply(
@@ -1428,8 +1674,31 @@ mod tests {
                 wiki_links
             ),
             "<a href=\"Page\" data-wikilink=\"true\" class=\"gfm gfm-gollum-wiki-page\">P</a>\
-             <a href=\"https://e.com\" data-wikilink=\"true\" class=\"gfm\">E</a>\
+             <a href=\"https://e.com\" data-wikilink=\"true\" class=\"gfm\" data-canonical-src=\"https://e.com\" \
+             data-link=\"true\" data-gollum=\"true\">E</a>\
              <a href=\"_TOC_\" data-wikilink=\"true\">_TOC_</a><a href=\"x\">plain</a>"
         );
+    }
+
+    /// GL-WIKI-1: `process_image_link` for URL targets ending in an image extension.
+    #[test]
+    fn wiki_link_images() {
+        assert_eq!(
+            apply(
+                "<p><a href=\"https://e.com/logo.png\" data-wikilink=\"true\">https://e.com/logo.png</a> \
+                 <a href=\"http://e.com/L.PNG\" data-wikilink=\"true\">Logo</a> \
+                 <a href=\"https://e.com/x/svg\" data-wikilink=\"true\">s</a> \
+                 <a href=\"images/logo.png\" data-wikilink=\"true\">rel</a> \
+                 <a href=\"https://e.com/logo.png\">plain</a></p>",
+                wiki_links
+            ),
+            "<p><img class=\"gfm\" src=\"https://e.com/logo.png\"> \
+             <img class=\"gfm\" src=\"http://e.com/L.PNG\"> \
+             <img class=\"gfm\" src=\"https://e.com/x/svg\"> \
+             <a href=\"images/logo.png\" data-wikilink=\"true\" class=\"gfm gfm-gollum-wiki-page\">rel</a> \
+             <a href=\"https://e.com/logo.png\">plain</a></p>"
+        );
+        assert!(is_wiki_image("a.jpg") && is_wiki_image("a.Bmp") && is_wiki_image("gif"));
+        assert!(!is_wiki_image("a.jpeg") && !is_wiki_image("a.png?x") && !is_wiki_image("pn"));
     }
 }

@@ -169,6 +169,21 @@ pub(super) fn elements_named(root: &NodeRef<'_>, names: &[&str]) -> Vec<NodeId> 
         .collect()
 }
 
+/// The first element below `root` in document order whose local name is one of `names`
+/// (Nokogiri `root.css(name).first`). Stops at the match instead of collecting the subtree.
+pub(super) fn first_element_named<'a>(root: &NodeRef<'a>, names: &[&str]) -> Option<NodeRef<'a>> {
+    let mut next = root.first_child();
+    while let Some(n) = next {
+        if is_any(&n, names) {
+            return Some(n);
+        }
+        next = n
+            .first_child()
+            .or_else(|| following_skip_children(&n, root));
+    }
+    None
+}
+
 /// Text nodes below `root` in document order.
 pub(super) fn text_nodes(root: &NodeRef<'_>) -> Vec<NodeId> {
     descendants(root)
@@ -267,6 +282,27 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["p", "#a", "b", "#c", "ul", "li", "#x"]);
+    }
+
+    #[test]
+    fn first_element_in_document_order() {
+        let doc = Document::fragment(
+            "<table><caption><b>c</b></caption><thead><tr id=\"h\"><th>a</th></tr></thead>\
+             <tbody><tr id=\"b\"><td>x</td></tr></tbody></table><p id=\"after\">p</p>",
+        );
+        let root = doc.html_root();
+        let table = doc.select("table").nodes()[0];
+        let first = first_element_named(&table, &["tr"]).unwrap();
+        assert_eq!(attr(&first, "id").as_deref(), Some("h"));
+        assert_eq!(
+            Some(first.id),
+            elements_named(&table, &["tr"]).first().copied()
+        );
+        // Stays below its root: the `p` after the table is not found from the table.
+        assert!(first_element_named(&table, &["p"]).is_none());
+        let p = first_element_named(&root, &["p", "b"]).unwrap();
+        assert_eq!(tag(&p).as_deref(), Some("b"));
+        assert!(first_element_named(&first, &["tr"]).is_none());
     }
 
     #[test]

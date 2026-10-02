@@ -77,6 +77,13 @@ pub(super) const MAX_INCLUDES: usize = 32;
 /// Largest file `::include` reads; bigger blobs give GitLab's `too large` error.
 const MAX_INCLUDE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Largest text include expansion may produce (source plus every pasted copy). GitLab pastes
+/// a file once per directive too, but its renders run under timeouts; without this, 32 short
+/// lines could hand comrak 32 x 10 MB. Directives that would pass the budget get GitLab's
+/// `too large` error instead. Equal to the per-file limit, so a single include behaves as on
+/// GitLab.
+const MAX_INCLUDE_TOTAL_BYTES: usize = MAX_INCLUDE_BYTES as usize;
+
 /// Where `::include` may read from.
 #[derive(Clone, Debug, Default)]
 pub(super) struct IncludeContext {
@@ -135,11 +142,22 @@ pub(super) struct Included {
 
 /// `IncludeFilter` (GL §3.3). Not recursive (included text is not scanned again), at most
 /// [`MAX_INCLUDES`] directives are replaced, URLs become links (gitlab.com does not fetch them),
-/// and files are read only from inside the served root.
+/// files are read only from inside the served root, and the expansion stays within
+/// [`MAX_INCLUDE_TOTAL_BYTES`].
 pub(super) fn includes<'t>(
     text: &'t str,
     ctx: &IncludeContext,
     out: &mut Included,
+) -> Cow<'t, str> {
+    includes_within(text, ctx, out, MAX_INCLUDE_TOTAL_BYTES)
+}
+
+/// [`includes`] with an explicit expansion budget (`budget` bytes of source plus pasted text).
+fn includes_within<'t>(
+    text: &'t str,
+    ctx: &IncludeContext,
+    out: &mut Included,
+    budget: usize,
 ) -> Cow<'t, str> {
     if !text.contains("::include{file=") {
         return Cow::Borrowed(text);
@@ -147,6 +165,8 @@ pub(super) fn includes<'t>(
     let mut result = String::with_capacity(text.len());
     let mut cache: HashMap<String, String> = HashMap::new();
     let mut replaced = 0usize;
+    // Bytes of the source plus everything pasted so far (cached copies count every time).
+    let mut expanded = text.len();
     let mut line_start = 0usize;
     while line_start <= text.len() {
         let line_end = text[line_start..]
@@ -161,9 +181,14 @@ pub(super) fn includes<'t>(
             Some((file, consumed)) => {
                 let content = cache
                     .entry(file.to_owned())
-                    .or_insert_with(|| read_include(file, ctx, out))
-                    .clone();
-                result.push_str(&content);
+                    .or_insert_with(|| read_include(file, ctx, out));
+                if expanded.saturating_add(content.len()) > budget {
+                    let error = error_message_hint(file, "too large", TOTAL_HINT, out);
+                    result.push_str(&error);
+                } else {
+                    expanded += content.len();
+                    result.push_str(content);
+                }
                 result.push_str(&line[consumed..]);
                 replaced += 1;
             }
@@ -222,9 +247,73 @@ fn markdown_link(url: &str) -> String {
 
 /// `error_message` of IncludeFilter.
 fn error_message(file: &str, reason: &str, out: &mut Included) -> String {
+    error_message_hint(file, reason, "", out)
+}
+
+/// [`error_message`] whose banner warning explains why (`hint`); the inline Markdown is
+/// GitLab's exact text either way.
+fn error_message_hint(file: &str, reason: &str, hint: &str, out: &mut Included) -> String {
+    let sep = if hint.is_empty() { "" } else { " " };
     out.warnings
-        .push(format!("::include{{file={file}}}: {reason}"));
+        .push(format!("::include{{file={file}}}: {reason}{sep}{hint}"));
     format!("**Error including '{}': {reason}**", markdown_link(file))
+}
+
+/// Banner hint for an include that would pass [`MAX_INCLUDE_TOTAL_BYTES`].
+const TOTAL_HINT: &str = "(all includes together are limited to 10 MiB)";
+
+/// Banner hint for an include that names something inside `.git`.
+const GIT_DIR_HINT: &str = "(`.git` is not part of the repository)";
+
+/// True when a path component is `.git` in any letter case (as `server::paths` checks).
+fn has_git_component(path: &Path) -> bool {
+    path.components().any(|c| match c {
+        Component::Normal(s) => s.as_encoded_bytes().eq_ignore_ascii_case(b".git"),
+        _ => false,
+    })
+}
+
+/// The on-disk spelling of `rel` (an existing path below `root`) when some component is
+/// spelled differently from the directory entry it opened, in ASCII letter case only. A
+/// component that matches an entry exactly is fine (also when a case-sensitive file system
+/// holds both `a.md` and `A.md`); one that matches no entry even ignoring ASCII case was
+/// opened through another equivalence (Unicode case folding or normalisation), which is
+/// accepted rather than risking a false `not found`.
+fn case_mismatch(root: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut dir = root.to_path_buf();
+    let mut on_disk = PathBuf::new();
+    let mut mismatch = false;
+    for c in rel.components() {
+        let Component::Normal(name) = c else {
+            continue;
+        };
+        let mut exact = false;
+        let mut folded = None;
+        for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+            let entry = entry.file_name();
+            if entry == name {
+                exact = true;
+                break;
+            }
+            if folded.is_none()
+                && entry
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(name.as_encoded_bytes())
+            {
+                folded = Some(entry);
+            }
+        }
+        let actual = match folded {
+            Some(f) if !exact => {
+                mismatch = true;
+                f
+            }
+            _ => name.to_owned(),
+        };
+        dir.push(&actual);
+        on_disk.push(&actual);
+    }
+    mismatch.then_some(on_disk)
 }
 
 /// `target_http?` of IncludeFilter.
@@ -248,13 +337,41 @@ fn read_include(file: &str, ctx: &IncludeContext, out: &mut Included) -> String 
     let Some(target) = resolve_relative_path(file, requested) else {
         return error_message(file, "not found", out);
     };
+    // `.git` is never part of a repository tree (GitLab reads committed blobs, so it renders
+    // `not found`), and DESIGN D14 denies it like the server does (`check_contained`). Checked
+    // on the requested path (any letter case, for case-insensitive file systems) and again on
+    // the canonical path below, which covers symlinks and `x/../.git`.
+    if has_git_component(&target) {
+        return error_message_hint(file, "not found", GIT_DIR_HINT, out);
+    }
     // Confine to the root: canonicalize (resolving symlinks) and require the root prefix.
     let Ok(abs) = root.join(&target).canonicalize() else {
         return error_message(file, "not found", out);
     };
-    if !abs.starts_with(root) || !abs.is_file() {
+    let Ok(inside) = abs.strip_prefix(root) else {
+        return error_message(file, "not found", out);
+    };
+    if has_git_component(inside) {
+        return error_message_hint(file, "not found", GIT_DIR_HINT, out);
+    }
+    if !abs.is_file() {
         return error_message(file, "not found", out);
     }
+    // GitLab resolves the path in the case-sensitive git tree; a case-insensitive file system
+    // (APFS, NTFS) would open `SUB/A.MD` for `sub/a.md` and hide the broken include.
+    if let Some(on_disk) = case_mismatch(root, &target) {
+        let hint = format!(
+            "(the file is spelled `{}` on disk; GitLab matches letter case exactly)",
+            on_disk.display()
+        );
+        return error_message_hint(file, "not found", &hint, out);
+    }
+    // Not done: restricting includes to git-tracked files (`git ls-files --error-unmatch`),
+    // which would model GitLab's committed-blob semantics more closely and also hide untracked
+    // in-root files such as `.env`. It needs a `git` subprocess per include (renderers are pure
+    // and fast, DESIGN §3.2), its answer changes with `git add` without any file event the live
+    // watcher could see, and it would show `not found` for exactly the new, not yet committed
+    // files a local preview is for. The served root is the boundary instead (DESIGN D14).
     match std::fs::metadata(&abs) {
         Ok(m) if m.len() > MAX_INCLUDE_BYTES => return error_message(file, "too large", out),
         Ok(_) => {}
@@ -425,6 +542,163 @@ mod tests {
         );
         assert_eq!(out.warnings.len(), 2);
         assert_eq!(out.files.len(), 2);
+    }
+
+    const SECRET: &str = "url = https://alice:FAKE-SECRET-123@git.example.com/r.git";
+
+    /// SEC-3 / GL-INC-1: nothing below a `.git` component is ever included, whatever the
+    /// spelling (case, `x/../`, leading `/`, symlinks); other dotfiles still are.
+    #[test]
+    fn git_dir_is_never_included() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (rel, content) in [
+            (".git/config", SECRET),
+            ("sub/.git/HEAD", SECRET),
+            (".gitignore", "IGNORE-OK"),
+            (".gitlab/snippet.md", "DOTDIR-OK"),
+        ] {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), content).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".git/config"), root.join("cfg")).unwrap();
+            std::os::unix::fs::symlink(root.join(".git"), root.join("gitdir")).unwrap();
+            std::os::unix::fs::symlink(".git/config", root.join("rel-cfg")).unwrap();
+        }
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        let mut attempts = vec![
+            ".git/config",
+            "./.git/config",
+            "/.git/config",
+            "sub/../.git/config",
+            "sub/../.GIT/config",
+            ".Git/config",
+            "sub/.git/HEAD",
+            ".git",
+        ];
+        if cfg!(unix) {
+            attempts.extend(["cfg", "rel-cfg", "gitdir/config"]);
+        }
+        for file in attempts {
+            let mut out = Included::default();
+            let text = format!("::include{{file={file}}}");
+            let res = includes(&text, &ctx, &mut out);
+            assert!(!res.contains("FAKE-SECRET"), "{file} leaked: {res}");
+            assert!(res.ends_with("': not found**"), "{file}: {res}");
+            assert_eq!(out.warnings.len(), 1, "{file}");
+            assert!(out.files.is_empty(), "{file} must not be watched");
+        }
+        let mut out = Included::default();
+        assert_eq!(
+            includes("::include{file=.git/config}", &ctx, &mut out),
+            "**Error including '[\\.git/config](<.git/config>)': not found**"
+        );
+        assert!(out.warnings[0].contains("`.git` is not part of the repository"));
+        // Committed dotfiles are fine on GitLab, so they are included here too.
+        let mut out = Included::default();
+        let res = includes(
+            "::include{file=.gitignore}\n::include{file=.gitlab/snippet.md}",
+            &ctx,
+            &mut out,
+        );
+        assert_eq!(res, "IGNORE-OK\nDOTDIR-OK");
+        assert!(out.warnings.is_empty());
+    }
+
+    /// GL-INC-2: letter case must match like in a git tree, also on case-insensitive file
+    /// systems (where this fails without the check; elsewhere the open fails anyway).
+    #[test]
+    fn include_paths_are_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("sub/Deep")).unwrap();
+        std::fs::write(root.join("sub/a.md"), "A").unwrap();
+        std::fs::write(root.join("sub/Deep/B.md"), "B").unwrap();
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        for file in [
+            "SUB/A.MD",
+            "sub/A.md",
+            "Sub/a.md",
+            "sub/deep/B.md",
+            "sub/Deep/b.md",
+        ] {
+            let mut out = Included::default();
+            let text = format!("::include{{file={file}}}");
+            let res = includes(&text, &ctx, &mut out);
+            assert!(res.ends_with("': not found**"), "{file}: {res}");
+            assert!(out.files.is_empty(), "{file}");
+        }
+        let mut out = Included::default();
+        let res = includes(
+            "::include{file=sub/a.md}\n::include{file=./sub/../sub/Deep/B.md}",
+            &ctx,
+            &mut out,
+        );
+        assert_eq!(res, "A\nB");
+        assert!(out.warnings.is_empty());
+        // The banner names the on-disk spelling where the file system reveals it.
+        assert_eq!(
+            case_mismatch(&root, Path::new("sub/Deep/B.md")),
+            None,
+            "exact spelling"
+        );
+        if root.join("SUB/A.MD").exists() {
+            assert_eq!(
+                case_mismatch(&root, Path::new("SUB/A.MD")),
+                Some(PathBuf::from("sub/a.md"))
+            );
+        }
+    }
+
+    /// GL-INC-3: repeated includes cannot amplify a short source past the total budget.
+    #[test]
+    fn include_expansion_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mib = "word *emph* text\n".repeat(1024 * 1024 / 17 + 1);
+        assert!(mib.len() >= 1024 * 1024);
+        std::fs::write(root.join("big.md"), &mib).unwrap();
+        std::fs::write(root.join("small.md"), "SMALL").unwrap();
+        let ctx = IncludeContext {
+            root: Some(root.clone()),
+            requested: Some(PathBuf::from("README.md")),
+        };
+        let mut out = Included::default();
+        let text = "::include{file=big.md}\n".repeat(MAX_INCLUDES - 1) + "::include{file=small.md}";
+        let res = includes(&text, &ctx, &mut out);
+        let fits = (MAX_INCLUDE_TOTAL_BYTES - text.len()) / mib.len();
+        assert_eq!(res.matches(mib.as_str()).count(), fits);
+        let refused = MAX_INCLUDES - 1 - fits;
+        let error = "**Error including '[big\\.md](<big.md>)': too large**";
+        assert_eq!(res.matches(error).count(), refused);
+        assert!(res.len() <= MAX_INCLUDE_TOTAL_BYTES + refused * error.len());
+        // A later include that still fits the budget is pasted.
+        assert!(res.ends_with("SMALL"));
+        assert_eq!(out.warnings.len(), refused);
+        assert!(
+            out.warnings
+                .iter()
+                .all(|w| w.starts_with("::include{file=big.md}: too large"))
+        );
+
+        // The budget counts the source and every cached copy.
+        let mut out = Included::default();
+        let text =
+            "x\n::include{file=small.md}\n::include{file=small.md}\n::include{file=small.md}";
+        let res = includes_within(text, &ctx, &mut out, text.len() + 2 * "SMALL".len());
+        assert_eq!(
+            res,
+            "x\nSMALL\nSMALL\n**Error including '[small\\.md](<small.md>)': too large**"
+        );
+        assert_eq!(out.warnings.len(), 1);
     }
 
     #[test]
