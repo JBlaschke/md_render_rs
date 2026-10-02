@@ -319,26 +319,6 @@ fn default_path_is_a_tarball() {
 }
 
 #[test]
-fn content_types() {
-    assert_eq!(
-        content_type("github/assets/a.css"),
-        "text/css; charset=utf-8"
-    );
-    assert_eq!(
-        content_type("github/lib/mermaid/mermaid.min.js"),
-        "text/javascript; charset=utf-8"
-    );
-    assert_eq!(
-        content_type("gitlab/assets/gitlab-sans/G.woff2"),
-        "font/woff2"
-    );
-    assert_eq!(content_type("gitlab/assets/icons-1.svg"), "image/svg+xml");
-    assert_eq!(content_type("github/emoji/octocat.png"), "image/png");
-    assert_eq!(content_type("manifest.json"), "application/json");
-    assert_eq!(content_type("x/unknown.zzz"), "application/octet-stream");
-}
-
-#[test]
 fn shared_bundle_reload() {
     let dir = tmp();
     let path = dir.path().join("styles.tar.gz");
@@ -501,23 +481,9 @@ fn css_reference_helpers() {
         css_references(css),
         vec!["../images/a.gif", "x.css", "data:,x"]
     );
-    let out = rewrite_css_references(css, |v| {
-        (!v.starts_with("data:")).then(|| format!("data:text/plain;base64,{}", v.len()))
-    });
-    assert_eq!(
-        out,
-        r#"/* url(no.png) */a{b:url(data:text/plain;base64,15)}@import "data:text/plain;base64,5";c{d:url("data:,x")}"#
-    );
-    // Values needing escapes stay valid CSS.
-    let out = rewrite_css_references("a{b:url(x)}", |_| Some("a b(c)".into()));
-    assert_eq!(css_references(&out), vec!["a b(c)"]);
     // image-set() string arguments are image URLs, other strings are not.
     let css = r#"a{b:image-set("i.png" 1x)}c{content:"t.png"}"#;
     assert_eq!(css_references(css), vec!["i.png"]);
-    assert_eq!(
-        rewrite_css_references(css, |_| Some("data:,\"q\"".into())),
-        r#"a{b:image-set("data:,\"q\"" 1x)}c{content:"t.png"}"#
-    );
 }
 
 #[test]

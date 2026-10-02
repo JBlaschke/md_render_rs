@@ -27,7 +27,7 @@ const TEXT_UTF8: &str = "text/plain; charset=utf-8";
 const ERROR_TITLE_PREFIX: &str = "(Error) ";
 
 /// Build the router for `app`.
-pub fn router(app: Arc<App>) -> Router {
+pub(super) fn router(app: Arc<App>) -> Router {
     Router::new()
         .route(&format!("{PREFIX}/static/{{name}}"), get(static_asset))
         .route(&format!("{PREFIX}/bundle/{{*path}}"), get(bundle_file))
@@ -42,7 +42,7 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 /// Log target of the access log.
-pub const ACCESS_LOG: &str = "md_render::access";
+pub(super) const ACCESS_LOG: &str = "md_render::access";
 
 /// One line per request (GRIP C24): method, path and query, status and the time to the
 /// response head (SSE streams: until the stream starts). Failed requests (4xx, 5xx: a

@@ -34,7 +34,7 @@ use crate::hash::sha256;
 use crate::render::{RenderOptions, Rendered, Renderer};
 
 /// How long a page load waits for the worker to render the current file.
-pub const RENDER_WAIT: Duration = Duration::from_secs(60);
+pub(super) const RENDER_WAIT: Duration = Duration::from_secs(60);
 
 /// FSEvents needs about 500 ms after `watch()` before it delivers events (CR §5); a change
 /// made in that window would be missed, so new subscribers trigger one extra re-check.
@@ -53,7 +53,7 @@ const EVENT_CAPACITY: usize = 64;
 const MAX_DOCS: usize = 256;
 
 /// Shared rendering context of all documents.
-pub struct RenderCtx {
+pub(crate) struct RenderCtx {
     pub renderer: Arc<dyn Renderer>,
     /// Template for per-document options (`source_path` is filled in per document).
     pub options: RenderOptions,
@@ -78,7 +78,7 @@ impl RenderCtx {
     /// May document `key` resolve outside the root? With `--follow-symlinks` any may;
     /// otherwise only the target file, which the user named explicitly: a symlinked
     /// `md-render notes.md` is served like grip and `md-render export` do (CLI-18).
-    pub fn follows(&self, key: &str) -> bool {
+    pub(crate) fn follows(&self, key: &str) -> bool {
         self.follow_symlinks || self.target.as_deref() == Some(key)
     }
 
@@ -99,7 +99,7 @@ impl RenderCtx {
 
 /// A successful render of one version of a document.
 #[derive(Debug)]
-pub struct Content {
+pub(crate) struct Content {
     pub version: u64,
     /// Dedup hash of every input of the render: the source bytes and, for a GitLab
     /// document with `::include` directives, the included files ([`Inputs`]).
@@ -123,7 +123,7 @@ impl Content {
 
 /// What the document currently is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum DocStatus {
+pub(crate) enum DocStatus {
     /// Not looked at yet.
     #[default]
     Pending,
@@ -137,7 +137,7 @@ pub enum DocStatus {
 
 /// Published state of a document.
 #[derive(Clone, Debug, Default)]
-pub struct DocSnapshot {
+pub(crate) struct DocSnapshot {
     /// Version of the current state (content, deletion or error).
     pub version: u64,
     /// Highest trigger number fully processed (page loads wait for their trigger).
@@ -154,7 +154,7 @@ pub struct DocSnapshot {
 impl DocSnapshot {
     /// Events that bring a client at `since` up to date: the current content if newer, then
     /// the current deletion/error state if newer.
-    pub fn catch_up(&self, key: &str, since: u64) -> Vec<Arc<WireEvent>> {
+    pub(crate) fn catch_up(&self, key: &str, since: u64) -> Vec<Arc<WireEvent>> {
         let mut out = Vec::new();
         if let Some(c) = &self.content
             && c.version > since
@@ -176,7 +176,7 @@ impl DocSnapshot {
 
 /// What a dependency is to the document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DepKind {
+pub(super) enum DepKind {
     /// Loaded by the page (an image, a video): a change sends an `assets` event.
     Asset,
     /// Part of the Markdown source (a GitLab `::include` file): a change re-renders.
@@ -185,7 +185,7 @@ pub enum DepKind {
 
 /// A local file a document depends on, with its watch target.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Dep {
+pub(super) struct Dep {
     /// URL path the page uses for it (sent in `assets` events; the root-relative path for
     /// [`DepKind::Source`]).
     pub url: String,
@@ -348,7 +348,7 @@ impl Tracking {
 }
 
 /// Live state of one document.
-pub struct DocEntry {
+pub(crate) struct DocEntry {
     /// Root-relative path (`docs/README.md`).
     pub key: String,
     /// Absolute path (served root joined with `key`).
@@ -390,24 +390,24 @@ impl DocEntry {
     }
 
     /// Ask the worker to re-check the file; returns the trigger number to wait for.
-    pub fn trigger(&self) -> u64 {
+    pub(crate) fn trigger(&self) -> u64 {
         let t = self.triggers.fetch_add(1, Ordering::SeqCst) + 1;
         self.wake.notify_one();
         t
     }
 
     /// Current published state.
-    pub fn snapshot(&self) -> DocSnapshot {
+    pub(crate) fn snapshot(&self) -> DocSnapshot {
         self.state.borrow().clone()
     }
 
     /// Receive this document's events.
-    pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<WireEvent>> {
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Arc<WireEvent>> {
         self.events.subscribe()
     }
 
     /// Number of live subscribers.
-    pub fn subscribers(&self) -> usize {
+    pub(crate) fn subscribers(&self) -> usize {
         self.lock().subscribers
     }
 
@@ -418,7 +418,7 @@ impl DocEntry {
     }
 
     /// Is this the entry of a directory listing (key `dir/` or `/`)?
-    pub fn is_listing(&self) -> bool {
+    pub(crate) fn is_listing(&self) -> bool {
         self.key.ends_with('/')
     }
 
@@ -580,13 +580,13 @@ impl DocEntry {
 
     /// Dependencies currently tracked.
     #[cfg(test)]
-    pub fn deps(&self) -> Vec<Dep> {
+    pub(super) fn deps(&self) -> Vec<Dep> {
         self.lock().deps.clone()
     }
 }
 
 /// Keeps a document subscribed (and its directories watched) while alive.
-pub struct Subscription {
+pub(crate) struct Subscription {
     pub entry: Arc<DocEntry>,
     watcher: Option<Arc<FsWatcher>>,
 }
@@ -598,7 +598,7 @@ impl Drop for Subscription {
 }
 
 /// Registry of all documents served so far.
-pub struct Hub {
+pub(crate) struct Hub {
     ctx: Arc<RenderCtx>,
     docs: Mutex<HashMap<String, Arc<DocEntry>>>,
     shutdown: watch::Receiver<bool>,
@@ -607,7 +607,7 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub fn new(ctx: Arc<RenderCtx>, shutdown: watch::Receiver<bool>) -> Hub {
+    pub(crate) fn new(ctx: Arc<RenderCtx>, shutdown: watch::Receiver<bool>) -> Hub {
         Hub {
             ctx,
             docs: Mutex::new(HashMap::new()),
@@ -617,7 +617,7 @@ impl Hub {
     }
 
     /// The entry for root-relative `key`, created (with its worker) on first use.
-    pub fn entry(&self, key: &str) -> Arc<DocEntry> {
+    pub(crate) fn entry(&self, key: &str) -> Arc<DocEntry> {
         let mut docs = self.docs.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = docs.get(key) {
             return e.clone();
@@ -641,7 +641,7 @@ impl Hub {
 
     /// The up-to-date state of `key` (re-reads the file; renders if it changed). None if the
     /// worker did not finish within [`RENDER_WAIT`] or the server is shutting down.
-    pub async fn current(&self, key: &str) -> Option<DocSnapshot> {
+    pub(crate) async fn current(&self, key: &str) -> Option<DocSnapshot> {
         let entry = self.entry(key);
         let mut rx = entry.state.subscribe();
         let t = entry.trigger();
@@ -652,7 +652,7 @@ impl Hub {
     }
 
     /// Subscribe to live updates of `key`.
-    pub fn subscribe(&self, key: &str) -> Subscription {
+    pub(crate) fn subscribe(&self, key: &str) -> Subscription {
         let entry = self.entry(key);
         entry.add_subscriber(&self.ctx);
         entry.trigger();
@@ -664,7 +664,7 @@ impl Hub {
     }
 
     /// Dispatch a batch of changed (canonical) paths from the watcher.
-    pub fn on_paths_changed(&self, changed: &[PathBuf]) {
+    pub(crate) fn on_paths_changed(&self, changed: &[PathBuf]) {
         let entries: Vec<Arc<DocEntry>> = self
             .docs
             .lock()
@@ -724,7 +724,7 @@ impl Hub {
 
     /// Entry for `key` if it exists.
     #[cfg(test)]
-    pub fn get(&self, key: &str) -> Option<Arc<DocEntry>> {
+    pub(crate) fn get(&self, key: &str) -> Option<Arc<DocEntry>> {
         self.docs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -734,7 +734,7 @@ impl Hub {
 
     /// Number of documents in the registry.
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.docs.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }
@@ -919,7 +919,7 @@ enum Listed {
 }
 
 /// The listing key of root-relative directory `rel` (`docs/`, or `/` for the root).
-pub fn listing_key(rel: &str) -> String {
+pub(super) fn listing_key(rel: &str) -> String {
     if rel.is_empty() {
         "/".to_owned()
     } else {

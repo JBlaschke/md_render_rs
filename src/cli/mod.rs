@@ -18,9 +18,9 @@ use std::process::ExitCode;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory as _, Parser as _};
 
-pub mod address;
-pub mod args;
-pub mod paths;
+pub(crate) mod address;
+pub(crate) mod args;
+pub(crate) mod paths;
 pub mod plan;
 pub mod run;
 

@@ -12,7 +12,7 @@ use crate::PREFIX;
 
 /// One local dependency of a document.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DepRef {
+pub(super) struct DepRef {
     /// Root-relative path with `/` separators (decoded).
     pub rel: String,
     /// The URL path the browser requests for it (`/`-prefixed, percent-encoded).
@@ -24,7 +24,7 @@ const SELECTOR: &str = "img, source, video, audio, track, input[type=image]";
 
 /// Scan rendered HTML for local dependencies of the document at root-relative `doc_rel`.
 /// The result is sorted and free of duplicates.
-pub fn scan(html: &str, doc_rel: &str) -> Vec<DepRef> {
+pub(super) fn scan(html: &str, doc_rel: &str) -> Vec<DepRef> {
     let doc = dom_query::Document::fragment(html);
     let mut urls: Vec<String> = Vec::new();
     for node in doc.select(SELECTOR).nodes() {

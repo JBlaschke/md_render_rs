@@ -338,7 +338,7 @@ pub enum CacheAction {
 }
 
 /// The 14 GitHub theme ids (GH §4.4).
-pub const GITHUB_THEMES: [&str; 14] = [
+pub(crate) const GITHUB_THEMES: [&str; 14] = [
     "light",
     "light_high_contrast",
     "light_colorblind",
@@ -364,7 +364,7 @@ pub enum ThemeArg {
 }
 
 /// Parse `--theme`.
-pub fn parse_theme(s: &str) -> Result<ThemeArg, String> {
+pub(crate) fn parse_theme(s: &str) -> Result<ThemeArg, String> {
     match s {
         "auto" => Ok(ThemeArg::Mode(Theme::Auto)),
         "light" => Ok(ThemeArg::Mode(Theme::Light)),

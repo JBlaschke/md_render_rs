@@ -37,7 +37,7 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
 
 /// One `--css` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExtraCss {
+pub(crate) struct ExtraCss {
     /// URL the page links to.
     pub url: String,
     /// Local file served under `/__/md-render/css/<n>/<name>` (None: external URL).
@@ -47,7 +47,7 @@ pub struct ExtraCss {
 impl ExtraCss {
     /// Classify `--css` values: URLs (`scheme://`, `//host`, `data:`) and root-relative URLs
     /// pass through; existing local files are served by the server and watched.
-    pub fn from_config(entries: &[String]) -> (Vec<ExtraCss>, Vec<String>) {
+    pub(crate) fn from_config(entries: &[String]) -> (Vec<ExtraCss>, Vec<String>) {
         let mut out = Vec::new();
         let mut warnings = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
@@ -84,7 +84,7 @@ impl ExtraCss {
 
 /// How opening the bundle at startup went.
 #[derive(Debug)]
-pub enum Initial {
+pub(super) enum Initial {
     /// The bundle has vendored styles for the flavor.
     Ready(Bundle),
     /// The bundle exists but lacks the flavor (or only has fallback styles for it).
@@ -97,7 +97,7 @@ pub enum Initial {
 
 impl Initial {
     /// Open `path` and classify the result for `flavor`.
-    pub fn open(path: &Path, flavor: Flavor) -> Initial {
+    pub(super) fn open(path: &Path, flavor: Flavor) -> Initial {
         if !path.exists() {
             return Initial::Missing;
         }
@@ -114,13 +114,18 @@ impl Initial {
 }
 
 /// The exact command that vendors `flavor` into `path` (D11).
-pub fn vendor_hint(flavor: Flavor, path: &Path) -> String {
+pub(super) fn vendor_hint(flavor: Flavor, path: &Path) -> String {
     crate::styles::vendor_command(Some(flavor), path)
 }
 
 /// Load the bundle for a new server: vendor first when asked and needed, print the D11 hint
 /// when the flavor's styles are missing, and always end up with a usable bundle.
-pub async fn load_initial(path: &Path, flavor: Flavor, auto_vendor: bool, quiet: bool) -> Bundle {
+pub(super) async fn load_initial(
+    path: &Path,
+    flavor: Flavor,
+    auto_vendor: bool,
+    quiet: bool,
+) -> Bundle {
     let mut state = Initial::open(path, flavor);
     if auto_vendor && !state.has_flavor() {
         if !quiet {
@@ -212,7 +217,7 @@ fn fallback_notice(path: &Path, flavor: Flavor, no_bundle: bool, auto_vendor: bo
 }
 
 /// Live style state of a server.
-pub struct Styles {
+pub(crate) struct Styles {
     flavor: Flavor,
     path: PathBuf,
     bundle: ArcSwap<Bundle>,
@@ -240,7 +245,7 @@ impl std::fmt::Debug for Styles {
 }
 
 impl Styles {
-    pub fn new(
+    pub(crate) fn new(
         flavor: Flavor,
         path: PathBuf,
         bundle: Bundle,
@@ -266,27 +271,27 @@ impl Styles {
     }
 
     /// The current bundle.
-    pub fn bundle(&self) -> Arc<Bundle> {
+    pub(crate) fn bundle(&self) -> Arc<Bundle> {
         self.bundle.load_full()
     }
 
     /// Bumped on every bundle swap and `--css` change.
-    pub fn version(&self) -> u64 {
+    pub(crate) fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
     }
 
     /// Extra stylesheet URLs for the page.
-    pub fn extra_css_urls(&self) -> Vec<String> {
+    pub(crate) fn extra_css_urls(&self) -> Vec<String> {
         self.css.iter().map(|c| c.url.clone()).collect()
     }
 
     /// The local file behind `/__/md-render/css/<index>/...`.
-    pub fn css_file(&self, index: usize) -> Option<&Path> {
+    pub(crate) fn css_file(&self, index: usize) -> Option<&Path> {
         self.css.get(index)?.file.as_deref()
     }
 
     /// Stylesheet URLs a page of this flavor uses with the current bundle (sent in `styles`).
-    pub fn hrefs(&self) -> Vec<String> {
+    pub(crate) fn hrefs(&self) -> Vec<String> {
         let bundle = self.bundle();
         let mut out: Vec<String> = bundle
             .flavor(self.flavor)
@@ -302,7 +307,7 @@ impl Styles {
     }
 
     /// Start watching the bundle file and local `--css` files.
-    pub fn watch(&self, watcher: Arc<FsWatcher>) {
+    pub(crate) fn watch(&self, watcher: Arc<FsWatcher>) {
         let watcher = self.watcher.get_or_init(|| watcher);
         self.ensure_bundle_watched();
         let mut css = lock(&self.css_watched);
@@ -352,12 +357,12 @@ impl Styles {
     }
 
     /// Ask the reload task to re-check the bundle file.
-    pub fn recheck(&self) {
+    pub(crate) fn recheck(&self) {
         self.wake.notify_one();
     }
 
     /// Dispatch changed paths from the watcher.
-    pub fn on_paths_changed(&self, changed: &[PathBuf]) {
+    pub(crate) fn on_paths_changed(&self, changed: &[PathBuf]) {
         if let Some((dir, file)) = lock(&self.watched).as_ref()
             && changed.iter().any(|p| p == file || p == dir)
         {
@@ -382,7 +387,7 @@ impl Styles {
     }
 
     /// Reload loop: runs until shutdown.
-    pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
+    pub(crate) async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
         let mut rewatch = tokio::time::interval(REWATCH_INTERVAL);
         rewatch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -401,7 +406,7 @@ impl Styles {
     }
 
     /// Re-open the bundle if the file changed; swap it in or report why not.
-    pub async fn reload(&self) {
+    pub(crate) async fn reload(&self) {
         let now = fingerprint(&self.path);
         {
             let mut fp = lock(&self.fingerprint);

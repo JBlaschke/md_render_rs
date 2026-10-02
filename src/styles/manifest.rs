@@ -155,25 +155,12 @@ impl Manifest {
 }
 
 impl FlavorManifest {
-    /// Stylesheets with the given role (see [`role`]), in cascade order.
-    pub fn stylesheets_with_role<'a>(
-        &'a self,
-        role: &'a str,
-    ) -> impl Iterator<Item = &'a Stylesheet> + 'a {
-        self.stylesheets.iter().filter(move |s| s.role == role)
-    }
-
     /// The stylesheet of `role` for theme id `theme` (e.g. GitHub `theme`/`dark_dimmed`,
     /// GitLab `app`/`dark`).
     pub fn themed_stylesheet(&self, role: &str, theme: &str) -> Option<&Stylesheet> {
         self.stylesheets
             .iter()
             .find(|s| s.role == role && s.theme.as_deref() == Some(theme))
-    }
-
-    /// Whether theme id `theme` was vendored.
-    pub fn has_theme(&self, theme: &str) -> bool {
-        self.themes.iter().any(|t| t == theme)
     }
 
     /// Bundle path of a client library (see [`script`]).
@@ -241,14 +228,19 @@ mod tests {
     fn helpers() {
         let m = sample();
         let gl = &m.flavors[&Flavor::Gitlab];
-        assert_eq!(gl.stylesheets_with_role(role::APP).count(), 2);
+        assert_eq!(
+            gl.stylesheets
+                .iter()
+                .filter(|s| s.role == role::APP)
+                .count(),
+            2
+        );
         assert_eq!(
             gl.themed_stylesheet(role::APP, "dark")
                 .map(|s| s.path.as_str()),
             Some("gitlab/assets/application_dark-2.css")
         );
         assert!(gl.themed_stylesheet(role::APP, "dark_dimmed").is_none());
-        assert!(gl.has_theme("light") && !gl.has_theme("sepia"));
         assert_eq!(
             gl.script(script::KATEX),
             Some("gitlab/lib/katex/katex.min.js")

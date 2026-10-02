@@ -34,22 +34,20 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
     Some(found)
 }
 
-/// Names of all embedded assets.
-pub const NAMES: &[&str] = &[
-    "live.js",
-    "github.js",
-    "gitlab.js",
-    "favicon.svg",
-    "fallback-github.css",
-    "fallback-gitlab.css",
-    "common.js",
-];
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn all_names_resolve() {
-        for n in super::NAMES {
+        let names = [
+            "live.js",
+            "github.js",
+            "gitlab.js",
+            "favicon.svg",
+            "fallback-github.css",
+            "fallback-gitlab.css",
+            "common.js",
+        ];
+        for n in names {
             assert!(super::get(n).is_some(), "{n}");
         }
         assert!(super::get("nope").is_none());

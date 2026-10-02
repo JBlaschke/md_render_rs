@@ -8,7 +8,7 @@
 // (`super::glfm`), this header and the `#![allow]` below (so the upstream style stays untouched).
 // The `panic!`s in `render_table_cell` assert comrak AST invariants; comrak's own table-cell
 // renderer has the identical checks, so they cannot fire for a parsed document.
-#![allow(clippy::all, dead_code)]
+#![allow(clippy::all)]
 
 use std::fmt::{self, Write};
 use std::sync::LazyLock;
@@ -26,7 +26,7 @@ static PLACEHOLDER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"%\{(?:\w{1,30})}").unwrap());
 
 #[derive(Default)]
-pub struct RenderUserData {
+pub(super) struct RenderUserData {
     pub default_html: bool,
     pub inapplicable_tasks: bool,
     pub placeholder_detection: bool,

@@ -2,6 +2,9 @@
 //!
 //! See `docs/DESIGN.md` for the architecture and the frozen inter-module interfaces.
 
+#![forbid(unsafe_code)]
+#![warn(unreachable_pub)]
+
 pub mod assets;
 pub mod cli;
 pub mod export;

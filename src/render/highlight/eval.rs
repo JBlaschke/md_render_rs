@@ -7,6 +7,8 @@
 //! MD_RENDER_GOLDEN_DIR=…/.dev/research cargo test --lib highlight::eval -- --nocapture
 //! ```
 
+// Shared with the integration tests, which need its items `pub`.
+#[allow(unreachable_pub)]
 #[path = "../../../tests/highlight_eval/mod.rs"]
 mod harness;
 

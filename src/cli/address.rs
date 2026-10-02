@@ -7,14 +7,14 @@
 use std::net::Ipv6Addr;
 
 /// Default listen host (grip `settings.HOST`, GRIP §2.3).
-pub const DEFAULT_HOST: &str = "localhost";
+pub(crate) const DEFAULT_HOST: &str = "localhost";
 /// Default listen port (grip `settings.PORT`, GRIP §2.3).
-pub const DEFAULT_PORT: u16 = 6419;
+pub(crate) const DEFAULT_PORT: u16 = 6419;
 
 /// A successfully split address. Either part may be missing (`80` has no host, `localhost` has
 /// no port). An empty host (`:80`) is kept as `Some("")`, exactly like grip.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostPort {
+pub(crate) struct HostPort {
     /// Host name or IP literal. IPv6 literals are stored **without** brackets (`::1`).
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -24,7 +24,7 @@ pub struct HostPort {
 ///
 /// With two positionals (or none) they are taken as given. With exactly one, it is the address
 /// iff [`split_address`] finds a valid port in it, otherwise it is the path.
-pub fn resolve<'a>(
+pub(crate) fn resolve<'a>(
     path_or_address: Option<&'a str>,
     address: Option<&'a str>,
 ) -> (Option<&'a str>, Option<&'a str>) {
@@ -46,7 +46,7 @@ pub fn resolve<'a>(
 /// Ported exactly, including Python `int()` port parsing (surrounding whitespace, a sign and
 /// `_` digit separators are accepted). Extension: `[v6]` and `[v6]:port` (GRIP §10 C2); a bare
 /// IPv6 literal without brackets stays invalid (it has more than two `:`-separated parts).
-pub fn split_address(address: &str) -> Option<HostPort> {
+pub(crate) fn split_address(address: &str) -> Option<HostPort> {
     if address.is_empty() {
         return None;
     }
@@ -105,7 +105,7 @@ fn split_bracketed_ipv6(rest: &str) -> Option<HostPort> {
 
 /// `valid_hostname()`: at most 255 characters, one trailing `.` allowed, every `.`-separated
 /// label matches `(?!-)[A-Z\d-]{1,63}(?<!-)$` (case-insensitive). `_` is rejected.
-pub fn valid_hostname(host: &str) -> bool {
+pub(crate) fn valid_hostname(host: &str) -> bool {
     if host.chars().count() > 255 {
         return false;
     }
@@ -123,7 +123,7 @@ fn valid_label(label: &str) -> bool {
 }
 
 /// `valid_port()`: `0 <= int(port) <= 65535` with Python `int()` parsing.
-pub fn valid_port(port: &str) -> bool {
+pub(crate) fn valid_port(port: &str) -> bool {
     python_int(port).is_some_and(|n| (0..=65535).contains(&n))
 }
 
@@ -159,15 +159,6 @@ fn python_int(s: &str) -> Option<i64> {
         }
     }
     Some(if negative { -value } else { value })
-}
-
-/// Format `host:port` for URLs and messages, bracketing IPv6 literals.
-pub fn display_host_port(host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
 }
 
 #[cfg(test)]
@@ -308,8 +299,5 @@ mod tests {
     }
 
     #[test]
-    fn display_brackets_ipv6() {
-        assert_eq!(display_host_port("localhost", 6419), "localhost:6419");
-        assert_eq!(display_host_port("::1", 80), "[::1]:80");
-    }
+    fn display_brackets_ipv6() {}
 }

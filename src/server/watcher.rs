@@ -22,10 +22,10 @@ use notify_debouncer_mini::{Config, DebounceEventResult, Debouncer, new_debounce
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Debounce window (CR §5: 30-50 ms keeps end-to-end latency around 60-80 ms).
-pub const DEBOUNCE: Duration = Duration::from_millis(50);
+pub(super) const DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// Poll interval used when the native watcher is unavailable and no `--poll` was given.
-pub const FALLBACK_POLL: Duration = Duration::from_millis(1000);
+pub(super) const FALLBACK_POLL: Duration = Duration::from_millis(1000);
 
 enum Backend {
     Native(Debouncer<RecommendedWatcher>),
@@ -38,7 +38,7 @@ struct Inner {
 }
 
 /// Reference-counted, non-recursive directory watcher that reports changed paths.
-pub struct FsWatcher {
+pub(crate) struct FsWatcher {
     inner: Mutex<Inner>,
     polling: bool,
 }
@@ -56,7 +56,7 @@ impl FsWatcher {
     ///
     /// Returns the watcher and, when the native backend failed and polling is used instead,
     /// a warning for the user.
-    pub fn new(
+    pub(crate) fn new(
         poll: Option<Duration>,
         tx: UnboundedSender<Vec<PathBuf>>,
     ) -> anyhow::Result<(FsWatcher, Option<String>)> {
@@ -103,7 +103,7 @@ impl FsWatcher {
     }
 
     /// Whether this watcher polls (as opposed to native OS notifications).
-    pub fn is_polling(&self) -> bool {
+    pub(crate) fn is_polling(&self) -> bool {
         self.polling
     }
 
@@ -112,7 +112,7 @@ impl FsWatcher {
     }
 
     /// Add one reference to `dir` (canonical), starting to watch it on the first reference.
-    pub fn add(&self, dir: &Path) -> notify::Result<()> {
+    pub(crate) fn add(&self, dir: &Path) -> notify::Result<()> {
         let mut inner = self.lock();
         if let Some(n) = inner.dirs.get_mut(dir) {
             *n += 1;
@@ -130,7 +130,7 @@ impl FsWatcher {
     }
 
     /// Drop one reference to `dir`, unwatching it when the last reference goes away.
-    pub fn remove(&self, dir: &Path) {
+    pub(crate) fn remove(&self, dir: &Path) {
         let mut inner = self.lock();
         let Some(n) = inner.dirs.get_mut(dir) else {
             return;
@@ -153,13 +153,13 @@ impl FsWatcher {
 
     /// Current reference count of `dir` (0 when not watched).
     #[cfg(test)]
-    pub fn refs(&self, dir: &Path) -> usize {
+    pub(crate) fn refs(&self, dir: &Path) -> usize {
         self.lock().dirs.get(dir).copied().unwrap_or(0)
     }
 
     /// Is `dir` currently watched?
     #[cfg(test)]
-    pub fn is_watched(&self, dir: &Path) -> bool {
+    pub(crate) fn is_watched(&self, dir: &Path) -> bool {
         self.refs(dir) > 0
     }
 }

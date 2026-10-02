@@ -109,12 +109,6 @@ fn render_snippet(text: &str) -> String {
         .to_owned()
 }
 
-/// Raw comrak + GitLab formatter output after Stage A (debugging aid and test oracle).
-#[doc(hidden)]
-pub fn comrak_html(markdown: &str, opts: &RenderOptions) -> String {
-    markdown_to_html(markdown, opts, &mut preprocess::Included::default())
-}
-
 /// Files that `::include{file=...}` directives in `markdown` read (absolute paths inside the
 /// served root), so a live server can watch them too. Empty in comment mode.
 pub fn included_files(markdown: &str, opts: &RenderOptions) -> Vec<PathBuf> {

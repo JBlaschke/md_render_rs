@@ -56,10 +56,9 @@ const NO_ROUGE: &[&str] = &[
 /// The Rouge tag of the plain-text lexer.
 pub(crate) const PLAINTEXT: &str = "plaintext";
 
+/// The part of a lexer entry that is used (the data also has the lexer's `title`).
 #[derive(Deserialize)]
 struct LexerData {
-    #[allow(dead_code)]
-    title: String,
     ext: Vec<String>,
 }
 

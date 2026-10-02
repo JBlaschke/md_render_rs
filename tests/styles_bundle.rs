@@ -7,7 +7,7 @@ use std::sync::Arc;
 use md_render::Flavor;
 use md_render::styles::manifest::{MANIFEST_PATH, SCHEMA, role, script};
 use md_render::styles::{
-    Asset, Bundle, BundleOrigin, FlavorManifest, Manifest, SharedBundle, Stylesheet, content_type,
+    Asset, Bundle, BundleOrigin, FlavorManifest, Manifest, SharedBundle, Stylesheet,
     default_bundle_path, flavor_warning, load_or_fallback, resolve_bundle_ref, vendor_command,
 };
 
@@ -212,18 +212,6 @@ fn fallback_and_helpers() {
     assert_eq!(same.etag(), fb.etag());
     assert_eq!(same.manifest(), fb.manifest());
 
-    assert_eq!(
-        content_type("github/assets/light-1.css"),
-        "text/css; charset=utf-8"
-    );
-    assert_eq!(
-        content_type("github/lib/mathjax/es5/tex-chtml-full.js"),
-        "text/javascript; charset=utf-8"
-    );
-    assert_eq!(
-        content_type("gitlab/lib/katex/fonts/KaTeX_Main-Regular.woff2"),
-        "font/woff2"
-    );
     assert_eq!(
         vendor_command(None, &default_bundle_path()),
         "md-render vendor"

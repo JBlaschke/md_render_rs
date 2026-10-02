@@ -47,7 +47,7 @@ const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC
 
 /// Why a request path was rejected before touching the filesystem.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum PathError {
+pub(super) enum PathError {
     #[error("the request path is not valid UTF-8 after percent-decoding")]
     BadEncoding,
     #[error("the request path contains a NUL byte")]
@@ -64,7 +64,7 @@ pub enum PathError {
 
 impl PathError {
     /// HTTP status for this rejection: 403 for `.git`, 400 for malformed paths.
-    pub fn status(&self) -> u16 {
+    pub(super) fn status(&self) -> u16 {
         match self {
             PathError::GitDir => 403,
             _ => 400,
@@ -74,7 +74,7 @@ impl PathError {
 
 /// A validated request path: decoded segments relative to the served root.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RequestPath {
+pub(super) struct RequestPath {
     /// Decoded segments; never empty strings, `.` or `..`.
     pub segments: Vec<String>,
     /// The request path ended with `/`.
@@ -86,7 +86,7 @@ pub struct RequestPath {
 
 impl RequestPath {
     /// Parse the path component of a request URI (percent-decoded exactly once).
-    pub fn from_uri_path(raw: &str) -> Result<RequestPath, PathError> {
+    pub(super) fn from_uri_path(raw: &str) -> Result<RequestPath, PathError> {
         let decoded = percent_decode_str(raw)
             .decode_utf8()
             .map_err(|_| PathError::BadEncoding)?;
@@ -95,7 +95,7 @@ impl RequestPath {
 
     /// Parse an already-decoded path (e.g. a `?path=` query value), with or without a
     /// leading `/`.
-    pub fn from_decoded(path: &str) -> Result<RequestPath, PathError> {
+    pub(super) fn from_decoded(path: &str) -> Result<RequestPath, PathError> {
         if path.contains('\0') {
             return Err(PathError::Nul);
         }
@@ -155,18 +155,18 @@ impl RequestPath {
     }
 
     /// The root directory (`/`).
-    pub fn is_root(&self) -> bool {
+    pub(super) fn is_root(&self) -> bool {
         self.segments.is_empty()
     }
 
     /// Relative path with `/` separators (`""` for the root).
-    pub fn rel(&self) -> String {
+    pub(super) fn rel(&self) -> String {
         self.segments.join("/")
     }
 }
 
 /// URL path (`/`-prefixed, percent-encoded) of a root-relative path; `dir` appends `/`.
-pub fn url_for(rel: &str, dir: bool) -> String {
+pub(super) fn url_for(rel: &str, dir: bool) -> String {
     let mut out = String::from("/");
     let segs: Vec<String> = rel
         .split('/')
@@ -181,18 +181,18 @@ pub fn url_for(rel: &str, dir: bool) -> String {
 }
 
 /// Percent-encode one path segment (e.g. a file name in a listing `href`).
-pub fn encode_segment(s: &str) -> String {
+pub(super) fn encode_segment(s: &str) -> String {
     utf8_percent_encode(s, SEGMENT).to_string()
 }
 
 /// Percent-encode a query-string value (keeps `/` readable).
-pub fn encode_query_value(s: &str) -> String {
+pub(super) fn encode_query_value(s: &str) -> String {
     utf8_percent_encode(s, QUERY_VALUE).to_string()
 }
 
 /// Outcome of resolving a validated relative path against the served root.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Resolved {
+pub(crate) enum Resolved {
     /// An existing regular file (canonical path).
     File(PathBuf),
     /// An existing directory (canonical path).
@@ -203,7 +203,7 @@ pub enum Resolved {
 
 /// Why a path could not be served after looking at the filesystem.
 #[derive(Debug, thiserror::Error)]
-pub enum ResolveError {
+pub(crate) enum ResolveError {
     #[error("{0}")]
     Forbidden(String),
     #[error("{0}")]
@@ -211,7 +211,7 @@ pub enum ResolveError {
 }
 
 /// Is this I/O error a "does not exist" condition (including a file used as a directory)?
-pub fn is_not_found(e: &io::Error) -> bool {
+pub(super) fn is_not_found(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
@@ -222,7 +222,11 @@ pub fn is_not_found(e: &io::Error) -> bool {
 ///
 /// For a missing path the nearest existing ancestor must still be inside the root, so a
 /// symlinked directory cannot be used to wait for files outside it.
-pub fn resolve(root: &Path, rel: &str, follow_symlinks: bool) -> Result<Resolved, ResolveError> {
+pub(super) fn resolve(
+    root: &Path,
+    rel: &str,
+    follow_symlinks: bool,
+) -> Result<Resolved, ResolveError> {
     let full = join_rel(root, rel);
     match std::fs::canonicalize(&full) {
         Ok(canon) => {
@@ -257,7 +261,7 @@ pub fn resolve(root: &Path, rel: &str, follow_symlinks: bool) -> Result<Resolved
 }
 
 /// `root` joined with a `/`-separated relative path.
-pub fn join_rel(root: &Path, rel: &str) -> PathBuf {
+pub(super) fn join_rel(root: &Path, rel: &str) -> PathBuf {
     let mut p = root.to_path_buf();
     for seg in rel.split('/').filter(|s| !s.is_empty()) {
         p.push(seg);
@@ -267,7 +271,7 @@ pub fn join_rel(root: &Path, rel: &str) -> PathBuf {
 
 /// Require a canonical path to stay inside the canonical root (unless symlinks may be
 /// followed anywhere) and to never enter a `.git` directory.
-pub fn check_contained(
+pub(super) fn check_contained(
     root: &Path,
     canon: &Path,
     follow_symlinks: bool,
@@ -296,7 +300,7 @@ pub fn check_contained(
 /// Entries of a directory for the listing page: `.git` hidden, symlinks escaping the root
 /// hidden (unless `follow_symlinks`), directories first, then case-insensitive by name; a
 /// `..` entry first for every directory below the root.
-pub fn list_dir(
+pub(super) fn list_dir(
     root: &Path,
     dir: &Path,
     rel: &str,
@@ -362,7 +366,7 @@ pub fn list_dir(
 /// file itself when it exists (this also resolves symlinked documents and the on-disk case
 /// of the name), otherwise the canonical parent joined with the file name (the file may be
 /// briefly missing during an atomic save).
-pub fn watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
+pub(super) fn watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
     if let Ok(canon) = std::fs::canonicalize(path)
         && canon.is_file()
         && let Some(parent) = canon.parent()
@@ -375,7 +379,7 @@ pub fn watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
 /// The directory that holds the directory entry `path` and the path events for that entry
 /// carry, without resolving a symlink at `path` itself (re-pointing a symlinked document
 /// changes this entry, not the old target).
-pub fn entry_watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
+pub(super) fn entry_watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let name = path.file_name()?;
     let parent = std::fs::canonicalize(path.parent()?).ok()?;
     let file = parent.join(name);
@@ -386,7 +390,7 @@ pub fn entry_watch_target(path: &Path) -> Option<(PathBuf, PathBuf)> {
 /// ancestor directory (canonical, inside `root` per [`check_contained`]) and the canonical
 /// path the file will have once the missing directories are created. None when an
 /// ancestor is not a directory (the file can never appear) or escapes the root.
-pub fn ancestor_watch_target(
+pub(super) fn ancestor_watch_target(
     root: &Path,
     path: &Path,
     follow_symlinks: bool,

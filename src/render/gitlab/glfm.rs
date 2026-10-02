@@ -7,7 +7,7 @@
 // Kept as close to verbatim as possible (GL §4.1, DESIGN D3). Local changes: the module path of
 // the formatter (`super::formatter`), this header, the `#![allow]` below (so the upstream style
 // stays untouched), and `render` returning the `fmt::Error` instead of unwrapping it.
-#![allow(clippy::all, dead_code)]
+#![allow(clippy::all)]
 
 use comrak::options::Plugins;
 use comrak::{parse_document, Arena};
@@ -131,7 +131,7 @@ impl From<&RenderOptions> for comrak::Options<'_> {
     }
 }
 
-pub fn render(text: &str, options: &RenderOptions) -> Result<String, std::fmt::Error> {
+pub(super) fn render(text: &str, options: &RenderOptions) -> Result<String, std::fmt::Error> {
     render_with_plugins(text, options, &Plugins::default())
 }
 

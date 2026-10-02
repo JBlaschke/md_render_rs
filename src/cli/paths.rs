@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// `cwd.join(path)` with `.` components removed and `..` folded lexically where possible
 /// (symlinks are **not** resolved, so the user's spelling of a symlinked file is kept).
-pub fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
+pub(crate) fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -15,7 +15,7 @@ pub fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
 }
 
 /// Lexical normalization: drop `.`, fold `a/..`, keep leading `..` of relative paths.
-pub fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
         match comp {

@@ -66,7 +66,8 @@
 //! USTAR paths (100 bytes, or a 155-byte prefix plus a 100-byte name split at a
 //! `/`) and entries under 8 GiB; [`InMemoryFileSystem::write_tarball_gz_extended`]
 //! lifts both limits and adds directory entries.
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+#![warn(missing_docs, unreachable_pub)]
 
 use std::collections::BTreeMap;
 use std::fmt;

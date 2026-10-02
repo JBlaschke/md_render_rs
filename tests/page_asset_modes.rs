@@ -553,6 +553,41 @@ fn large_site_images_stay_out_of_exports() {
 /// EXP-3 / Q-DUP-CSS: exports find references with the vendoring tokenizer, so `url(…)` text
 /// inside strings and comments is left alone (rewriting it closed the string early and broke
 /// the rule) and escaped characters stay part of the URL, in both export modes.
+/// VEN-1: `image-set()` string arguments are image URLs to the vendor (which downloads them)
+/// and to inline exports, which turn them into data: URIs like every `url()`.
+#[test]
+fn image_set_strings_are_inlined() {
+    let dir = tempfile::tempdir().unwrap();
+    let css = r#"a{background-image:-webkit-image-set("../images/hi.png" 1x, url(../images/hi.gif) 2x)}b{font-family:"x.png"}"#;
+    let bundle = BundleBuilder::new()
+        .stylesheet(
+            Flavor::Github,
+            "github/assets/github-1.css",
+            "github",
+            None,
+            css,
+        )
+        .asset(Flavor::Github, "github/images/hi.png", PNG)
+        .asset(Flavor::Github, "github/images/hi.gif", GIF)
+        .open(dir.path());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let mut page = Page::new(Flavor::Github);
+    page.assets = AssetMode::Inline;
+    let html = page.render(&bundle);
+    assert_self_contained(&html);
+    let inlined = inlined_css(&Document::from(html.as_str()), "github/assets/github-1.css");
+    let expected = css
+        .replace(
+            r#""../images/hi.png""#,
+            &format!("\"data:image/png;base64,{}\"", b64(PNG)),
+        )
+        .replace(
+            "url(../images/hi.gif)",
+            &format!("url(data:image/gif;base64,{})", b64(GIF)),
+        );
+    assert_eq!(inlined.trim(), expected);
+}
+
 #[test]
 fn css_strings_comments_and_escapes_survive_exports() {
     let dir = tempfile::tempdir().unwrap();

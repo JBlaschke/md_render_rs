@@ -26,29 +26,24 @@ use super::hub::DocSnapshot;
 use crate::render::Rendered;
 
 /// Reconnect delay suggested to `EventSource` clients.
-pub const RETRY: Duration = Duration::from_millis(1000);
+pub(super) const RETRY: Duration = Duration::from_millis(1000);
 
 /// Interval of `: ping` keepalive comments.
-pub const KEEPALIVE: Duration = Duration::from_secs(15);
+pub(super) const KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// `kind` of an `error` event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ErrorKind {
+pub(crate) enum ErrorKind {
     Read,
-    /// Part of the wire protocol (DESIGN §7). This server decodes lossily and reports
-    /// invalid UTF-8 as a content warning instead (GRIP C38), so it never sends it.
-    #[allow(dead_code)]
-    Decode,
     Render,
     Api,
     Bundle,
 }
 
 impl ErrorKind {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             ErrorKind::Read => "read",
-            ErrorKind::Decode => "decode",
             ErrorKind::Render => "render",
             ErrorKind::Api => "api",
             ErrorKind::Bundle => "bundle",
@@ -58,7 +53,7 @@ impl ErrorKind {
 
 /// One server-sent event, serialized once and shared by all subscribers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WireEvent {
+pub(crate) struct WireEvent {
     /// SSE event name (`hello`, `content`, ...).
     pub name: &'static str,
     /// Published document version this event carries; `None` for events that do not publish
@@ -90,30 +85,30 @@ impl WireEvent {
     }
 
     /// `hello {server_id, version, styles_version}`.
-    pub fn hello(server_id: &str, version: u64, styles_version: u64) -> WireEvent {
+    pub(crate) fn hello(server_id: &str, version: u64, styles_version: u64) -> WireEvent {
         let data =
             json!({ "server_id": server_id, "version": version, "styles_version": styles_version });
         WireEvent::new("hello", None, false, data)
     }
 
     /// `rendering {version}`.
-    pub fn rendering(version: u64) -> WireEvent {
+    pub(crate) fn rendering(version: u64) -> WireEvent {
         WireEvent::new("rendering", None, false, json!({ "version": version }))
     }
 
     /// `content {version, html, title, warnings}`.
-    pub fn content(version: u64, r: &Rendered) -> WireEvent {
+    pub(crate) fn content(version: u64, r: &Rendered) -> WireEvent {
         WireEvent::new("content", Some(version), true, content_json(version, r))
     }
 
     /// `error {version, kind, message}`.
-    pub fn error(version: u64, kind: ErrorKind, message: &str) -> WireEvent {
+    pub(crate) fn error(version: u64, kind: ErrorKind, message: &str) -> WireEvent {
         let data = json!({ "version": version, "kind": kind.as_str(), "message": message });
         WireEvent::new("error", Some(version), true, data)
     }
 
     /// `deleted {path}` (plus `version`).
-    pub fn deleted(version: u64, path: &str) -> WireEvent {
+    pub(crate) fn deleted(version: u64, path: &str) -> WireEvent {
         WireEvent::new(
             "deleted",
             Some(version),
@@ -123,14 +118,14 @@ impl WireEvent {
     }
 
     /// `assets {urls, v}`: local files referenced by the document changed.
-    pub fn assets(urls: &[String], v: &str) -> WireEvent {
+    pub(crate) fn assets(urls: &[String], v: &str) -> WireEvent {
         WireEvent::new("assets", None, false, json!({ "urls": urls, "v": v }))
     }
 
     /// `styles {styles_version, hrefs}`: the style bundle or a `--css` file changed. `hrefs`
     /// lists the stylesheet URLs the page should now use, so a client whose `<link>`s point
     /// at files that no longer exist (re-vendored hashed names) can reload instead.
-    pub fn styles(styles_version: u64, hrefs: &[String]) -> WireEvent {
+    pub(crate) fn styles(styles_version: u64, hrefs: &[String]) -> WireEvent {
         WireEvent::new(
             "styles",
             None,
@@ -140,7 +135,7 @@ impl WireEvent {
     }
 
     /// A global `error` (e.g. kind `bundle`): not tied to a document version.
-    pub fn global_error(kind: ErrorKind, message: &str) -> WireEvent {
+    pub(crate) fn global_error(kind: ErrorKind, message: &str) -> WireEvent {
         WireEvent::new(
             "error",
             None,
@@ -151,18 +146,18 @@ impl WireEvent {
 
     /// `reload {}`: the page must be loaded again (a directory listing whose directory got a
     /// README).
-    pub fn reload() -> WireEvent {
+    pub(crate) fn reload() -> WireEvent {
         WireEvent::new("reload", None, false, json!({}))
     }
 
     /// `shutdown {}`.
-    pub fn shutdown() -> WireEvent {
+    pub(crate) fn shutdown() -> WireEvent {
         WireEvent::new("shutdown", None, false, json!({}))
     }
 
     /// The axum SSE event, with `id: <server_id>:<version>`; `delivered` is the last document
     /// version this subscriber has received (used for events without their own version).
-    pub fn to_sse(&self, server_id: &str, delivered: u64) -> Event {
+    pub(crate) fn to_sse(&self, server_id: &str, delivered: u64) -> Event {
         let version = self.version.unwrap_or(delivered);
         // JSON never contains raw newlines or CRs, so `data` cannot panic here.
         Event::default()
@@ -173,13 +168,13 @@ impl WireEvent {
 }
 
 /// The JSON object shared by `content` events and the `/render` endpoint.
-pub fn content_json(version: u64, r: &Rendered) -> serde_json::Value {
+pub(super) fn content_json(version: u64, r: &Rendered) -> serde_json::Value {
     json!({ "version": version, "html": r.html, "title": r.title, "warnings": r.warnings })
 }
 
 /// Query of `/__/md-render/events` and `/__/md-render/render`.
 #[derive(Debug, Deserialize)]
-pub struct DocQuery {
+pub(super) struct DocQuery {
     /// Document path relative to the served root.
     pub path: Option<String>,
     /// Version the client already has (alternative to `Last-Event-ID`).
@@ -192,7 +187,7 @@ pub struct DocQuery {
 /// The version a (re)connecting client already has: from `Last-Event-ID`
 /// (`<server_id>:<v>`) or the `v` query parameter, each only when issued by this process;
 /// the larger wins.
-pub fn client_version(headers: &HeaderMap, q: &DocQuery, server_id: &str) -> u64 {
+pub(super) fn client_version(headers: &HeaderMap, q: &DocQuery, server_id: &str) -> u64 {
     let from_header = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
@@ -205,7 +200,7 @@ pub fn client_version(headers: &HeaderMap, q: &DocQuery, server_id: &str) -> u64
 }
 
 /// `GET /__/md-render/events?path=<doc>[&v=<version>]`.
-pub async fn events(
+pub(super) async fn events(
     State(app): State<Arc<App>>,
     Query(q): Query<DocQuery>,
     headers: HeaderMap,
@@ -383,7 +378,6 @@ mod tests {
         );
         assert_eq!(WireEvent::shutdown().data, "{}");
         assert_eq!(ErrorKind::Bundle.as_str(), "bundle");
-        assert_eq!(ErrorKind::Decode.as_str(), "decode");
         assert_eq!(ErrorKind::Api.as_str(), "api");
         assert_eq!(ErrorKind::Read.as_str(), "read");
     }

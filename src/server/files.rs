@@ -48,7 +48,7 @@ const SOURCE_AS_PLAIN: &[&str] = &[
 /// Known extensions use `mime_guess`; textual types get `charset=utf-8` so `.txt`, `.rs` or
 /// `.js` display in the browser. Unknown extensions are sniffed: a NUL byte or invalid UTF-8
 /// in the first 8 KiB means `application/octet-stream`, otherwise `text/plain`.
-pub fn content_type(path: &Path, sniff: impl FnOnce() -> Option<Vec<u8>>) -> String {
+pub(super) fn content_type(path: &Path, sniff: impl FnOnce() -> Option<Vec<u8>>) -> String {
     match mime_guess::from_path(path).first() {
         Some(m) => {
             let (ty, sub) = (m.type_().as_str(), m.subtype().as_str());
@@ -79,7 +79,7 @@ pub fn content_type(path: &Path, sniff: impl FnOnce() -> Option<Vec<u8>>) -> Str
 /// Text heuristic for extension-less files: no NUL byte and valid UTF-8. When `cut` is set
 /// (the sniffing window ended before the file did), a multi-byte sequence cut off at the end
 /// of the window is allowed.
-pub fn looks_like_text(head: &[u8], cut: bool) -> bool {
+pub(super) fn looks_like_text(head: &[u8], cut: bool) -> bool {
     if head.contains(&0) {
         return false;
     }
@@ -98,11 +98,11 @@ pub fn looks_like_text(head: &[u8], cut: bool) -> bool {
 /// `allow-same-origin` gives the document an opaque origin, which makes same-origin reads
 /// fail, while its own scripts, popups and forms keep working (local HTML reports stay
 /// usable). `<img src=x.svg>` embedding is unaffected.
-pub const SANDBOX_CSP: &str = "sandbox allow-scripts allow-popups allow-forms";
+pub(super) const SANDBOX_CSP: &str = "sandbox allow-scripts allow-popups allow-forms";
 
 /// Is a Content-Type one the browser renders as an active document (HTML, SVG, XML, whose
 /// XSLT output can carry script too)?
-pub fn is_active_document(ctype: &str) -> bool {
+pub(super) fn is_active_document(ctype: &str) -> bool {
     let essence = ctype
         .split(';')
         .next()
@@ -116,7 +116,7 @@ pub fn is_active_document(ctype: &str) -> bool {
 }
 
 /// Read up to [`SNIFF_LEN`] bytes of a file (None on any I/O error).
-pub fn sniff_file(path: &Path) -> Option<Vec<u8>> {
+pub(super) fn sniff_file(path: &Path) -> Option<Vec<u8>> {
     let f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::with_capacity(SNIFF_LEN);
     f.take(SNIFF_LEN as u64).read_to_end(&mut buf).ok()?;
@@ -126,7 +126,7 @@ pub fn sniff_file(path: &Path) -> Option<Vec<u8>> {
 /// Serve a validated, canonical file path raw: Range / If-Modified-Since / Last-Modified via
 /// `tower-http`'s `ServeFile`, our own Content-Type, and `Cache-Control: no-cache` so edited
 /// images are revalidated on reload.
-pub async fn serve_raw(path: &Path, req: Request, force_type: Option<&str>) -> Response {
+pub(super) async fn serve_raw(path: &Path, req: Request, force_type: Option<&str>) -> Response {
     let ctype = match force_type {
         Some(t) => t.to_owned(),
         None => {

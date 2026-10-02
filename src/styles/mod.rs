@@ -347,18 +347,6 @@ pub fn css_references(css: &str) -> Vec<String> {
         .collect()
 }
 
-/// Rewrite the value of every reference [`css_references`] reports in `css` for which `replace`
-/// returns a new (unescaped) value; it is escaped as the reference's quoting requires. Other
-/// bytes are kept verbatim. Export uses this to inline bundle files as `data:` URIs, e.g. with
-/// [`resolve_bundle_ref`] and [`Bundle::read`].
-pub fn rewrite_css_references(
-    css: &str,
-    mut replace: impl FnMut(&str) -> Option<String>,
-) -> String {
-    let refs = vendor::css::scan(css);
-    vendor::css::rewrite(css, &refs, |r| replace(&r.value))
-}
-
 /// Resolve `reference`, a relative `url()` / `@import` value found in the bundle file `from`,
 /// to the bundle path it designates (query and fragment dropped, `%`-escapes decoded, `.` and
 /// `..` applied). Vendored stylesheets only contain such relative references (D10).
@@ -402,25 +390,6 @@ pub fn resolve_bundle_ref(from: &str, reference: &str) -> Option<String> {
     }
     let path = segs.join("/");
     tarfs::check_path(&path).is_ok().then_some(path)
-}
-
-/// `Content-Type` for a bundle file, by extension (`text/*` and JavaScript get
-/// `charset=utf-8`; fonts get `font/*` even though GitLab serves them as octet-stream, GL §11.2).
-pub fn content_type(path: &str) -> String {
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let essence = mime.essence_str();
-    if mime.type_() == mime_guess::mime::TEXT || essence == "application/javascript" {
-        let essence = if essence == "application/javascript" {
-            "text/javascript"
-        } else {
-            essence
-        };
-        format!("{essence}; charset=utf-8")
-    } else if essence == "application/json" {
-        "application/json".to_owned()
-    } else {
-        essence.to_owned()
-    }
 }
 
 /// Default bundle location: `$MD_RENDER_STYLES` (if set and non-empty), else
