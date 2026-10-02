@@ -22,6 +22,9 @@ use crate::render::Rendered;
 
 const TEXT_UTF8: &str = "text/plain; charset=utf-8";
 
+/// Title prefix of a document page while the document has an error (must match live.js).
+const ERROR_TITLE_PREFIX: &str = "(Error) ";
+
 /// Build the router for `app`.
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
@@ -346,7 +349,13 @@ impl App {
             return self.error_page(StatusCode::SERVICE_UNAVAILABLE, &msg).await;
         };
         let file_title = rel.rsplit('/').next().unwrap_or(rel).to_owned();
-        let title = self.title.clone().unwrap_or(file_title);
+        let mut title = self.title.clone().unwrap_or(file_title);
+        if matches!(snap.status, DocStatus::Failed { .. } | DocStatus::Missing) {
+            // The `(Error) ` prefix live.js shows while an error is active (GRIP §11): a page
+            // loaded in that state starts with it, and the client takes it as an active error
+            // that the next good content clears (LIVE-7).
+            title.insert_str(0, ERROR_TITLE_PREFIX);
+        }
         let live = self.live.then(|| self.live_info(rel, snap.version));
         match (&snap.status, &snap.content) {
             (DocStatus::Ready, Some(c)) => {

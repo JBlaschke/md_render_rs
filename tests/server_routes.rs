@@ -7,7 +7,7 @@ mod server_support;
 use std::path::PathBuf;
 
 use md_render::server::Target;
-use server_support::{Fixture, write_bundle};
+use server_support::{Fixture, write, write_bundle};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn root_renders_the_readme_of_the_served_directory() {
@@ -447,4 +447,69 @@ async fn head_requests_work() {
     let r = server_support::request(s.addr, "HEAD", "/", &[]).await;
     assert_eq!(r.status, 200);
     assert!(r.body.is_empty());
+}
+
+/// LIVE-7: the banners a page is rendered with carry the marker live.js removes them by,
+/// and a page rendered while its document has an error starts with the `(Error) ` title
+/// prefix the live client keeps while an error is active.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_banners_and_error_titles_match_the_live_client() {
+    for flavor in [
+        md_render::flavor::Flavor::Github,
+        md_render::flavor::Flavor::Gitlab,
+    ] {
+        let f = Fixture::new();
+        f.file("doc.md", "good");
+        f.file("latin1.md", b"caf\xe9");
+        let s = f.start(|cfg| cfg.flavor = flavor).await;
+        let live_js = s.get("/__/md-render/static/live.js").await.text();
+        let selector = "#mdr-banners > .mdr-banner";
+        assert!(
+            live_js.contains(&format!("'{selector}'")),
+            "live.js removes server banners by another selector"
+        );
+
+        // A warning banner (invalid UTF-8): inside #mdr-banners, with class mdr-banner.
+        let body = s.get("/latin1.md").await.text();
+        let banners = body
+            .split("id=\"mdr-banners\"")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{flavor}: no #mdr-banners: {body}"));
+        let first = banners.split_once('>').map(|(_, rest)| rest).unwrap_or("");
+        assert!(
+            first.trim_start().starts_with("<div class=\"")
+                && first.split_once('>').unwrap().0.contains(" mdr-banner\""),
+            "{flavor}: the banner is not a direct `.mdr-banner` child: {first:.300}"
+        );
+        assert!(
+            body.contains("<title>latin1.md</title>"),
+            "{flavor}: {body:.400}"
+        );
+
+        // An error page (render failure under the last good content) and a missing page.
+        assert!(
+            s.get("/doc.md")
+                .await
+                .text()
+                .contains("<title>doc.md</title>")
+        );
+        write(&s.path("doc.md"), "FAIL");
+        let r = s.get("/doc.md").await;
+        assert_eq!(r.status, 500);
+        let body = r.text();
+        assert!(
+            body.contains("<title>(Error) doc.md</title>"),
+            "{flavor}: {body:.400}"
+        );
+        assert!(body.contains(" mdr-banner\""), "{flavor}");
+        let body = s.get("/gone.md").await.text();
+        assert!(body.contains("<title>(Error) gone.md</title>"), "{flavor}");
+        write(&s.path("doc.md"), "good again");
+        assert!(
+            s.get("/doc.md")
+                .await
+                .text()
+                .contains("<title>doc.md</title>")
+        );
+    }
 }

@@ -131,6 +131,10 @@ pub struct DocSnapshot {
     /// The last successful render.
     pub content: Option<Arc<Content>>,
     pub status: DocStatus,
+    /// Dedup hash of the inputs whose render failed (`status` is a render or API failure):
+    /// rendering them again publishes no new error, so page loads and re-checks of a broken
+    /// document do not announce the same error over and over (LIVE-7).
+    pub failed: Option<[u8; 32]>,
 }
 
 impl DocSnapshot {
@@ -934,7 +938,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
         Err(message) => {
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
             let v = entry.next_version();
-            publish_failure(entry, t0, v, ErrorKind::Render, message);
+            publish_failure(entry, t0, v, ErrorKind::Render, message, None);
             return;
         }
     };
@@ -955,16 +959,34 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
             s.version = v;
             s.content = Some(content);
             s.status = DocStatus::Ready;
+            s.failed = None;
         });
         entry.broadcast(ev);
         return;
     }
 
-    if snap.status != DocStatus::Pending {
+    // The very inputs whose render failed last time (a page load or re-check of a broken
+    // document): offline renders are deterministic, so they fail the same way again.
+    let retry = snap.failed == Some(hash)
+        && matches!(
+            snap.status,
+            DocStatus::Failed {
+                kind: ErrorKind::Render | ErrorKind::Api,
+                ..
+            }
+        );
+    if retry && ctx.render_error_kind() == ErrorKind::Render {
+        entry.publish(t0, |_| {});
+        return;
+    }
+
+    if snap.status != DocStatus::Pending && !retry {
         ctx.log(&format!("Change detected in {}, refreshing", entry.key));
     }
     let v = entry.next_version();
-    entry.broadcast(Arc::new(WireEvent::rendering(v)));
+    if !retry {
+        entry.broadcast(Arc::new(WireEvent::rendering(v)));
+    }
 
     let renderer = ctx.renderer.clone();
     let key = entry.key.clone();
@@ -999,6 +1021,7 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
                 s.version = v;
                 s.content = Some(content);
                 s.status = DocStatus::Ready;
+                s.failed = None;
             });
             entry.broadcast(ev);
             entry.set_deps(deps, ctx.watcher.as_deref());
@@ -1006,12 +1029,17 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
         Ok((Err(e), _, _)) => {
             let kind = ctx.render_error_kind();
             let message = format!("{e:#}");
+            let same = matches!(&snap.status, DocStatus::Failed { kind: k, message: m } if *k == kind && *m == message);
+            if retry && same {
+                entry.publish(t0, |_| {}); // an --api retry failing the same way
+                return;
+            }
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
-            publish_failure(entry, t0, v, kind, message);
+            publish_failure(entry, t0, v, kind, message, Some(hash));
         }
         Err(message) => {
             ctx.log(&format!("rendering {} failed: {message}", entry.key));
-            publish_failure(entry, t0, v, ErrorKind::Render, message);
+            publish_failure(entry, t0, v, ErrorKind::Render, message, Some(hash));
         }
     }
 }
@@ -1061,11 +1089,21 @@ async fn read_contained(ctx: &RenderCtx, path: &Path) -> std::io::Result<Vec<u8>
     tokio::fs::read(&canon).await
 }
 
-fn publish_failure(entry: &DocEntry, t0: u64, v: u64, kind: ErrorKind, message: String) {
+/// Publish a failed render of the inputs with dedup hash `failed` (None: the inputs could
+/// not even be gathered).
+fn publish_failure(
+    entry: &DocEntry,
+    t0: u64,
+    v: u64,
+    kind: ErrorKind,
+    message: String,
+    failed: Option<[u8; 32]>,
+) {
     let ev = Arc::new(WireEvent::error(v, kind, &message));
     entry.publish(t0, |s| {
         s.version = v;
         s.status = DocStatus::Failed { kind, message };
+        s.failed = failed;
     });
     entry.broadcast(ev);
 }
@@ -1165,6 +1203,7 @@ mod tests {
             processed: 0,
             content: Some(Arc::new(Content::new(3, [0; 32], r))),
             status: DocStatus::Missing,
+            failed: None,
         };
         let names = |since| {
             snap.catch_up("a.md", since)
@@ -1217,6 +1256,37 @@ mod tests {
         );
         assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>hello</p>");
         assert_eq!(s.version, 5);
+    }
+
+    /// LIVE-7: re-checking a document whose render failed (page loads, new subscribers)
+    /// neither renders it again nor announces the same error under a new version.
+    #[tokio::test]
+    async fn a_failed_render_is_not_repeated_for_the_same_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let counter = Arc::new(Counting(AtomicUsize::new(0)));
+        let (hub, _stop) = hub(&root, counter.clone());
+        std::fs::write(root.join("a.md"), "good").unwrap();
+        hub.current("a.md").await.unwrap();
+        std::fs::write(root.join("a.md"), "FAIL").unwrap();
+        let failed = hub.current("a.md").await.unwrap();
+        assert!(matches!(failed.status, DocStatus::Failed { .. }));
+        assert_eq!(counter.0.load(Ordering::SeqCst), 2);
+        let mut rx = hub.get("a.md").unwrap().subscribe_events();
+        for _ in 0..3 {
+            let s = hub.current("a.md").await.unwrap();
+            assert_eq!(s.version, failed.version);
+            assert_eq!(s.status, failed.status);
+        }
+        assert_eq!(counter.0.load(Ordering::SeqCst), 2, "rendered again");
+        assert!(rx.try_recv().is_err(), "events were sent");
+        // Other failing bytes are a new error; good bytes recover.
+        std::fs::write(root.join("a.md"), "FAIL again").unwrap();
+        let s = hub.current("a.md").await.unwrap();
+        assert!(s.version > failed.version);
+        std::fs::write(root.join("a.md"), "fine").unwrap();
+        let s = hub.current("a.md").await.unwrap();
+        assert_eq!((s.status, s.failed), (DocStatus::Ready, None));
     }
 
     #[tokio::test]

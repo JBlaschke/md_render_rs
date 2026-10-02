@@ -25,6 +25,9 @@
   const PREFIX = '/__/md-render';
   const ANCHOR_KEY = 'mdr-live-anchor:';
   const RELOAD_KEY = 'mdr-live-reload:';
+  // Banners the server rendered into the page (src/page: `.mdr-banner` in #mdr-banners).
+  const SERVER_BANNERS = '#mdr-banners > .mdr-banner';
+  const ERROR_PREFIX_RE = /^\(Error\) /;
   const MAX_BACKOFF_MS = 10000;
   const BOTTOM_SLACK_PX = 4;
   const RENDERING_TIMEOUT_MS = 10000;
@@ -46,7 +49,7 @@
     contentVersion: Number(live.version) || 0,
     errorVersion: 0, // version of the error / deletion behind the "doc" banner
     stylesVersion: null, // baseline from the first `hello`
-    baseTitle: document.title.replace(/^\(Error\) /, ''),
+    baseTitle: document.title.replace(ERROR_PREFIX_RE, ''),
     source: null,
     // The stream is closed because the page is hidden (or was hidden when it loaded); it
     // is reopened when the page becomes visible.
@@ -96,6 +99,12 @@
     // Keys come from the pristine server HTML, so compute them before flavor scripts
     // (math, mermaid, copy buttons) mutate the blocks.
     for (let n = container.firstChild; n; n = n.nextSibling) keys.set(n, keyOf(n));
+    if (ERROR_PREFIX_RE.test(document.title)) {
+      // The server rendered the page while the document had an error (it puts the prefix
+      // into <title>): the error is active until newer content arrives.
+      activeErrors.add('doc');
+      state.errorVersion = state.version;
+    }
     restoreSavedAnchor(container);
     window.addEventListener('pagehide', () => {
       clearTimeout(state.hiddenTimer);
@@ -192,8 +201,11 @@
       state.backoff = 1000;
       setStatus('connected', '');
     };
-    es.onerror = () => {
+    es.onerror = (ev) => {
       if (es !== state.source) return;
+      // The protocol's own `error` event (a document error) is dispatched under the same
+      // name as connection errors; it carries data and the connection is fine.
+      if (ev && typeof ev.data === 'string') return;
       setStatus('disconnected', 'Disconnected from md-render; reconnecting…');
       // CLOSED means the browser will not retry (e.g. an HTTP error status): we do.
       if (es.readyState === EventSource.CLOSED) scheduleReconnect();
@@ -330,7 +342,7 @@
     // Fresh content replaces older errors and the banners the server rendered into the page
     // (content that was waiting for a frame must not hide an error that came after it).
     if (state.contentVersion > state.errorVersion) clearBanner('doc');
-    document.querySelectorAll('[data-mdr-banner]').forEach((b) => b.remove());
+    document.querySelectorAll(SERVER_BANNERS).forEach((b) => b.remove());
     const warnings = Array.isArray(msg.warnings) ? msg.warnings.filter(Boolean) : [];
     if (warnings.length) showBanner('warnings', 'warning', warnings.join('\n'));
     else clearBanner('warnings');

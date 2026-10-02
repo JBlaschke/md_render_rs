@@ -158,8 +158,16 @@ impl Browser {
 
     /// Like [`Browser::wait`], panicking with `what` on timeout.
     fn expect(&mut self, tab: &str, js: &str, what: &str) -> Value {
-        self.wait(tab, js, PAGE_TIMEOUT)
-            .unwrap_or_else(|| panic!("timed out waiting until {what} ({js})"))
+        if let Some(v) = self.wait(tab, js, PAGE_TIMEOUT) {
+            return v;
+        }
+        let page = self.eval(
+            tab,
+            "JSON.stringify({url: location.href, ready: document.readyState, title: document.title, \
+             status: document.getElementById('mdr-live-status')?.dataset.state || null, \
+             content: (document.getElementById('md-content')?.textContent || '').slice(0, 300)})",
+        );
+        panic!("timed out waiting until {what} ({js}); page: {page:?}")
     }
 
     /// Wait for the live client to be connected (its status dot says so).
@@ -322,4 +330,73 @@ async fn refreshed_images_stay_fresh_when_their_block_changes() {
         json!(200),
         "the re-inserted image shows the old file"
     );
+}
+
+/// Banners in the page: those the server rendered and those live.js added.
+const BANNERS: &str = "({server: document.querySelectorAll('#mdr-banners > .mdr-banner').length, \
+     live: document.querySelectorAll('.mdr-live-banner').length, title: document.title})";
+
+/// LIVE-7: banners the server rendered into the page go away once fresh content is applied,
+/// and a page loaded while its document has an error shows the `(Error) ` title until then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn banners_and_error_titles_from_page_load_are_cleared_by_fresh_content() {
+    let Some(mut b) =
+        Browser::launch("banners_and_error_titles_from_page_load_are_cleared_by_fresh_content")
+    else {
+        return;
+    };
+    let f = Fixture::new();
+    f.file("doc.md", "good");
+    f.file("latin1.md", b"caf\xe9");
+    let s = f.start(|_| {}).await;
+    assert_eq!(s.get("/doc.md").await.status, 200);
+    write_atomic(&s.path("doc.md"), "FAIL");
+
+    // Loaded with a render error: error banner and title prefix.
+    let tab = b.open(&url(&s, "/doc.md"), false);
+    b.expect_connected(&tab);
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(
+        state,
+        json!({"server": 1, "live": 0, "title": "(Error) doc.md"})
+    );
+    // The re-check that follows the subscription does not announce the same error again
+    // (which would add a second, live banner).
+    std::thread::sleep(Duration::from_millis(1500));
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(
+        state,
+        json!({"server": 1, "live": 0, "title": "(Error) doc.md"})
+    );
+    write_atomic(&s.path("doc.md"), "fixed");
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('fixed')",
+        "the fixed document is shown",
+    );
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(state, json!({"server": 0, "live": 0, "title": "doc.md"}));
+
+    // Loaded with a warning (invalid UTF-8): replaced by the warnings of fresh content, never
+    // shown twice.
+    let tab = b.open(&url(&s, "/latin1.md"), false);
+    b.expect_connected(&tab);
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(state, json!({"server": 1, "live": 0, "title": "latin1.md"}));
+    write_atomic(&s.path("latin1.md"), b"caf\xe9 still latin-1");
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('still')",
+        "the edit is shown",
+    );
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(state, json!({"server": 0, "live": 1, "title": "latin1.md"}));
+    write_atomic(&s.path("latin1.md"), "café fixed");
+    b.expect(
+        &tab,
+        "document.getElementById('md-content').textContent.includes('fixed')",
+        "the fixed document is shown",
+    );
+    let state = b.eval(&tab, BANNERS).unwrap();
+    assert_eq!(state, json!({"server": 0, "live": 0, "title": "latin1.md"}));
 }
