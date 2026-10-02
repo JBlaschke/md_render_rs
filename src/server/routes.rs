@@ -68,20 +68,17 @@ async fn access_log(req: Request, next: Next) -> Response {
 /// Host-header allowlist against DNS rebinding when bound to loopback (D14, GRIP C39).
 async fn host_guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     if let Some(allow) = &app.hosts {
+        // Both the authority of an absolute-form request line and the Host header must name
+        // this server: either alone could otherwise smuggle a foreign host past the check
+        // (SEC-5). HTTP/1.0 clients may send neither; browsers (the rebinding vector) always
+        // send Host.
+        let authority = req.uri().authority().map(|a| a.as_str().to_owned());
         let host = req
-            .uri()
-            .authority()
-            .map(|a| a.as_str().to_owned())
-            .or_else(|| {
-                req.headers()
-                    .get(header::HOST)
-                    .and_then(|h| h.to_str().ok())
-                    .map(str::to_owned)
-            });
-        // HTTP/1.0 clients may omit Host; browsers (the rebinding vector) always send it.
-        if let Some(h) = host
-            && !allow.allows(&h)
-        {
+            .headers()
+            .get_all(header::HOST)
+            .iter()
+            .map(|h| String::from_utf8_lossy(h.as_bytes()).into_owned());
+        if let Some(h) = authority.into_iter().chain(host).find(|h| !allow.allows(h)) {
             return (
                 StatusCode::FORBIDDEN,
                 [(header::CONTENT_TYPE, TEXT_UTF8)],

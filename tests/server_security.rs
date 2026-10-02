@@ -281,6 +281,42 @@ async fn host_header_allowlist_on_loopback() {
     }
 }
 
+/// SEC-5: an absolute-form request line does not override a foreign `Host` header (nor the
+/// other way round), and a second `Host` header is checked too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_guard_checks_every_authority() {
+    let s = server(false).await;
+    let port = s.addr.port();
+    let local = format!("localhost:{port}");
+    let evil = format!("evil.example:{port}");
+    let cases: [(String, Vec<(&str, &str)>); 3] = [
+        (
+            format!("http://{local}/README.md"),
+            vec![("Host", evil.as_str())],
+        ),
+        (
+            format!("http://{evil}/README.md"),
+            vec![("Host", local.as_str())],
+        ),
+        (
+            "/README.md".to_owned(),
+            vec![("Host", local.as_str()), ("Host", evil.as_str())],
+        ),
+    ];
+    for (target, headers) in &cases {
+        let r = s.get_with(target, headers).await;
+        assert_ne!(r.status, 200, "{target} {headers:?}");
+        assert!(!r.text().contains("public readme"), "{target} {headers:?}");
+    }
+    let r = s
+        .get_with(
+            &format!("http://{local}/README.md"),
+            &[("Host", local.as_str())],
+        )
+        .await;
+    assert_eq!(r.status, 200);
+}
+
 /// SEC-6: raw HTML, SVG and XML files are active documents. Served from the preview origin
 /// they could read every file of the root (a README image opens its SVG in a new tab), so
 /// they get a sandbox CSP without `allow-same-origin`: an opaque origin, scripts still run.
