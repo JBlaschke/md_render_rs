@@ -132,12 +132,11 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         // copies in the assets directory (and never mistakes a document URL for one).
         bundle_url: format!("{}/bundle", crate::PREFIX),
     };
-    let mut rendered = cfg.renderer.render(&markdown, &opts).with_context(|| {
-        format!(
-            "rendering {display_name} with the {} renderer",
-            cfg.renderer.name()
-        )
-    })?;
+    // The renderer's error says what failed (e.g. which API could not be reached, CLI-23).
+    let mut rendered = cfg
+        .renderer
+        .render(&markdown, &opts)
+        .with_context(|| format!("rendering {display_name}"))?;
     if let Some(prefix) = source_prefix(opts.source_path.as_deref(), &cfg.output) {
         rendered.html = crate::page::content::rebase_relative_urls(&rendered.html, &prefix);
     }
