@@ -150,7 +150,7 @@ pub fn render(markdown: &str, opts: &RenderOptions) -> Rendered {
     let options = ast::options();
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, &body, &options);
-    ast::transform(root);
+    ast::transform(&arena, root, &body);
     let state = formatter::FmtState::new(&ctx);
     let (html, state) = formatter::format(root, &options, state);
     let mut features = Features {
@@ -497,6 +497,88 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// GH-AUTO-1: bare http(s) URLs with a dot-less host are links on github.com (cmark-gfm's
+    /// `url_match` allows short domains), comrak leaves them as text.
+    #[test]
+    fn short_host_urls_are_autolinked() {
+        // `gh api /markdown` (gfm + context), `cases/autolink_short.gh.html`.
+        let md = "Open http://localhost:3000 now.\n\nhttp://localhost\n\nhttps://intranet/path\n\nhttp://127.0.0.1:8080/\n\nhttps://my-host:9000/x\n";
+        let gh = concat!(
+            "<p dir=\"auto\">Open <a href=\"http://localhost:3000\" rel=\"nofollow\">http://localhost:3000</a> now.</p>\n",
+            "<p dir=\"auto\"><a href=\"http://localhost\" rel=\"nofollow\">http://localhost</a></p>\n",
+            "<p dir=\"auto\"><a href=\"https://intranet/path\" rel=\"nofollow\">https://intranet/path</a></p>\n",
+            "<p dir=\"auto\"><a href=\"http://127.0.0.1:8080/\" rel=\"nofollow\">http://127.0.0.1:8080/</a></p>\n",
+            "<p dir=\"auto\"><a href=\"https://my-host:9000/x\" rel=\"nofollow\">https://my-host:9000/x</a></p>",
+        );
+        for mode in [Mode::Comment, Mode::Readme] {
+            assert_eq!(render(md, &opts(mode)).html.trim_end(), gh, "{mode:?}");
+        }
+        let link = |url: &str| format!("<a href=\"{url}\" rel=\"nofollow\">{url}</a>");
+        for mode in [Mode::Comment, Mode::Readme] {
+            let o = opts(mode);
+            let html = |md: &str| render(md, &o).html;
+            // Inside other inline and block containers.
+            for md in [
+                "# Run http://localhost:3000\n",
+                "> see http://localhost:3000.\n",
+                "- item http://localhost:3000\n",
+                "**http://localhost:3000**\n",
+                "| a |\n|---|\n| http://localhost:3000 |\n",
+                "x[^1]\n\n[^1]: at http://localhost:3000\n",
+                "a <span>http://localhost:3000</span> b\n",
+                "(http://localhost:3000)\n",
+            ] {
+                assert!(
+                    html(md).contains(&link("http://localhost:3000")),
+                    "{md:?} -> {}",
+                    html(md)
+                );
+            }
+            // The dot after `www` counts for cmark-gfm's `www_match`.
+            assert!(
+                html("go www.localhost now\n")
+                    .contains(r#"<a href="http://www.localhost" rel="nofollow">www.localhost</a>"#),
+                "{}",
+                html("go www.localhost now\n")
+            );
+            // The scheme compares case-insensitively.
+            assert!(html("HTTP://localhost:1\n").contains(&link("HTTP://localhost:1")));
+            // Trailing punctuation and an entity after the URL are not part of it.
+            assert!(
+                html("at http://localhost:3000.\n")
+                    .contains(&format!("{}.", link("http://localhost:3000")))
+            );
+            assert!(html("at https://h/&amp;\n").contains(&format!("{}&amp;", link("https://h/"))));
+            // Not links on github.com either.
+            for md in [
+                "ftp://localhost\n",
+                "see http:// alone\n",
+                "see http://-x\n",
+                "`http://localhost:3000`\n",
+                "```\nhttp://localhost:3000\n```\n",
+                "[in http://localhost:3000 brackets]\n",
+                "xhttp://localhost\n",
+                "http\\://localhost:3000\n",
+                "http&#58;//localhost:3000\n",
+                "`c`www.localhost\n",
+                "www.\n",
+                "http://a_b/x\n",
+            ] {
+                assert!(!html(md).contains("<a "), "{md:?} -> {}", html(md));
+            }
+            // An existing link is not linked again.
+            let r = html("[http://localhost:3000](http://x.com)\n");
+            assert_eq!(r.matches("<a ").count(), 1, "{r}");
+            assert!(r.contains(r#"href="http://x.com""#), "{r}");
+        }
+        // Raw HTML block text stays unlinked in the comment context (`S/api_gfm_ctx.html`).
+        let r = render(
+            "<div>\nhttp://localhost:3000\n</div>\n",
+            &opts(Mode::Comment),
+        );
+        assert!(!r.html.contains("<a "), "{}", r.html);
     }
 
     #[test]

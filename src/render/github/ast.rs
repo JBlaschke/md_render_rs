@@ -1,14 +1,19 @@
 //! comrak options and the AST passes that run before formatting (CQ §3.1 step 2).
 //!
 //! * tagfilter on raw HTML literals (GH §8.11; comrak's own `tagfilter` is deprecated).
+//! * duplicate footnote definitions collapse to the first (GH-FN-1).
+//! * bare URLs cmark-gfm links but comrak does not (short hosts, `www.localhost`,
+//!   upper-case schemes; GH-AUTO-1).
 //!
 //! Alerts, dollar math and task lists are found later, on the HTML tree, as github.com does
 //! ([`super::alerts`], [`super::math`], [`super::tasks`]).
 
 use std::collections::HashMap;
 
-use comrak::Options;
-use comrak::nodes::{AstNode, NodeValue};
+use comrak::nodes::{AstNode, NodeLink, NodeValue, Sourcepos};
+use comrak::{Arena, Options};
+
+use super::autolink;
 
 /// comrak options for the GitHub flavor (GH §10): GFM extensions without comrak's alerts,
 /// dollar math, task lists, shortcodes and heading ids, which we implement on the HTML tree.
@@ -23,9 +28,10 @@ pub(super) fn options() -> Options<'static> {
     o
 }
 
-/// Runs all AST passes.
-pub(super) fn transform<'a>(root: &'a AstNode<'a>) {
+/// Runs all AST passes. `src` is the text comrak parsed (for source positions).
+pub(super) fn transform<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>, src: &str) {
     dedupe_footnotes(root);
+    autolink_text(arena, root, src);
     for node in root.descendants() {
         let mut ast = node.data_mut();
         match &mut ast.value {
@@ -171,6 +177,144 @@ fn dedupe_footnotes<'a>(root: &'a AstNode<'a>) {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// bare URLs comrak leaves unlinked (GH-AUTO-1)
+
+/// Links the bare URLs that comrak leaves as text although cmark-gfm links them
+/// ([`autolink::find_markdown`]: `http://localhost:3000`, `https://intranet/x`,
+/// `www.localhost`, `HTTP://…`). Each paragraph, heading and table cell is one inline parse in
+/// cmark-gfm, so the open-bracket count runs over its text nodes in document order; link and
+/// image text is never autolinked (comrak coalesces adjacent text nodes, so a URL never
+/// spans two).
+fn autolink_text<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>, src: &str) {
+    if !src.contains("://") && !src.contains("www.") {
+        return;
+    }
+    let lines: Vec<&str> = src.split('\n').collect();
+    let blocks: Vec<&'a AstNode<'a>> = root
+        .descendants()
+        .filter(|n| {
+            matches!(
+                n.data().value,
+                NodeValue::Paragraph | NodeValue::Heading(_) | NodeValue::TableCell
+            )
+        })
+        .collect();
+    for block in blocks {
+        let mut texts = Vec::new();
+        inline_texts(block, &mut texts);
+        let mut brackets = 0;
+        for t in texts {
+            link_text(arena, t, &lines, &mut brackets);
+        }
+    }
+}
+
+/// The text nodes of an inline container in document order, outside links and images.
+fn inline_texts<'a>(n: &'a AstNode<'a>, out: &mut Vec<&'a AstNode<'a>>) {
+    for c in n.children() {
+        let (text, opaque) = match &c.data().value {
+            NodeValue::Text(_) => (true, false),
+            NodeValue::Link(_) | NodeValue::Image(_) => (false, true),
+            _ => (false, false),
+        };
+        if text {
+            out.push(c);
+        } else if !opaque {
+            inline_texts(c, out);
+        }
+    }
+}
+
+/// Splits the text node `node` around the autolinks [`autolink::find_markdown`] finds in it.
+fn link_text<'a>(
+    arena: &'a Arena<'a>,
+    node: &'a AstNode<'a>,
+    lines: &[&str],
+    brackets: &mut usize,
+) {
+    let (s, sp) = {
+        let data = node.data();
+        match &data.value {
+            NodeValue::Text(t) => (t.to_string(), data.sourcepos),
+            _ => return,
+        }
+    };
+    // What precedes the node in the source: the start of the inline content (or an opening
+    // `*`/`_`/`~` delimiter, when it is an emphasis' first child), a line break, or the
+    // closing delimiter of an emphasis; anything else (`` ` ``, `>`, `)`, `]`, `$`) does not
+    // allow a `www.` autolink.
+    let start_boundary = node.previous_sibling().is_none_or(|p| {
+        matches!(
+            p.data().value,
+            NodeValue::SoftBreak
+                | NodeValue::LineBreak
+                | NodeValue::Emph
+                | NodeValue::Strong
+                | NodeValue::Strikethrough
+        )
+    });
+    let found = autolink::find_markdown(&s, start_boundary, brackets);
+    if found.is_empty() {
+        return;
+    }
+    // cmark-gfm matches the raw source, comrak's text is unescaped: keep only URLs that
+    // appear verbatim on the node's source line, trimmed as there ([`autolink::in_source`]).
+    let line = sp
+        .start
+        .line
+        .checked_sub(1)
+        .and_then(|l| lines.get(l))
+        .copied();
+    let mut from = 0;
+    let found: Vec<_> = found
+        .into_iter()
+        .filter_map(|(a, b, href)| {
+            let Some(line) = line else {
+                return Some((a, b, href));
+            };
+            let (next, len) = autolink::in_source(line, from, &s[a..b])?;
+            from = next;
+            let cut = b - a - len;
+            Some((a, a + len, href[..href.len() - cut].to_owned()))
+        })
+        .collect();
+    if found.is_empty() {
+        return;
+    }
+    let mut last = 0;
+    for (start, end, href) in found {
+        if start > last {
+            node.insert_before(new_node(arena, text_value(&s[last..start]), sp));
+        }
+        let link = new_node(
+            arena,
+            NodeValue::Link(Box::new(NodeLink {
+                url: href,
+                title: String::new(),
+            })),
+            sp,
+        );
+        link.append(new_node(arena, text_value(&s[start..end]), sp));
+        node.insert_before(link);
+        last = end;
+    }
+    if last < s.len() {
+        node.insert_before(new_node(arena, text_value(&s[last..]), sp));
+    }
+    node.detach();
+}
+
+fn text_value(s: &str) -> NodeValue {
+    NodeValue::Text(s.to_owned().into())
+}
+
+fn new_node<'a>(arena: &'a Arena<'a>, value: NodeValue, sp: Sourcepos) -> &'a AstNode<'a> {
+    let node = arena.alloc(AstNode::from(value));
+    node.data_mut().sourcepos = sp;
+    node
 }
 
 // ------------------------------------------------------------------------------------------

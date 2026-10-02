@@ -235,7 +235,7 @@ fn generate(rng: &mut Rng) -> String {
     for _ in 0..fragments {
         match rng.below(10) {
             // An unterminated raw start tag (no closing `>`): absorbs what follows (GH-SEC-1).
-            0 | 1 | 2 => {
+            0..=2 => {
                 let tag = if rng.below(2) == 0 {
                     rng.pick(FORMATTING)
                 } else {
@@ -253,7 +253,7 @@ fn generate(rng: &mut Rng) -> String {
             }
             // An unclosed (but terminated) raw start tag: stays in the formatting list and is
             // reconstructed into later subtrees (GH-SEC-2).
-            3 | 4 | 5 => {
+            3..=5 => {
                 let tag = if rng.below(2) == 0 {
                     rng.pick(FORMATTING)
                 } else {
