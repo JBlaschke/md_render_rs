@@ -621,6 +621,9 @@ hidden grip compat: --wide (no-op, warns), --user/--pass (usage error: use --tok
   `GITLAB_TOKEN` for GitLab).
 * CLI: argv → plan table tests (grip resolution table GRIP §2.3), binary tests for messages and
   exit codes.
+* Docs: `tests/docs_notices.rs` keeps `THIRD_PARTY_NOTICES.md` well-formed (balanced code fences,
+  a license and copyright line in every upstream section, the summary table matching the
+  sections, in-page links resolving).
 * CI (`.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --workspace --all-targets
   -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps`, `cargo test
   --workspace` on Linux and macOS, `cargo check` with Rust 1.88.
