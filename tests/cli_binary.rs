@@ -287,10 +287,9 @@ fn cache_path_and_clear_stay_in_the_cache_directory() {
     assert_eq!((code, stdout.as_str()), (0, ""));
 }
 
+/// `md-render export -` reads stdin and writes the page to stdout (no file is written).
 #[test]
 fn stdin_export_to_stdout_is_planned_before_running() {
-    // Until the page owner lands `export`, the run fails at the export step (exit 1), never with a
-    // usage error: the CLI part (reading stdin, choosing stdout) succeeded.
     let e = env();
     let mut child = command(&e.cwd, &e.home, &["export", "-"])
         .stdin(Stdio::piped())
@@ -304,12 +303,18 @@ fn stdin_export_to_stdout_is_planned_before_running() {
         stdin.write_all(b"# From stdin\n").unwrap();
     }
     let out = child.wait_with_output().unwrap();
-    let code = out.status.code().unwrap_or(-1);
-    assert!(code == 0 || code == 1, "unexpected exit code {code}");
-    if code == 0 {
-        let html = String::from_utf8_lossy(&out.stdout);
-        assert!(html.contains("From stdin"), "{html}");
-    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        html.contains("<html") && html.contains("From stdin"),
+        "{html}"
+    );
+    let written: Vec<_> = fs::read_dir(&e.cwd)
+        .unwrap()
+        .map(|d| d.unwrap().file_name())
+        .collect();
+    assert_eq!(written, ["README.md"], "export - wrote a file");
 }
 
 /// A minimal HTTP/1.1 server on 127.0.0.1 answering GETs from `files` (404 otherwise), one
@@ -418,9 +423,8 @@ fn vendor_prints_one_summary() {
     assert!(!stderr.contains("KiB"), "{stderr}");
 }
 
-/// Needs `md_render::export::export` (owner: page); enable once it is implemented.
+/// `export FILE -` writes to stdout; `--export` (grip) writes `<stem>.html`.
 #[test]
-#[ignore = "needs the export implementation (owner: page)"]
 fn export_to_stdout() {
     let e = env();
     let (code, stdout, stderr) = run(&e, &["export", "README.md", "-"]);
