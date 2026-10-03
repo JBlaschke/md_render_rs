@@ -338,13 +338,38 @@ enum BundleSource {
 
 /// Turn parsed arguments into an [`Invocation`]. Reads stdin when PATH is `-`.
 ///
+/// When planning fails, the warnings collected so far are shown first through
+/// [`Host::notice`] (unless `--quiet`), as a successful run would log them: they often explain
+/// the error, like the hint that a bare `md-render export` ran the subcommand rather than
+/// serving the file `export` when no README is found (CLI-21).
+///
 /// # Errors
 /// [`CliError::Clap`] (exit 2) for invalid combinations, addresses, environment values and
 /// `--root` problems; [`CliError::Runtime`] (exit 1) for missing files, a directory without
 /// README on export, unreadable stdin or an unknown cache directory.
 pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
-    let g = &cli.global;
     let mut warnings = Vec::new();
+    match plan_with(&cli, host, &mut warnings) {
+        Ok(plan) => Ok(Invocation {
+            plan,
+            warnings,
+            quiet: cli.global.quiet,
+            verbose: cli.global.verbose,
+        }),
+        Err(e) => {
+            if !cli.global.quiet {
+                for w in &warnings {
+                    host.notice(&format!("md-render: warning: {w}"));
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// [`plan`], collecting its warnings in `warnings`.
+fn plan_with(cli: &Cli, host: &mut dyn Host, warnings: &mut Vec<String>) -> Result<Plan, CliError> {
+    let g = &cli.global;
 
     // grip compatibility flags (GRIP §10 C14, C20).
     if g.user.is_some() || g.pass.is_some() {
@@ -358,25 +383,24 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
         warnings.push("--wide has no effect (it was a no-op in grip too); see --layout".to_owned());
     }
 
-    let quiet = g.quiet;
     let cwd = host
         .cwd()
         .map_err(|e| runtime(format!("cannot determine the current directory: {e}")))?;
     let bundle = bundle_path(g, host, &cwd);
 
-    let plan = match &cli.command {
+    Ok(match &cli.command {
         // Usage errors of a subcommand show its usage line, not the top-level one (CLI-14).
-        Some(cmd) => subcommand_plan(&cli, cmd, bundle, host, &cwd, &mut warnings)
+        Some(cmd) => subcommand_plan(cli, cmd, bundle, host, &cwd, warnings)
             .map_err(|e| e.in_subcommand(&subcommand_path(cmd)))?,
         // grip runs `--clear` before any path resolution (GRIP §2.2 step 5).
         None if cli.serve.clear => {
-            warn_ignored(g, true, "--clear", &mut warnings);
+            warn_ignored(g, true, "--clear", warnings);
             Plan::CacheClear(cache_clear_plan(host, bundle)?)
         }
         None if cli.serve.export => {
             reject_with_export(&cli.serve)?;
             let flavor = render_flavor(g, host)?;
-            let render = render_plan(g, flavor, &bundle.0, &cwd, true, &mut warnings)?;
+            let render = render_plan(g, flavor, &bundle.0, &cwd, true, warnings)?;
             // grip: no address resolution in export mode; the 2nd positional is the output.
             let args = ExportArgs {
                 path: cli.serve.path.clone(),
@@ -384,14 +408,7 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
                 no_inline: cli.serve.no_inline,
             };
             let inline = !cli.serve.no_inline;
-            Plan::Export(export_plan(
-                &args,
-                inline,
-                render,
-                host,
-                &cwd,
-                &mut warnings,
-            )?)
+            Plan::Export(export_plan(&args, inline, render, host, &cwd, warnings)?)
         }
         None => {
             if cli.serve.no_inline {
@@ -401,15 +418,9 @@ pub fn plan(cli: Cli, host: &mut dyn Host) -> Result<Invocation, CliError> {
                 ));
             }
             let flavor = render_flavor(g, host)?;
-            let render = render_plan(g, flavor, &bundle.0, &cwd, false, &mut warnings)?;
-            Plan::Serve(serve_plan(&cli.serve, render, host, &cwd, &mut warnings)?)
+            let render = render_plan(g, flavor, &bundle.0, &cwd, false, warnings)?;
+            Plan::Serve(serve_plan(&cli.serve, render, host, &cwd, warnings)?)
         }
-    };
-    Ok(Invocation {
-        plan,
-        warnings,
-        quiet,
-        verbose: g.verbose,
     })
 }
 

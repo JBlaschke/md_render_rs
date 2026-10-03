@@ -582,7 +582,9 @@ hidden grip compat: --wide (no-op, warns), --user/--pass (usage error: use --tok
   rendering/API options they ignore (CLI-11); `--context`, `--api-url` and `--token` without
   `--api` warn (CLI-22). **Changed (CLI-13):** an all-digit argument right after a bare `--poll`
   is a usage error (`--poll=500`, or the address before the option), because it would otherwise
-  silently become the PATH or ADDRESS.
+  silently become the PATH or ADDRESS. When planning fails, the warnings collected so far are
+  printed before the error (unless `-q`), so the CLI-21 hint is not lost when, say, a bare
+  `md-render export` finds no README.
 * GitLab accepts only the `light` and `dark` theme ids.
 * `cache clear` deletes md-render's cache directory (a symlinked one is unlinked, its target
   kept); a `--styles` bundle outside it is never deleted and is named in the message.

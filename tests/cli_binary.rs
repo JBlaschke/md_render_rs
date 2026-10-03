@@ -152,6 +152,17 @@ fn runtime_errors_exit_1() {
     let (code, _, stderr) = run(&e, &["export", "empty"]);
     assert_eq!(code, 1);
     assert!(stderr.contains("No README found at empty"), "{stderr}");
+    // CLI-21: the shadowing hint survives a failed plan and comes before the error.
+    let dir = e.cwd.join("empty");
+    fs::write(dir.join("export"), "# x\n").unwrap();
+    let out = md_render(&dir, &e.home, &["export"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "md-render: warning: running the 'export' subcommand; to serve the file 'export' use \
+         ./export\nerror: No README found at .\n"
+    );
 }
 
 #[test]

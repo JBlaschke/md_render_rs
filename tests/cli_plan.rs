@@ -1213,6 +1213,33 @@ fn a_subcommand_shadowing_an_existing_file_warns() {
             "{args:?}: {w:?}"
         );
     }
+
+    // When planning then fails (no README next to the file `export`), the hint is shown
+    // before the error instead of being dropped with the plan; `-q` silences it.
+    let dir = fx.cwd.join("nodocs");
+    fs::write(dir.join("export"), "# a file named export").unwrap();
+    let mut host = fx.host();
+    host.cwd = dir.clone();
+    let err = run_with(&mut host, &["export"]).expect_err("no README");
+    assert_eq!(err.exit_code(), 1);
+    assert!(err.to_string().contains("No README found"), "{err}");
+    assert_eq!(
+        host.notices,
+        [format!("md-render: warning: {}", note("export"))]
+    );
+    let mut host = fx.host();
+    host.cwd = dir;
+    run_with(&mut host, &["-q", "export"]).expect_err("no README");
+    assert!(host.notices.is_empty(), "{:?}", host.notices);
+    // A successful plan returns its warnings instead of showing them.
+    let mut host = fx.host();
+    assert!(
+        run_with(&mut host, &["export"])
+            .unwrap()
+            .warnings
+            .contains(&note("export"))
+    );
+    assert!(host.notices.is_empty(), "{:?}", host.notices);
 }
 
 /// CLI-14: usage errors of a subcommand show its usage line (not the top-level one), and a
