@@ -275,6 +275,11 @@ impl Styles {
         self.bundle.load_full()
     }
 
+    /// The bundle file this server reads (and names in `md-render vendor` hints).
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Bumped on every bundle swap and `--css` change.
     pub(crate) fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)

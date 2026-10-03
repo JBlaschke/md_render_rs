@@ -171,6 +171,30 @@ fn gitlab_math_without_katex_keeps_the_source_markup() {
     );
 }
 
+/// The "not vendored" hint names the bundle the page was made with (`-o FILE` for a
+/// `--styles` bundle, STY-1): plain `md-render vendor` would fill the default bundle instead.
+#[test]
+fn missing_library_hint_names_the_styles_bundle() {
+    for (flavor, lib) in [(Flavor::Gitlab, "katex"), (Flavor::Github, "mathjax")] {
+        let mut p = Page::new(flavor);
+        p.content = rendered(flavor, MATH_DOC);
+        p.assets = AssetMode::Inline;
+        p.bundle_path = Some("/elsewhere/my styles.tar.gz".into());
+        let html = p.render(&Bundle::fallback());
+        let scenario = format!(
+            r#"module.exports = {{ async run(window, t) {{
+  const want = "{lib} is not vendored (run `md-render vendor --flavor {flavor} -o '/elsewhere/my styles.tar.gz'`)";
+  t.ok(t.logs.some((l) => l.text.indexOf(want) !== -1), 'the hint names the bundle: ' + JSON.stringify(t.logs));
+}} }};"#
+        );
+        run_scenario(
+            &format!("missing_library_hint_names_the_styles_bundle ({flavor})"),
+            &html,
+            &scenario,
+        );
+    }
+}
+
 /// The same with a library URL that fails to load (served page, KaTeX file missing).
 #[test]
 fn gitlab_math_with_failing_katex_download_keeps_the_source_markup() {

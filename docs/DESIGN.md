@@ -250,6 +250,7 @@ pub struct PageInput<'a> {
     pub live: Option<&'a LiveInfo>,
     pub banners: &'a [Banner],
     pub extra_css: &'a [String],        // extra stylesheets after the bundle CSS (see below)
+    pub bundle_path: Option<&'a Path>,  // the --styles/default bundle file named in vendor hints
 }
 pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>;
 pub struct ListingEntry { pub name: String, pub href: String, pub is_dir: bool, pub size: Option<u64> }
@@ -262,6 +263,11 @@ mode links them (the server serves them, §6); Inline and Directory modes embed 
 as `data:` URIs. `render_page` therefore fails on I/O errors only: copying files in Directory
 mode, or reading a local extra stylesheet in the export modes. A requested GitHub theme id the
 bundle lacks falls back to light/dark with a warning naming `vendor --themes all` (PAGE-1).
+**Added (STY-1 leftovers):** every `md-render vendor` command a page or export suggests is built
+by `styles::vendor_command`, so it carries `-o FILE` for a non-default bundle (`bundle_path`,
+else the file the bundle was read from): the theme fallback warning, and the config's `vendor`
+command, which `common.js` shows when a wanted library is not vendored (only set then, so an
+export does not carry the local bundle path for nothing).
 
 ### 3.7 `src/assets.rs`
 `pub fn get(name: &str) -> Option<(&'static [u8], &'static str /*mime*/)>` and `pub const NAMES`
@@ -549,7 +555,7 @@ code), hash navigation (also `name=` targets). GitLab — `copy-code` (sprite pe
 `gl-system` auto dark toggle. Configuration comes from
 `<script id="mdr-config" type="application/json">`
 (`{flavor, layout, mode, theme, themes: {light, dark}, scripts: {mathjax, mermaid, katex, …},
-live: {...}|null}`) emitted by the page.
+vendor: "md-render vendor …"|null, live: {...}|null}`) emitted by the page.
 
 ---------------------------------------------------------------------------------------------------
 

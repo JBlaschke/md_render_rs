@@ -11,8 +11,9 @@
 //! Asset references depend on [`AssetMode`]: server URLs, a copied assets directory, or a fully
 //! self-contained document (CSS inlined with `data:` URIs, libraries inlined when needed).
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
@@ -21,7 +22,7 @@ use regex::Regex;
 use crate::flavor::{Flavor, Mode, Theme, ThemeSel};
 use crate::html;
 use crate::render::Rendered;
-use crate::styles::Bundle;
+use crate::styles::{Bundle, BundleOrigin};
 
 mod assets;
 pub(crate) mod content;
@@ -126,6 +127,20 @@ pub struct PageInput<'a> {
     /// may also be a local CSS file (as `--css FILE` gives), which is embedded in the page
     /// together with the files it references.
     pub extra_css: &'a [String],
+    /// The bundle file md-render was told to use (`--styles`, `MD_RENDER_STYLES` or the
+    /// default), for the `md-render vendor` commands in hints (`-o FILE` for a non-default
+    /// one, STY-1). `None`: the file `bundle` was read from, else the default location.
+    pub bundle_path: Option<&'a Path>,
+}
+
+/// The bundle file hints should name: `given`, else the file `bundle` was read from, else the
+/// default location.
+fn hint_bundle_path<'a>(given: Option<&'a Path>, bundle: &'a Bundle) -> Cow<'a, Path> {
+    match (given, bundle.origin()) {
+        (Some(p), _) => Cow::Borrowed(p),
+        (None, BundleOrigin::File(p)) => Cow::Borrowed(p.as_path()),
+        (None, BundleOrigin::Fallback) => Cow::Owned(crate::styles::default_bundle_path()),
+    }
 }
 
 /// Client library keys (manifest `scripts`) a flavor uses for math and for mermaid.
@@ -155,10 +170,12 @@ fn gitlab_icon_sprite(bundle: &Bundle) -> Option<&str> {
 /// have: the page then uses `light` / `dark` instead (sheets::resolve_theme), which looks like
 /// an ordinary light/dark page unless the user is told. `None` when every needed id is
 /// vendored, for GitLab (only `light`/`dark`), and for bundles without theme files at all.
+/// The command it suggests vendors into `bundle_path` (with `-o` unless it is the default).
 pub(crate) fn theme_fallback_warning(
     flavor: Flavor,
     theme: &ThemeSel,
     bundle: &Bundle,
+    bundle_path: &Path,
 ) -> Option<String> {
     if flavor != Flavor::Github {
         return None;
@@ -180,10 +197,11 @@ pub(crate) fn theme_fallback_warning(
     }
     let s = if missing.len() > 1 { "s" } else { "" };
     Some(format!(
-        "the style bundle has no GitHub theme{s} {}; using {} instead (run `md-render vendor \
-         --flavor github --themes all` to vendor every theme)",
+        "the style bundle has no GitHub theme{s} {}; using {} instead (run `{} --themes all` \
+         to vendor every theme)",
         missing.join(", "),
-        used.join(", ")
+        used.join(", "),
+        crate::styles::vendor_command(Some(Flavor::Github), bundle_path)
     ))
 }
 
@@ -210,9 +228,10 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         Flavor::Github => sheets::github(m, input.theme),
         Flavor::Gitlab => sheets::gitlab(m, input.theme),
     });
+    let bundle_path = hint_bundle_path(input.bundle_path, bundle);
     // Serving: say once that a requested theme is missing (export reports it on stderr).
     if matches!(input.assets, AssetMode::Server { .. })
-        && let Some(w) = theme_fallback_warning(input.flavor, input.theme, bundle)
+        && let Some(w) = theme_fallback_warning(input.flavor, input.theme, bundle, &bundle_path)
     {
         warn_once(w);
     }
@@ -296,7 +315,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
     let mut scripts = serde_json::Map::new();
     let mut holders = String::new();
     if let Some(m) = manifest {
-        for key in wanted {
+        for &key in &wanted {
             let Some(path) = m.scripts.get(key) else {
                 continue;
             };
@@ -310,6 +329,12 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
             }
         }
     }
+    // The command common.js names when a wanted library is not vendored. Only then: an export
+    // should not carry the local bundle path (`-o FILE`) for nothing.
+    let vendor_hint = wanted
+        .iter()
+        .any(|key| !scripts.contains_key(*key))
+        .then(|| crate::styles::vendor_command(Some(input.flavor), &bundle_path));
 
     let chrome_css = match input.flavor {
         Flavor::Github => github::CHROME_CSS,
@@ -373,6 +398,7 @@ pub fn render_page(input: &PageInput, bundle: &Bundle) -> anyhow::Result<String>
         "theme": color_mode.as_str(),
         "themes": { "light": light, "dark": dark },
         "scripts": scripts,
+        "vendor": vendor_hint,
         "live": live.map(|l| serde_json::json!({
             "events_url": l.events_url,
             "render_url": l.render_url,

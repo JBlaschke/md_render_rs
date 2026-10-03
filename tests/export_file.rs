@@ -564,10 +564,13 @@ fn missing_theme_is_reported_on_stderr() {
         String::from_utf8_lossy(&out.stderr).into_owned()
     };
     let stderr = run(&["--theme", "dark_high_contrast"]);
+    // The command names the --styles bundle (`-o FILE`), or it would vendor the default one.
+    let cmd = md_render::styles::vendor_command(Some(Flavor::Github), &s.bundle);
+    assert!(cmd.contains(" -o "), "{cmd}");
     assert!(
         stderr.contains(
             "warning: the style bundle has no GitHub theme dark_high_contrast; using dark instead"
-        ) && stderr.contains("md-render vendor --flavor github --themes all"),
+        ) && stderr.contains(&format!("(run `{cmd} --themes all` to vendor every theme)")),
         "{stderr}"
     );
     let html = std::fs::read_to_string(s.path("doc.html")).unwrap();

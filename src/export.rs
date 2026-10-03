@@ -160,7 +160,9 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
                 crate::styles::vendor_command(Some(cfg.flavor), &cfg.bundle_path)
             );
         }
-        if let Some(w) = crate::page::theme_fallback_warning(cfg.flavor, &cfg.theme, &bundle) {
+        if let Some(w) =
+            crate::page::theme_fallback_warning(cfg.flavor, &cfg.theme, &bundle, &cfg.bundle_path)
+        {
             tracing::warn!("{w}");
         }
     }
@@ -189,6 +191,7 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
         live: None,
         banners: &[],
         extra_css: &cfg.extra_css,
+        bundle_path: Some(&cfg.bundle_path),
     };
     let page = render_page(&input, &bundle)?;
 

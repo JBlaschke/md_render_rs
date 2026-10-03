@@ -555,6 +555,7 @@ impl App {
         let (flavor, mode, theme, layout) =
             (self.flavor, self.mode, self.theme.clone(), self.layout);
         let extra_css = self.styles.extra_css_urls();
+        let bundle_path = self.styles.path().to_path_buf();
         let built = tokio::task::spawn_blocking(move || {
             let assets = AssetMode::Server {
                 prefix: PREFIX.to_owned(),
@@ -571,6 +572,7 @@ impl App {
                 live: live.as_ref(),
                 banners: &banners,
                 extra_css: &extra_css,
+                bundle_path: Some(&bundle_path),
             };
             page::render_page(&input, &bundle)
         })

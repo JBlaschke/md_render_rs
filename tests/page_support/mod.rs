@@ -363,6 +363,8 @@ pub struct Page<'a> {
     pub live: Option<LiveInfo>,
     pub banners: Vec<Banner>,
     pub extra_css: Vec<String>,
+    /// `PageInput::bundle_path` (`None`: the bundle's own file).
+    pub bundle_path: Option<PathBuf>,
 }
 
 impl<'a> Page<'a> {
@@ -379,6 +381,7 @@ impl<'a> Page<'a> {
             live: None,
             banners: Vec::new(),
             extra_css: Vec::new(),
+            bundle_path: None,
         }
     }
 
@@ -395,6 +398,7 @@ impl<'a> Page<'a> {
             live: self.live.as_ref(),
             banners: &self.banners,
             extra_css: &self.extra_css,
+            bundle_path: self.bundle_path.as_deref(),
         };
         render_page(&input, bundle).expect("page renders")
     }

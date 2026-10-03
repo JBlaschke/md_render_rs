@@ -79,8 +79,12 @@
     var ref = libRef(name);
     var promise;
     if (!ref) {
+      // The page names the exact command (with `-o FILE` for a --styles bundle, STY-1).
       var flavor = CONFIG.flavor === 'gitlab' ? 'gitlab' : 'github';
-      promise = Promise.reject(new Error(name + ' is not vendored (run `md-render vendor --flavor ' + flavor + '`)'));
+      var command = typeof CONFIG.vendor === 'string' && CONFIG.vendor
+        ? CONFIG.vendor
+        : 'md-render vendor --flavor ' + flavor;
+      promise = Promise.reject(new Error(name + ' is not vendored (run `' + command + '`)'));
     } else if (ref.charAt(0) === '#') {
       promise = new Promise(function (resolve) {
         runInline(ref);

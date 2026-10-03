@@ -485,6 +485,7 @@ fn directory_mode_reports_io_errors() {
         live: None,
         banners: &[],
         extra_css: &[],
+        bundle_path: None,
     };
     let err = md_render::page::render_page(&input, &bundle).expect_err("cannot write below a file");
     assert!(format!("{err:#}").contains("blocked_files"), "{err:#}");

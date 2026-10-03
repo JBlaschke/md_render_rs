@@ -190,7 +190,7 @@ fn single_themes_and_variants() {
 /// colour mode does not use are silent.
 #[test]
 fn missing_theme_ids_are_reported_once_when_serving() {
-    let (_dir, bundle) = bundle();
+    let (dir, bundle) = bundle();
     let mut page = Page::new(Flavor::Github);
     // (Ids no other test uses: the warning is logged once per process.)
     page.theme = theme(Theme::Auto, "light_colorblind", "dark_tritanopia");
@@ -201,8 +201,15 @@ fn missing_theme_ids_are_reported_once_when_serving() {
         ),
         "{log}"
     );
+    // The command vendors into the bundle the page came from: `-o FILE` for a non-default one
+    // (run as plain `md-render vendor`, it would fill the default bundle instead).
+    let md_render::styles::BundleOrigin::File(file) = bundle.origin() else {
+        panic!("the test bundle is read from a file")
+    };
+    let cmd = md_render::styles::vendor_command(Some(Flavor::Github), file);
+    assert!(cmd.contains(" -o "), "{cmd}");
     assert!(
-        log.contains("md-render vendor --flavor github --themes all"),
+        log.contains(&format!("(run `{cmd} --themes all` to vendor every theme)")),
         "{log}"
     );
     assert_eq!(
@@ -210,6 +217,18 @@ fn missing_theme_ids_are_reported_once_when_serving() {
         Some("dark")
     );
     assert_eq!(warnings_during(|| page.render(&bundle)).1, "", "only once");
+    // A bundle path given by the caller (the server's --styles) is the one named.
+    let given = dir.path().join("given.tar.gz");
+    page.bundle_path = Some(given.clone());
+    let log = warnings_during(|| page.render(&bundle)).1;
+    assert!(
+        log.contains(&format!(
+            "run `md-render vendor --flavor github -o {} --themes all`",
+            given.display()
+        )),
+        "{log}"
+    );
+    page.bundle_path = None;
 
     for (mode, light, dark) in [
         (Theme::Dark, "light_colorblind_high_contrast", "dark_dimmed"),
@@ -322,6 +341,47 @@ fn libraries_follow_features() {
             "/__/md-render/static/github.js"
         ]
     );
+}
+
+/// The vendor command for common.js's "not vendored" hint is in the config only when a
+/// library the page wants is missing (an export should not carry the bundle path for nothing),
+/// and it names the given bundle with `-o` (STY-1).
+#[test]
+fn vendor_hint_only_when_a_library_is_missing() {
+    let (_dir, bundle) = bundle();
+    let math = Features {
+        math: true,
+        mermaid: false,
+    };
+    for flavor in [Flavor::Github, Flavor::Gitlab] {
+        let mut page = Page::new(flavor);
+        page.bundle_path = Some("/elsewhere/styles.tar.gz".into());
+        page.content.features = math;
+        let cfg =
+            |page: &Page, bundle: &Bundle| config(&Document::from(page.render(bundle).as_str()));
+        assert_eq!(
+            cfg(&page, &bundle)["vendor"],
+            serde_json::Value::Null,
+            "{flavor}: all vendored"
+        );
+        let fallback = Bundle::fallback();
+        assert_eq!(
+            cfg(&page, &fallback)["vendor"],
+            format!("md-render vendor --flavor {flavor} -o /elsewhere/styles.tar.gz"),
+            "{flavor}"
+        );
+        page.content.features = Features::default();
+        assert_eq!(
+            cfg(&page, &fallback)["vendor"],
+            serde_json::Value::Null,
+            "{flavor}: no math"
+        );
+        page.live = Some(live_info());
+        assert!(
+            cfg(&page, &fallback)["vendor"].is_string(),
+            "{flavor}: live pages may gain math"
+        );
+    }
 }
 
 #[test]
