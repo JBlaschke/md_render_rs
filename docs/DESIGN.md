@@ -435,8 +435,9 @@ GET /__/md-render/render?path=<doc>     JSON resync (§7)
   `/__/md-render/` is a 404 and never shadowed by a user file.
 * `<doc>` is a root-relative document path, or a directory URL with a trailing slash
   (`dir/`, `/` for the root) for a live listing (LIVE-9). An empty `path` is a 400.
-* **Changed:** raw files are served with tower-http's `ServeFile` (Range, `If-Modified-Since`,
-  `Last-Modified`; no ETag), `Cache-Control: no-cache` so edited images revalidate, and
+* **Changed:** raw files are served with tower-http's `ServeFile` (Range, `Last-Modified` and
+  `If-Modified-Since`, an ETag from size and mtime with `If-None-Match` → 304),
+  `Cache-Control: no-cache` so edited images revalidate, and
   `X-Content-Type-Options: nosniff`. Content-Type: `mime_guess`; textual types get
   `charset=utf-8`; script types browsers would download (`x-sh`, `x-python`, …) are shown as
   `text/plain`; extension-less files are sniffed (NUL byte or invalid UTF-8 in the first 8 KiB →

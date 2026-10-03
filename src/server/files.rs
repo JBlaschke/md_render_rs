@@ -123,9 +123,9 @@ pub(super) fn sniff_file(path: &Path) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Serve a validated, canonical file path raw: Range / If-Modified-Since / Last-Modified via
-/// `tower-http`'s `ServeFile`, our own Content-Type, and `Cache-Control: no-cache` so edited
-/// images are revalidated on reload.
+/// Serve a validated, canonical file path raw: Range, Last-Modified / If-Modified-Since and an
+/// ETag (size + mtime) / If-None-Match via `tower-http`'s `ServeFile`, our own Content-Type,
+/// and `Cache-Control: no-cache` so edited images are revalidated on reload.
 pub(super) async fn serve_raw(path: &Path, req: Request, force_type: Option<&str>) -> Response {
     let ctype = match force_type {
         Some(t) => t.to_owned(),

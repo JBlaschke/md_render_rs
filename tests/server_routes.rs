@@ -322,6 +322,19 @@ async fn raw_files_have_correct_content_types() {
         .get_with("/notes.txt", &[("If-Modified-Since", &modified)])
         .await;
     assert_eq!(r.status, 304);
+    // ServeFile also sends an ETag (size + mtime) and answers If-None-Match (DESIGN §6).
+    let r = s.get("/notes.txt").await;
+    let etag = r.header("etag").expect("ETag").to_owned();
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+    let r = s.get_with("/notes.txt", &[("If-None-Match", &etag)]).await;
+    assert_eq!(r.status, 304);
+    assert_eq!(r.header("etag"), Some(etag.as_str()));
+    // An edited file has a new ETag, so the cached copy is not reused.
+    std::fs::write(s.path("notes.txt"), "hello again, world").unwrap();
+    let r = s.get_with("/notes.txt", &[("If-None-Match", &etag)]).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), "hello again, world");
+    assert_ne!(r.header("etag"), Some(etag.as_str()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
