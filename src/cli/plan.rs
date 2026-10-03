@@ -875,6 +875,29 @@ fn serve_plan(
         None => (DEFAULT_HOST.to_owned(), DEFAULT_PORT),
         Some(a) => {
             let hp = address::split_address(a).ok_or_else(|| invalid_address(a))?;
+            // grip's split_address keeps an out-of-range port (`. 70000`) as a host name, and
+            // the resolver reads an all-digit host as an integer IPv4 address (inet_aton:
+            // 70000 = 0.1.17.112). An all-digit ADDRESS is a port; never resolve it as a host.
+            if let Some(h) = hp
+                .host
+                .as_deref()
+                .filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(usage(
+                    ErrorKind::ValueValidation,
+                    if hp.port.is_none() {
+                        format!(
+                            "invalid address '{a}': port {h} is out of range (0-{})",
+                            u16::MAX
+                        )
+                    } else {
+                        format!(
+                            "invalid address '{a}': '{h}' is a number, not a host name or IP \
+                             address"
+                        )
+                    },
+                ));
+            }
             // An empty host (`:80`) means the default host (grip passed '' to Flask, C26).
             let h = hp
                 .host

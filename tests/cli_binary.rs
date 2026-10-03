@@ -124,6 +124,18 @@ fn usage_errors_exit_2() {
     assert!(stderr.contains("instead of -p"), "{stderr}");
     let (_, _, stderr) = run(&e, &["README.md", "vendor"]);
     assert!(stderr.contains("use ./vendor"), "{stderr}");
+    // An all-digit ADDRESS out of port range is a usage error, reported before anything else
+    // (no bundle warning, never a `cannot listen on 0.1.17.112`).
+    for port in ["70000", "99999"] {
+        let (code, _, stderr) = run(&e, &["-q", "--styles", "/nonexistent.tar.gz", ".", port]);
+        assert_eq!(code, 2, "{port}: {stderr}");
+        assert!(
+            stderr.starts_with(&format!(
+                "error: invalid address '{port}': port {port} is out of range (0-65535)"
+            )),
+            "{stderr}"
+        );
+    }
     // `cache` without an action shows its help on stderr, still a usage error.
     let (code, stdout, stderr) = run(&e, &["cache"]);
     assert_eq!((code, stdout.as_str()), (2, ""));

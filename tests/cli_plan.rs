@@ -316,6 +316,26 @@ fn invalid_addresses_are_usage_errors() {
         msg.contains("put IPv6 addresses in brackets: [::1]:6419"),
         "{msg}"
     );
+    // An all-digit ADDRESS is a port, never an integer IPv4 host (`70000` = 0.1.17.112).
+    for (addr, why) in [
+        ("70000", "port 70000 is out of range (0-65535)"),
+        ("99999", "port 99999 is out of range (0-65535)"),
+        ("65536", "port 65536 is out of range (0-65535)"),
+        (
+            "70000:80",
+            "'70000' is a number, not a host name or IP address",
+        ),
+        ("0:8080", "'0' is a number, not a host name or IP address"),
+    ] {
+        let (msg, code) = error(&fx, &[".", addr]);
+        assert_eq!(code, 2, "{addr}: {msg}");
+        assert!(
+            msg.contains(&format!("invalid address '{addr}': {why}")),
+            "{msg}"
+        );
+    }
+    let plan = serve(&fx, &[".", "65535"]);
+    assert_eq!((plan.host.as_str(), plan.port), ("localhost", 65535));
 }
 
 #[test]

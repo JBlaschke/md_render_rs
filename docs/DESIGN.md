@@ -572,7 +572,9 @@ export: --no-inline
 hidden grip compat: --wide (no-op, warns), --user/--pass (usage error: use --token), -a/-p (hint, exit 2)
 ```
 * A lone positional is the ADDRESS iff it contains a valid port (path-and-address rules, ported
-  exactly); `./8080` and `./vendor` force a path.
+  exactly); `./8080` and `./vendor` force a path. **Added:** an ADDRESS whose host is all digits
+  is a usage error (`. 70000`: port out of range; `70000:80`: not a host), because the resolver
+  would read it as an integer IPv4 address (`70000` = `0.1.17.112`).
 * Post-parse checks: a subcommand combined with serve-only positionals/flags is a usage error
   with a hint (`./vendor` to serve a file named `vendor`), re-rendered with the subcommand's
   usage line (CLI-14). A bare `md-render vendor`/`export` next to a file of that name warns
