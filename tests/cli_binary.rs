@@ -249,6 +249,29 @@ fn export_diagnostics_are_log_events() {
     }
 }
 
+/// An unusable `--styles` file: the warning says to delete it first, and no second `hint:`
+/// suggests the bare `md-render vendor -o FILE`, which refuses to overwrite such a file.
+#[test]
+fn export_with_a_corrupt_styles_bundle_gives_one_working_fix() {
+    let e = env();
+    let styles = e.cwd.join("half.tar.gz");
+    fs::write(&styles, b"\x1f\x8b\x08\x00 not really a gzip stream").unwrap();
+    let styles = styles.to_str().unwrap();
+    let (code, _, stderr) = run(&e, &["export", "--styles", styles, "README.md", "out.html"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "(delete it, then run `md-render vendor -o {styles}` to download them again)"
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("hint:"), "{stderr}");
+    // The command the warning names is refused until the file is deleted, as it says.
+    let (code, _, stderr) = run(&e, &["vendor", "-o", styles]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("refusing to overwrite"), "{stderr}");
+}
+
 #[test]
 fn cache_path_and_clear_stay_in_the_cache_directory() {
     let e = env();

@@ -161,7 +161,6 @@ pub(super) async fn load_initial(
             Err(e) => tracing::warn!("--auto-vendor: vendoring {flavor} styles failed: {e}"),
         }
     }
-    let hint = vendor_hint(flavor, path);
     match state {
         Initial::Ready(b) => b.with_fallbacks(),
         Initial::NoFlavor(b) => {
@@ -179,12 +178,25 @@ pub(super) async fn load_initial(
         Initial::Broken(e) => {
             // Shown even with --quiet (an error event): the user asked for a bundle that cannot
             // be used.
-            tracing::error!(
-                "{e:#}; using minimal fallback styles.\n           Re-create the bundle with `{hint}`."
-            );
+            tracing::error!("{}", broken_notice(path, flavor, &e));
             Bundle::fallback()
         }
     }
+}
+
+/// The error for a bundle file that cannot be used (`error`), with a fix that works as
+/// written: `md-render vendor -o FILE` refuses to overwrite an unreadable non-default file, so
+/// that one has to be deleted first (as `styles::load_or_fallback` says for exports).
+fn broken_notice(path: &Path, flavor: Flavor, error: &anyhow::Error) -> String {
+    let hint = vendor_hint(flavor, path);
+    let fix = if crate::styles::vendor::accepts_output(path, error) {
+        format!("Re-create the bundle with `{hint}`.")
+    } else if path.is_file() {
+        format!("Delete it, then re-create it with `{hint}`.")
+    } else {
+        "Choose another bundle file; `md-render vendor -o FILE` creates one.".to_owned()
+    };
+    format!("{error:#}; using minimal fallback styles.\n           {fix}")
 }
 
 /// The warning for a failed `--auto-vendor` run. The vendoring error already says which
@@ -586,10 +598,23 @@ mod tests {
             Initial::Missing
         ));
         std::fs::write(&path, b"not a tarball").unwrap();
-        assert!(matches!(
-            Initial::open(&path, Flavor::Github),
-            Initial::Broken(_)
-        ));
+        let Initial::Broken(e) = Initial::open(&path, Flavor::Github) else {
+            panic!("a corrupt file is Broken")
+        };
+        // `vendor -o` refuses to overwrite it, so the fix says to delete it first.
+        let notice = broken_notice(&path, Flavor::Github, &e);
+        assert!(
+            notice.ends_with(&format!(
+                "Delete it, then re-create it with `{}`.",
+                vendor_hint(Flavor::Github, &path)
+            )),
+            "{notice}"
+        );
+        let in_dir = broken_notice(dir.path(), Flavor::Github, &e);
+        assert!(
+            in_dir.ends_with("`md-render vendor -o FILE` creates one."),
+            "{in_dir}"
+        );
         write_bundle(&path, "a{}");
         assert!(matches!(
             Initial::open(&path, Flavor::Github),

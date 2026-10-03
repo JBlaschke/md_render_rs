@@ -153,8 +153,14 @@ pub fn export(cfg: &ExportConfig) -> anyhow::Result<()> {
             ),
             None => {}
         }
-        if fallback {
-            // DESIGN D11: always name the exact command (with `-o` for a --styles bundle, STY-1).
+        // `md-render vendor -o FILE` accepts a bundle that opened, or no file at all. It refuses
+        // to overwrite an unusable non-default file, and for that the warning above already
+        // says what to do (delete it first, or choose another file): a second command that
+        // fails when run as written would only mislead.
+        let vendor_accepts = matches!(bundle.origin(), crate::styles::BundleOrigin::File(_))
+            || !cfg.bundle_path.exists();
+        if fallback && vendor_accepts {
+            // DESIGN D11: name the exact command (with `-o` for a --styles bundle, STY-1).
             tracing::info!(
                 "hint: run `{}` to export with the site's own styles",
                 crate::styles::vendor_command(Some(cfg.flavor), &cfg.bundle_path)
