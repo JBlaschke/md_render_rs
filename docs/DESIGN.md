@@ -492,9 +492,11 @@ Server:
   and **every finished render is published**; a change that arrived meanwhile leaves a wake-up
   permit, so the newer bytes are rendered right after (LIVE-13; dropping "stale" renders froze the
   preview while saving often).
-* A document that suddenly reads as empty waits 250 ms before the empty render is published
-  (truncate-then-write saves, LIVE-2). Inputs that already failed to render publish no new
-  error when re-checked.
+* A document that suddenly reads as empty is re-read every 50 ms for up to 1.5 s before the
+  empty render is published (truncate-then-write saves, LIVE-2; 250 ms was too short for a
+  writer pausing 0.4 s); new content ends the wait at once, so normal edits stay instant and a
+  file that was really emptied is shown after the hold. Inputs that already failed to render
+  publish no new error when re-checked.
 * Media dependencies (`img`, `source`, `video`, `audio`, `track`, `input[type=image]`: `src`,
   `srcset`, `poster`) inside the root are watched; a change sends `assets`. Dependencies (and
   documents) whose directory does not exist yet are watched through their nearest existing

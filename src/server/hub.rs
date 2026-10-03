@@ -41,8 +41,13 @@ pub(super) const RENDER_WAIT: Duration = Duration::from_secs(60);
 const RECHECK_AFTER_WATCH: Duration = Duration::from_millis(750);
 
 /// How long a document that suddenly reads as empty gets to receive its new content before
-/// the empty render is published (truncate-then-write saves).
-const EMPTY_SETTLE: Duration = Duration::from_millis(250);
+/// the empty render is published (truncate-then-write saves, LIVE-2). Slow writers
+/// (`sleep 0.4; write`, generators, network file systems) leave the file empty for a while;
+/// new content ends the wait at once, and a file that stays empty is shown after this delay.
+const EMPTY_HOLD: Duration = Duration::from_millis(1500);
+
+/// How often the file is re-read while an empty read is held back.
+const EMPTY_POLL: Duration = Duration::from_millis(50);
 
 /// Capacity of each document's event channel (subscribers that lag get a state resync).
 const EVENT_CAPACITY: usize = 64;
@@ -1028,7 +1033,7 @@ async fn process_listing(entry: &DocEntry, ctx: &RenderCtx) {
 
 /// One worker iteration: re-read, dedup by hash, render, publish.
 async fn process(entry: &DocEntry, ctx: &RenderCtx) {
-    let t0 = entry.triggers.load(Ordering::SeqCst);
+    let mut t0 = entry.triggers.load(Ordering::SeqCst);
     let snap = entry.snapshot();
     let follow = ctx.follows(&entry.key);
     let mut read = read_contained(ctx, &entry.path, follow).await;
@@ -1041,9 +1046,19 @@ async fn process(entry: &DocEntry, ctx: &RenderCtx) {
         // A document that just became empty is probably being rewritten in place (truncate,
         // then write: `gen.py > README.md`, slow writers, network file systems). Publishing
         // the empty render would throw away the reader's scroll position and every
-        // client-rendered block, so give the writer a moment first.
-        tokio::time::sleep(EMPTY_SETTLE).await;
-        read = read_contained(ctx, &entry.path, follow).await;
+        // client-rendered block, so hold it back until the new bytes arrive (published at
+        // once) or EMPTY_HOLD passes (a file that was really emptied).
+        let deadline = tokio::time::Instant::now() + EMPTY_HOLD;
+        while matches!(&read, Ok(b) if b.is_empty()) {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            tokio::time::sleep(EMPTY_POLL.min(deadline - now)).await;
+            // This read sees every change triggered so far.
+            t0 = entry.triggers.load(Ordering::SeqCst);
+            read = read_contained(ctx, &entry.path, follow).await;
+        }
     }
     let bytes = match read {
         Ok(b) => b,
@@ -1726,49 +1741,71 @@ mod tests {
         assert!(html.contains("CHANGED_PART"), "stale include: {html}");
     }
 
-    /// LIVE-2: a truncate-then-write save does not publish an empty render in between.
+    /// LIVE-2: a truncate-then-write save does not publish an empty render in between, even
+    /// when the writer pauses 0.4 s (the reviewer's case), and the new content is published as
+    /// soon as it arrives rather than after the whole hold.
     #[tokio::test]
     async fn truncate_then_write_saves_skip_the_empty_render() {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let doc = root.join("a.md");
-        std::fs::write(&doc, "full one").unwrap();
+        std::fs::write(&doc, "full 0").unwrap();
         let (hub, _stop) = hub(&root, Arc::new(Counting(AtomicUsize::new(0))));
-        let v1 = hub.current("a.md").await.unwrap().version;
+        let mut last = hub.current("a.md").await.unwrap().version;
         let mut rx = hub.get("a.md").unwrap().subscribe_events();
 
-        std::fs::write(&doc, "").unwrap(); // truncated; the new bytes follow 100 ms later
-        let writer = {
-            let doc = doc.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                std::fs::write(&doc, "full two").unwrap();
-            })
-        };
-        let s = hub.current("a.md").await.unwrap();
-        writer.await.unwrap();
-        let s = if s.content.as_ref().unwrap().rendered.html.contains("two") {
-            s
-        } else {
-            hub.current("a.md").await.unwrap()
-        };
-        assert!(s.version > v1);
-        assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>full two</p>");
-        let mut contents = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            if ev.name == "content" {
-                contents.push(ev.data.clone());
+        for (i, gap) in [100u64, 400].into_iter().enumerate() {
+            let text = format!("full {}", i + 1);
+            let start = std::time::Instant::now();
+            std::fs::write(&doc, "").unwrap(); // truncated; the new bytes follow `gap` ms later
+            let writer = {
+                let (doc, text) = (doc.clone(), text.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(gap)).await;
+                    std::fs::write(&doc, text).unwrap();
+                })
+            };
+            let s = hub.current("a.md").await.unwrap();
+            writer.await.unwrap();
+            let want = format!("<p>{text}</p>");
+            let s = if s.content.as_ref().unwrap().rendered.html == want {
+                s
+            } else {
+                hub.current("a.md").await.unwrap()
+            };
+            let took = start.elapsed();
+            assert!(s.version > last);
+            last = s.version;
+            assert_eq!(s.content.as_ref().unwrap().rendered.html, want);
+            // Well below EMPTY_HOLD: the new bytes end the hold.
+            assert!(
+                took < Duration::from_millis(gap + 800),
+                "{gap} ms gap: the new content waited too long ({took:?})"
+            );
+            let mut contents = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                if ev.name == "content" {
+                    contents.push(ev.data.clone());
+                }
             }
+            assert!(
+                contents.iter().all(|d| !d.contains(r#""html":"<p></p>""#)),
+                "{gap} ms gap: an empty render was published: {contents:?}"
+            );
         }
-        assert!(
-            contents.iter().all(|d| !d.contains(r#""html":"<p></p>""#)),
-            "an empty render was published: {contents:?}"
-        );
 
-        // A file that stays empty is published as empty (after the settle delay).
+        // A file that stays empty is published as empty (after the hold).
+        let start = std::time::Instant::now();
         std::fs::write(&doc, "").unwrap();
         let s = hub.current("a.md").await.unwrap();
         assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p></p>");
+        assert!(start.elapsed() >= EMPTY_HOLD);
+        // Non-empty bytes are never held back.
+        let start = std::time::Instant::now();
+        std::fs::write(&doc, "back").unwrap();
+        let s = hub.current("a.md").await.unwrap();
+        assert_eq!(s.content.as_ref().unwrap().rendered.html, "<p>back</p>");
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
